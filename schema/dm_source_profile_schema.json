@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/dm_source_profile.schema.json",
+  "title": "DmSourceProfile",
+  "type": "object",
+  "required": [
+    "thread_id",
+    "partner_id",
+    "partner_display_name",
+    "profile_type",
+    "strictness_level",
+    "base_thresholds",
+    "context_window_messages",
+    "notes",
+    "last_calibrated_at",
+    "calibration_examples"
+  ],
+  "properties": {
+    "thread_id": {
+      "type": "string"
+    },
+    "partner_id": {
+      "type": "string"
+    },
+    "partner_display_name": {
+      "type": "string"
+    },
+    "profile_type": {
+      "type": "string",
+      "enum": [
+        "theriac_dedicated",
+        "mixed_topic",
+        "unknown_low_signal"
+      ]
+    },
+    "strictness_level": {
+      "type": "string",
+      "enum": [
+        "permissive",
+        "balanced",
+        "strict"
+      ]
+    },
+    "base_thresholds": {
+      "type": "object",
+      "required": [
+        "theriac_relevance_min",
+        "meta_lore_split_min"
+      ],
+      "properties": {
+        "theriac_relevance_min": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "meta_lore_split_min": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "context_window_messages": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "notes": {
+      "type": "string"
+    },
+    "last_calibrated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "calibration_examples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "snippet_id",
+          "decision"
+        ],
+        "properties": {
+          "snippet_id": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "reject",
+              "defer",
+              "needs_more_context"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

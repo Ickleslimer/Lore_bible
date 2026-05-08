@@ -1,0 +1,368 @@
+from __future__ import annotations
+
+import argparse
+import shutil
+from pathlib import Path
+from time import perf_counter
+
+from pipeline.common import CUTOFF_UTC, get_logger, parse_discord_timestamp, read_json, read_jsonl, setup_logging, write_json
+from pipeline.stage_a_bootstrap import run as run_stage_a
+from pipeline.stage_b_normalize import run as run_stage_b
+from pipeline.stage_b2_global_merge import run as run_stage_b2
+from pipeline.stage_c_extract import run as run_stage_c
+from pipeline.stage_d_group import run as run_stage_d
+from pipeline.stage_e_alias import run as run_stage_e
+from pipeline.stage_f_draft import run as run_stage_f
+from pipeline.stage_g_merge_engine import run as run_stage_g
+from pipeline.stage_h_notion_export import run as run_stage_h
+
+
+DEFAULT_BASE_DIR = Path("artifacts")
+DEFAULT_CONVERSATIONS_ROOT = Path("discord_conversations")
+DEFAULT_DOCX_CANDIDATES = [
+    Path("theriac-coda---lore-bible.docx"),
+]
+
+
+def _count_jsonl(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return len(read_jsonl(path))
+
+
+def _run_stage(logger, stage_idx: int, total_stages: int, stage_name: str, fn, *args) -> float:
+    logger.info("[%d/%d] START %s", stage_idx, total_stages, stage_name)
+    start = perf_counter()
+    fn(*args)
+    elapsed = perf_counter() - start
+    logger.info("[%d/%d] DONE  %s (%.2fs)", stage_idx, total_stages, stage_name, elapsed)
+    return elapsed
+
+
+def _resolve_docx(docx_path: Path | None) -> Path:
+    if docx_path is not None:
+        return docx_path
+    for candidate in DEFAULT_DOCX_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    discovered = sorted(Path(".").glob("*.docx"))
+    if len(discovered) == 1:
+        return discovered[0]
+    raise SystemExit(
+        "Could not locate lore bible DOCX. Pass --docx with the file path."
+    )
+
+
+def _resolve_inputs(
+    base_dir: Path | None,
+    conversations_root: Path | None,
+    docx_path: Path | None,
+) -> tuple[Path, Path, Path]:
+    resolved_base = base_dir or DEFAULT_BASE_DIR
+    resolved_conversations = conversations_root or DEFAULT_CONVERSATIONS_ROOT
+    resolved_docx = _resolve_docx(docx_path)
+
+    if not resolved_conversations.exists():
+        raise SystemExit(
+            f"Conversations root not found: {resolved_conversations}. "
+            "Pass --conversations-root."
+        )
+    if not resolved_docx.exists():
+        raise SystemExit(f"DOCX file not found: {resolved_docx}")
+
+    return resolved_base, resolved_conversations, resolved_docx
+
+
+def _file_recency_score(json_path: Path) -> float:
+    """
+    Use latest message timestamp as recency score.
+    Returns unix timestamp; very old fallback when unreadable.
+    """
+    try:
+        payload = read_json(json_path)
+        if not isinstance(payload, list) or not payload:
+            return 0.0
+        latest = None
+        for msg in payload:
+            if not isinstance(msg, dict):
+                continue
+            raw_ts = msg.get("timestamp")
+            if not raw_ts:
+                continue
+            ts = parse_discord_timestamp(str(raw_ts))
+            if latest is None or ts > latest:
+                latest = ts
+        if latest is None:
+            return 0.0
+        return latest.timestamp()
+    except Exception:
+        return 0.0
+
+
+def _looks_post_cutoff(json_path: Path) -> bool:
+    try:
+        payload = read_json(json_path)
+        if not isinstance(payload, list) or not payload:
+            return False
+        for msg in payload:
+            if not isinstance(msg, dict):
+                continue
+            raw_ts = msg.get("timestamp")
+            if not raw_ts:
+                continue
+            if parse_discord_timestamp(str(raw_ts)) >= CUTOFF_UTC:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def create_auto_decisions(lore_patches_path: Path, out_decisions_path: Path) -> None:
+    payload = read_json(lore_patches_path)
+    decisions = []
+    for patch in payload.get("patches", [])[:20]:
+        decision = "accept" if patch.get("confidence", 0) >= 0.65 else "defer"
+        decisions.append(
+            {
+                "claim_id": patch["claim_id"],
+                "decision": decision,
+                "reviewer": "auto_small_batch_validation",
+                "rationale": "Automated validation decision for pipeline smoke test.",
+            }
+        )
+    write_json(out_decisions_path, {"decisions": decisions})
+
+
+def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_files: int) -> None:
+    logger = get_logger(__name__)
+    work = base_dir / "small_batch"
+    thematic_runtime_path = work / "learning" / "thematic_profile_runtime.json"
+    if work.exists():
+        logger.info("Removing previous small-batch workspace: %s", work)
+        shutil.rmtree(work)
+    work.mkdir(parents=True, exist_ok=True)
+    logger.info("Small-batch workspace ready: %s", work)
+
+    # Optional small-batch subset
+    subset_root = work / "subset_conversations"
+    subset_root.mkdir(parents=True, exist_ok=True)
+    candidate_files = sorted(conversations_root.rglob("*.json"))
+    post_cutoff_files = [p for p in candidate_files if _looks_post_cutoff(p)]
+    ranked = sorted(post_cutoff_files if post_cutoff_files else candidate_files, key=_file_recency_score, reverse=True)
+    all_files = ranked[:sample_limit_files]
+    logger.info(
+        "Preparing subset conversations: selected %d of requested %d file(s) (post_cutoff_pool=%d total_pool=%d)",
+        len(all_files),
+        sample_limit_files,
+        len(post_cutoff_files),
+        len(candidate_files),
+    )
+    for src in all_files:
+        dst = subset_root / src.relative_to(conversations_root)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        logger.debug("Copied subset file: %s -> %s", src, dst)
+
+    total_stages = 9
+    _run_stage(
+        logger,
+        1,
+        total_stages,
+        "Stage A Bootstrap",
+        run_stage_a,
+        docx_path,
+        work / "01_bootstrap" / "canon_seed.json",
+        work / "01_bootstrap" / "schema_descriptor.json",
+        base_dir.parent / "config" / "pipeline_config.json",
+        thematic_runtime_path,
+    )
+    seed_payload = read_json(work / "01_bootstrap" / "canon_seed.json")
+    logger.info(
+        "Stage A summary: provider=%s, entities=%d",
+        seed_payload.get("provider_mode", "unknown"),
+        int(seed_payload.get("entity_count", 0)),
+    )
+
+    _run_stage(
+        logger,
+        2,
+        total_stages,
+        "Stage B Normalize",
+        run_stage_b,
+        subset_root,
+        work / "02_timeline" / "messages_normalized_per_thread.jsonl",
+        work / "02_timeline" / "summary.json",
+    )
+    stage_b_summary = read_json(work / "02_timeline" / "summary.json")
+    logger.info(
+        "Stage B summary: files=%d, normalized_messages=%d, rejected=%d",
+        int(stage_b_summary.get("input_files", 0)),
+        int(stage_b_summary.get("normalized_messages", 0)),
+        int(stage_b_summary.get("rejected_before_cutoff_or_invalid", 0)),
+    )
+
+    _run_stage(
+        logger,
+        3,
+        total_stages,
+        "Stage B2 Global Merge",
+        run_stage_b2,
+        work / "02_timeline" / "messages_normalized_per_thread.jsonl",
+        work / "02_timeline" / "messages_global_timeline.jsonl",
+        work / "02_timeline" / "global_index.json",
+    )
+    stage_b2_index = read_json(work / "02_timeline" / "global_index.json")
+    logger.info(
+        "Stage B2 summary: global_messages=%d, threads=%d",
+        int(stage_b2_index.get("message_count", 0)),
+        len(stage_b2_index.get("thread_counts", {})),
+    )
+
+    _run_stage(
+        logger,
+        4,
+        total_stages,
+        "Stage C Extract",
+        run_stage_c,
+        work / "02_timeline" / "messages_global_timeline.jsonl",
+        work / "03_relevance" / "dm_source_profiles.json",
+        work / "03_relevance" / "snippets_candidates.jsonl",
+        work / "03_relevance" / "snippets_needs_review.jsonl",
+        work / "03_relevance" / "dm_source_profiles.json",
+        base_dir.parent / "config" / "pipeline_config.json",
+        work / "01_bootstrap" / "canon_seed.json",
+        thematic_runtime_path,
+    )
+    logger.info(
+        "Stage C summary: snippets=%d, needs_review=%d, profiles=%d",
+        _count_jsonl(work / "03_relevance" / "snippets_candidates.jsonl"),
+        _count_jsonl(work / "03_relevance" / "snippets_needs_review.jsonl"),
+        len(read_json(work / "03_relevance" / "dm_source_profiles.json").get("profiles", [])),
+    )
+
+    _run_stage(
+        logger,
+        5,
+        total_stages,
+        "Stage D Group",
+        run_stage_d,
+        work / "03_relevance" / "snippets_candidates.jsonl",
+        work / "01_bootstrap" / "canon_seed.json",
+        work / "04_grouping" / "snippet_clusters_lore.json",
+        work / "04_grouping" / "snippet_clusters_meta.json",
+        base_dir.parent / "config" / "pipeline_config.json",
+        thematic_runtime_path,
+    )
+    logger.info(
+        "Stage D summary: lore_clusters=%d, meta_clusters=%d",
+        len(read_json(work / "04_grouping" / "snippet_clusters_lore.json").get("clusters", [])),
+        len(read_json(work / "04_grouping" / "snippet_clusters_meta.json").get("clusters", [])),
+    )
+
+    _run_stage(
+        logger,
+        6,
+        total_stages,
+        "Stage E Alias",
+        run_stage_e,
+        work / "03_relevance" / "snippets_candidates.jsonl",
+        work / "01_bootstrap" / "canon_seed.json",
+        work / "05_alias" / "alias_map.json",
+        work / "05_alias" / "entity_timelines.json",
+    )
+    logger.info(
+        "Stage E summary: aliases=%d, entity_timelines=%d",
+        len(read_json(work / "05_alias" / "alias_map.json").get("aliases", [])),
+        len(read_json(work / "05_alias" / "entity_timelines.json").get("entity_timelines", {})),
+    )
+
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage F Draft",
+        run_stage_f,
+        work / "01_bootstrap" / "canon_seed.json",
+        work / "04_grouping" / "snippet_clusters_lore.json",
+        work / "04_grouping" / "snippet_clusters_meta.json",
+        work / "05_alias" / "alias_map.json",
+        work / "03_relevance" / "snippets_candidates.jsonl",
+        work / "06_drafts" / "card_drafts",
+    )
+    logger.info(
+        "Stage F summary: lore_patches=%d, meta_cards=%d",
+        len(read_json(work / "06_drafts" / "card_drafts" / "lore_patches.json").get("patches", [])),
+        len(read_json(work / "06_drafts" / "card_drafts" / "meta_cards_draft.json").get("meta_cards", [])),
+    )
+    create_auto_decisions(
+        work / "06_drafts" / "card_drafts" / "lore_patches.json",
+        work / "07_review" / "merge_decisions.json",
+    )
+    logger.info(
+        "Auto-decisions summary: decisions=%d",
+        len(read_json(work / "07_review" / "merge_decisions.json").get("decisions", [])),
+    )
+
+    _run_stage(
+        logger,
+        8,
+        total_stages,
+        "Stage G Merge Engine",
+        run_stage_g,
+        work / "01_bootstrap" / "canon_seed.json",
+        work / "06_drafts" / "card_drafts" / "lore_patches.json",
+        work / "07_review" / "merge_decisions.json",
+        work / "07_review" / "author_directives.json",
+        work / "07_review" / "canonical_cards.json",
+        work / "07_review" / "merge_log.jsonl",
+    )
+    logger.info(
+        "Stage G summary: canonical_cards=%d, merge_log=%d",
+        len(read_json(work / "07_review" / "canonical_cards.json").get("cards", [])),
+        _count_jsonl(work / "07_review" / "merge_log.jsonl"),
+    )
+
+    _run_stage(
+        logger,
+        9,
+        total_stages,
+        "Stage H Notion Export",
+        run_stage_h,
+        work / "07_review" / "canonical_cards.json",
+        work / "06_drafts" / "card_drafts" / "meta_cards_draft.json",
+        work / "05_alias" / "alias_map.json",
+        work / "03_relevance" / "snippets_candidates.jsonl",
+        work / "03_relevance" / "dm_source_profiles.json",
+        work / "07_review" / "merge_log.jsonl",
+        work / "08_notion" / "notion_import.ndjson",
+    )
+    out_ndjson = work / "08_notion" / "notion_import.ndjson"
+    exported_rows = 0
+    if out_ndjson.exists():
+        with out_ndjson.open("r", encoding="utf-8") as f:
+            exported_rows = sum(1 for _ in f)
+    logger.info("Stage H summary: notion_records=%d", exported_rows)
+    logger.info("Small-batch validation complete. Output root: %s", work)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Run a small-batch end-to-end validation pipeline."
+    )
+    parser.add_argument("--base-dir", type=Path, required=False)
+    parser.add_argument("--conversations-root", type=Path, required=False)
+    parser.add_argument("--docx", type=Path, required=False)
+    parser.add_argument("--sample-limit-files", type=int, default=6)
+    parser.add_argument("--log-level", type=str, default=None, help="Logging level (DEBUG, INFO, WARNING, ERROR).")
+    args = parser.parse_args()
+    setup_logging(args.log_level)
+    base_dir, conversations_root, docx = _resolve_inputs(
+        args.base_dir,
+        args.conversations_root,
+        args.docx,
+    )
+    run(base_dir, conversations_root, docx, args.sample_limit_files)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,1 @@
+"""THERIAC canon extraction pipeline."""

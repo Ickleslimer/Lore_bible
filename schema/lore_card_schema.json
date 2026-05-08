@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/lore_card.schema.json",
+  "title": "LoreCard",
+  "type": "object",
+  "required": [
+    "card_id",
+    "entity_type",
+    "canonical_name",
+    "aliases",
+    "status",
+    "summary",
+    "details",
+    "timeline",
+    "relationships",
+    "source_evidence",
+    "confidence",
+    "revision_history"
+  ],
+  "properties": {
+    "card_id": {
+      "type": "string"
+    },
+    "entity_type": {
+      "type": "string",
+      "enum": [
+        "character",
+        "faction",
+        "organization",
+        "ai_system",
+        "quest",
+        "event",
+        "timeline_node",
+        "theme",
+        "term"
+      ]
+    },
+    "canonical_name": {
+      "type": "string"
+    },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "canonical",
+        "draft",
+        "deprecated",
+        "retcon_candidate"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "timestamp_utc",
+          "description"
+        ],
+        "properties": {
+          "timestamp_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": "string"
+          },
+          "source_snippet_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "target_card_id",
+          "relation_type"
+        ],
+        "properties": {
+          "target_card_id": {
+            "type": "string"
+          },
+          "relation_type": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "source_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "required": [
+        "score"
+      ],
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reviewer_note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "revision_history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "timestamp_utc",
+          "action",
+          "actor"
+        ],
+        "properties": {
+          "timestamp_utc": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "action": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "reject",
+              "defer",
+              "needs_more_context"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/author_directive.schema.json",
+  "title": "AuthorDirective",
+  "type": "object",
+  "required": [
+    "directive_id",
+    "target_card_id",
+    "instruction_text",
+    "directive_type",
+    "effective_timestamp_utc",
+    "author",
+    "priority",
+    "resolution_state"
+  ],
+  "properties": {
+    "directive_id": {
+      "type": "string"
+    },
+    "target_card_id": {
+      "type": "string"
+    },
+    "instruction_text": {
+      "type": "string"
+    },
+    "directive_type": {
+      "type": "string",
+      "enum": [
+        "replace",
+        "append",
+        "remove",
+        "alias",
+        "status_change",
+        "timeline_fix"
+      ]
+    },
+    "effective_timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "author": {
+      "type": "string"
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "author_directive"
+      ]
+    },
+    "resolution_state": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "applied",
+        "superseded"
+      ]
+    },
+    "parsed_payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

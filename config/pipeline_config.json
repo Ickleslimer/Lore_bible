@@ -1,0 +1,77 @@
+{
+  "cutoff_utc": "2025-01-08T01:05:00Z",
+  "paths": {
+    "docx_lore_bible": "theriac-coda---lore-bible.docx",
+    "discord_conversations_root": "discord_conversations",
+    "artifacts_root": "artifacts"
+  },
+  "model_strategy": {
+    "primary": "mistral",
+    "fallback": "local",
+    "temperature": 0.0
+  },
+  "anchor_provider": "hybrid",
+  "stage_a_anchor_provider": "hybrid",
+  "stage_a_mixtral_excerpt_chars": 24000,
+  "mixtral": {
+    "provider": "auto",
+    "base_url": "http://127.0.0.1:11434",
+    "model": "mixtral",
+    "api_base_url": "https://api.mistral.ai/v1",
+    "api_model": "mistral-large-latest",
+    "api_retries": 2,
+    "auto_fallback_to_ollama": true,
+    "rate_limit_cooldown_seconds": 90,
+    "rate_state_path": "artifacts/learning/mixtral_rate_runtime.json",
+    "adaptive_min_interval_seconds": 2.0,
+    "adaptive_max_interval_seconds": 120.0,
+    "adaptive_success_decay": 0.9,
+    "adaptive_rate_limit_growth": 1.8,
+    "ollama_unavailable_cooldown_seconds": 120,
+    "temperature": 0.0,
+    "timeout_seconds": 60
+  },
+  "thematic_linking": {
+    "enabled": true,
+    "runtime_updates_enabled": true,
+    "runtime_min_support": 2,
+    "historical_markers": [
+      "sparta",
+      "hellenic",
+      "greek",
+      "olympus",
+      "illuminati",
+      "fyodorovite",
+      "sumerian",
+      "akkad"
+    ],
+    "music_markers": [
+      "song",
+      "track",
+      "album",
+      "radiohead",
+      "ost",
+      "playlist"
+    ]
+  },
+  "source_profile_defaults": {
+    "theriac_dedicated": {
+      "strictness_level": "permissive",
+      "theriac_relevance_min": 0.45,
+      "meta_lore_split_min": 0.55,
+      "context_window_messages": 4
+    },
+    "mixed_topic": {
+      "strictness_level": "balanced",
+      "theriac_relevance_min": 0.60,
+      "meta_lore_split_min": 0.60,
+      "context_window_messages": 2
+    },
+    "unknown_low_signal": {
+      "strictness_level": "strict",
+      "theriac_relevance_min": 0.12,
+      "meta_lore_split_min": 0.65,
+      "context_window_messages": 3
+    }
+  }
+}

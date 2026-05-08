@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/source_snippet.schema.json",
+  "title": "SourceSnippet",
+  "type": "object",
+  "required": [
+    "snippet_id",
+    "thread_id",
+    "partner_id",
+    "partner_label",
+    "message_ids",
+    "timestamp_start_utc",
+    "timestamp_end_utc",
+    "speaker",
+    "raw_text",
+    "relevance_score",
+    "relevance_reason",
+    "candidate_entities",
+    "knowledge_track",
+    "candidate_topics",
+    "sensitivity_flags",
+    "provenance"
+  ],
+  "properties": {
+    "snippet_id": {
+      "type": "string"
+    },
+    "thread_id": {
+      "type": "string"
+    },
+    "partner_id": {
+      "type": "string"
+    },
+    "partner_label": {
+      "type": "string"
+    },
+    "message_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "timestamp_start_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "timestamp_end_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "speaker": {
+      "type": "string",
+      "enum": [
+        "you",
+        "partner",
+        "unknown"
+      ]
+    },
+    "raw_text": {
+      "type": "string"
+    },
+    "display_text_normalized": {
+      "type": "string"
+    },
+    "relevance_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "relevance_reason": {
+      "type": "string"
+    },
+    "candidate_entities": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "knowledge_track": {
+      "type": "string",
+      "enum": [
+        "lore",
+        "meta",
+        "unknown"
+      ]
+    },
+    "candidate_topics": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "entity",
+          "event",
+          "mechanic",
+          "theme",
+          "quest",
+          "marketing",
+          "production",
+          "go_to_market",
+          "audience"
+        ]
+      }
+    },
+    "sensitivity_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "json_path",
+        "export_batch",
+        "parser_version",
+        "content_hash"
+      ],
+      "properties": {
+        "json_path": {
+          "type": "string"
+        },
+        "export_batch": {
+          "type": "string"
+        },
+        "parser_version": {
+          "type": "string"
+        },
+        "content_hash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

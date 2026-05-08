@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/merge_decision.schema.json",
+  "title": "MergeDecision",
+  "type": "object",
+  "required": [
+    "decision_id",
+    "claim_id",
+    "card_id",
+    "knowledge_track",
+    "decision",
+    "reviewer",
+    "rationale",
+    "timestamp_utc",
+    "source_snippet_ids"
+  ],
+  "properties": {
+    "decision_id": {
+      "type": "string"
+    },
+    "claim_id": {
+      "type": "string"
+    },
+    "card_id": {
+      "type": "string"
+    },
+    "knowledge_track": {
+      "type": "string",
+      "enum": [
+        "lore",
+        "meta"
+      ]
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "reject",
+        "defer",
+        "needs_more_context"
+      ]
+    },
+    "reviewer": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_snippet_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "patch_payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "source_priority": {
+      "type": "string",
+      "enum": [
+        "author_directive",
+        "approved_canon",
+        "lore_bible_seed",
+        "discord_inference_draft"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

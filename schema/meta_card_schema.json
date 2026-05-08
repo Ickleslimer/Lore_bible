@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/meta_card.schema.json",
+  "title": "MetaCard",
+  "type": "object",
+  "required": [
+    "meta_id",
+    "meta_type",
+    "title",
+    "summary",
+    "details",
+    "linked_lore_cards",
+    "source_evidence",
+    "status"
+  ],
+  "properties": {
+    "meta_id": {
+      "type": "string"
+    },
+    "meta_type": {
+      "type": "string",
+      "enum": [
+        "mechanic",
+        "marketing",
+        "production",
+        "positioning",
+        "release_plan",
+        "tooling"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "details": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "linked_lore_cards": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "approved",
+        "archived"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

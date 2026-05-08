@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/alias_entry.schema.json",
+  "title": "AliasEntry",
+  "type": "object",
+  "required": [
+    "alias_id",
+    "entity_card_id",
+    "alias_text",
+    "alias_type",
+    "first_seen_timestamp_utc",
+    "last_seen_timestamp_utc",
+    "source_snippet_ids",
+    "resolution_confidence",
+    "resolution_status",
+    "notes"
+  ],
+  "properties": {
+    "alias_id": {
+      "type": "string"
+    },
+    "entity_card_id": {
+      "type": "string"
+    },
+    "alias_text": {
+      "type": "string"
+    },
+    "alias_type": {
+      "type": "string",
+      "enum": [
+        "working_name",
+        "obsolete_name",
+        "shorthand",
+        "partial_ref",
+        "codename"
+      ]
+    },
+    "first_seen_timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_seen_timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_snippet_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "resolution_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "resolution_status": {
+      "type": "string",
+      "enum": [
+        "resolved",
+        "ambiguous",
+        "conflicted"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}
