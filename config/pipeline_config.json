@@ -6,30 +6,115 @@
     "artifacts_root": "artifacts"
   },
   "model_strategy": {
-    "primary": "mistral",
+    "primary": "gemini",
     "fallback": "local",
     "temperature": 0.0
   },
+  "model_routing": {
+    "default_profile": "flash_lite",
+    "profiles": {
+      "flash_lite": {
+        "provider": "gemini",
+        "api_model": "gemini-2.5-flash-lite",
+        "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "rate_state_path": "artifacts/learning/gemini_flash_lite_rate_runtime.json",
+        "adaptive_min_interval_seconds": 0.5
+      },
+      "flash_regular": {
+        "provider": "gemini",
+        "api_model": "gemini-2.5-flash",
+        "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "rate_state_path": "artifacts/learning/gemini_flash_rate_runtime.json",
+        "adaptive_min_interval_seconds": 0.5
+      }
+    },
+    "tasks": {
+      "stage_a_bootstrap": {
+        "profile": "flash_regular",
+        "batch_enabled": false
+      },
+      "stage_b3_segmentation": {
+        "profile": "flash_lite",
+        "batch_enabled": false,
+        "batch_initial_max_requests": 10,
+        "batch_max_requests": 75,
+        "batch_poll_interval_seconds": 30,
+        "batch_status_log_min_interval_seconds": 30,
+        "batch_timeout_seconds": 1800,
+        "batch_abort_on_chunk_failure": true,
+        "batch_display_name": "theriac-b3-segmentation"
+      },
+      "stage_b4_patch_notes": {
+        "profile": "flash_lite",
+        "batch_enabled": false
+      },
+      "stage_e_alias_resolution": {
+        "profile": "flash_regular",
+        "batch_enabled": false,
+        "enabled": true,
+        "max_evidence_per_call": 24,
+        "max_candidates_per_call": 80
+      },
+      "stage_f_claim_extraction": {
+        "profile": "flash_lite",
+        "batch_enabled": false,
+        "batch_max_requests": 75,
+        "batch_poll_interval_seconds": 30,
+        "batch_timeout_seconds": 86400,
+        "batch_display_name": "theriac-f-claim-extraction"
+      },
+      "stage_g_card_synthesis": {
+        "profile": "flash_regular",
+        "batch_enabled": false
+      }
+    }
+  },
   "anchor_provider": "hybrid",
+  "stage_c_anchor_provider": "conversation_metadata",
   "stage_a_anchor_provider": "hybrid",
   "stage_a_mixtral_excerpt_chars": 24000,
   "mixtral": {
-    "provider": "auto",
+    "provider": "gemini",
     "base_url": "http://127.0.0.1:11434",
     "model": "mixtral",
-    "api_base_url": "https://api.mistral.ai/v1",
-    "api_model": "mistral-large-latest",
+    "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "api_model": "gemini-2.5-flash-lite",
     "api_retries": 2,
     "auto_fallback_to_ollama": true,
     "rate_limit_cooldown_seconds": 90,
-    "rate_state_path": "artifacts/learning/mixtral_rate_runtime.json",
-    "adaptive_min_interval_seconds": 2.0,
+    "rate_state_path": "artifacts/learning/gemini_flash_lite_rate_runtime.json",
+    "adaptive_min_interval_seconds": 0.5,
     "adaptive_max_interval_seconds": 120.0,
     "adaptive_success_decay": 0.9,
     "adaptive_rate_limit_growth": 1.8,
     "ollama_unavailable_cooldown_seconds": 120,
+    "claim_extraction_provider_retry_sleep_seconds": 15,
+    "synthesis_provider_retry_sleep_seconds": 15,
     "temperature": 0.0,
-    "timeout_seconds": 60
+    "timeout_seconds": 120
+  },
+  "conversation_segmentation": {
+    "enabled": true,
+    "max_gap_hours": 12,
+    "self_user_id": "97688301233770496",
+    "short_digression_max_messages": 5,
+    "short_digression_max_minutes": 15,
+    "model_window_max_messages": 80,
+    "model_window_max_chars": 14000,
+    "segmentation_validation_retries": 1,
+    "segmentation_provider_retries": 2,
+    "segmentation_provider_retry_sleep_seconds": 90,
+    "segmentation_validation_retry_sleep_seconds": 2
+  },
+  "conversation_patch_notes": {
+    "previous_context_notes": 6,
+    "max_messages_per_prompt": 80,
+    "max_message_chars": 700,
+    "max_prompt_message_chars": 20000,
+    "validation_retries": 1,
+    "provider_retries": 2,
+    "retry_sleep_seconds": 2,
+    "provider_retry_sleep_seconds": 15
   },
   "thematic_linking": {
     "enabled": true,

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/entity_merge_proposal.schema.json",
+  "title": "EntityMergeProposal",
+  "type": "object",
+  "required": [
+    "proposal_id",
+    "source_entity_id",
+    "source_entity_name",
+    "target_entity_id",
+    "target_entity_name",
+    "alias_text",
+    "merge_type",
+    "status",
+    "evidence_claim_ids",
+    "source_snippet_ids"
+  ],
+  "properties": {
+    "proposal_id": { "type": "string" },
+    "source_entity_id": { "type": "string" },
+    "source_card_id": { "type": "string" },
+    "source_entity_name": { "type": "string" },
+    "target_entity_id": { "type": "string" },
+    "target_card_id": { "type": "string" },
+    "target_entity_name": { "type": "string" },
+    "alias_text": { "type": "string" },
+    "merge_type": { "type": "string", "enum": ["identity_rename"] },
+    "status": { "type": "string", "enum": ["proposed"] },
+    "review_status": {
+      "type": "string",
+      "enum": ["pending", "approve", "accept", "reject", "defer", "needs_more_context"]
+    },
+    "evidence_claim_ids": { "type": "array", "items": { "type": "string" } },
+    "source_snippet_ids": { "type": "array", "items": { "type": "string" } },
+    "evidence": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+    "reviewer": { "type": "string" },
+    "review_rationale": { "type": "string" },
+    "reviewed_at_utc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

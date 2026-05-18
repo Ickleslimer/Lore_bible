@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/entity_seed.schema.json",
+  "title": "EntitySeed",
+  "type": "object",
+  "required": [
+    "entity_seed_id",
+    "canonical_name",
+    "entity_type",
+    "aliases",
+    "seed_status",
+    "source_section_hints",
+    "relationship_hints",
+    "bootstrap_origin",
+    "confidence"
+  ],
+  "properties": {
+    "entity_seed_id": { "type": "string" },
+    "canonical_name": { "type": "string" },
+    "entity_type": {
+      "type": "string",
+      "enum": ["character", "faction", "organization", "location", "quest", "event", "timeline_node", "theme", "term"]
+    },
+    "aliases": { "type": "array", "items": { "type": "string" } },
+    "seed_status": { "type": "string", "enum": ["active", "blocked_seed"] },
+    "source_section_hints": { "type": "array", "items": { "type": "string" } },
+    "relationship_hints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "target_name": { "type": "string" },
+          "relation_type": { "type": "string" },
+          "note": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "bootstrap_origin": { "type": "string" },
+    "confidence": {
+      "type": "object",
+      "required": ["score"],
+      "properties": {
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reviewer_note": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["summary"] },
+      { "required": ["source_evidence"] },
+      { "properties": { "status": { "const": "canonical" } }, "required": ["status"] }
+    ]
+  },
+  "additionalProperties": false
+}

@@ -8,10 +8,14 @@ __pycache__/
 
 .venv/
 venv/
+build/
+dist/
+*.spec
 
 .cursor/
 artifacts/
-canon/
+canon/*
+!canon/review_memory.json
 discord_conversations/
 *.docx
 

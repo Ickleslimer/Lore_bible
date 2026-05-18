@@ -8,7 +8,7 @@ from pipeline.common import get_logger, read_jsonl, write_json, write_jsonl
 
 def run(in_jsonl: Path, out_jsonl: Path, out_index_json: Path) -> None:
     logger = get_logger(__name__)
-    logger.info("Stage B2: loading normalized timeline from %s", in_jsonl)
+    logger.info("Stage 03: loading normalized timeline from %s", in_jsonl)
     rows = read_jsonl(in_jsonl)
     rows.sort(key=lambda x: (x.get("timestamp_utc", ""), x.get("message_id", "")))
 
@@ -27,7 +27,7 @@ def run(in_jsonl: Path, out_jsonl: Path, out_index_json: Path) -> None:
         },
     )
     logger.info(
-        "Stage B2 complete: wrote %d global rows across %d thread(s).",
+        "Stage 03 complete: wrote %d global rows across %d thread(s).",
         len(rows),
         len(thread_counts),
     )

@@ -83,6 +83,11 @@ def normalize_one_message(
     content = msg.get("content", "")
     content = content if isinstance(content, str) else str(content)
     message_id = str(msg.get("id", safe_uuid()))
+    is_bot_or_application = bool(
+        msg.get("application_id")
+        or msg.get("webhook_id")
+        or author.get("bot") is True
+    )
     return {
         "message_id": message_id,
         "thread_id": thread_id,
@@ -92,6 +97,10 @@ def normalize_one_message(
         "timestamp_utc": isoformat_utc(ts),
         "author_id": str(author.get("id", "unknown")),
         "author_name": str(author.get("global_name") or author.get("username") or "unknown"),
+        "author_is_bot": bool(author.get("bot") is True),
+        "is_bot_or_application": is_bot_or_application,
+        "application_id": str(msg.get("application_id", "")) if msg.get("application_id") else "",
+        "webhook_id": str(msg.get("webhook_id", "")) if msg.get("webhook_id") else "",
         "content_raw": content,
         "content_normalized": normalize_display_text(content),
         "attachments_count": len(msg.get("attachments", []) or []),
@@ -120,7 +129,7 @@ def run(conversations_root: Path, out_jsonl: Path, out_summary_json: Path) -> No
         "stageb-debug",
         "H4",
         "stage_b_normalize.py:run",
-        "Stage B run inputs",
+        "Stage 02 run inputs",
         {
             "conversations_root": str(conversations_root),
             "input_files": len(files),
@@ -128,7 +137,7 @@ def run(conversations_root: Path, out_jsonl: Path, out_summary_json: Path) -> No
         },
     )
     # endregion
-    logger.info("Stage B: starting normalization from %d JSON file(s).", len(files))
+    logger.info("Stage 02: starting normalization from %d JSON file(s).", len(files))
     progress_every = max(1, len(files) // 10)
     global_min_ts = None
     global_max_ts = None
@@ -203,7 +212,7 @@ def run(conversations_root: Path, out_jsonl: Path, out_summary_json: Path) -> No
             sample_file_logs += 1
         if processed_files % progress_every == 0 or processed_files == len(files):
             logger.info(
-                "Stage B progress: %d/%d files, normalized=%d, rejected=%d",
+                "Stage 02 progress: %d/%d files, normalized=%d, rejected=%d",
                 processed_files,
                 len(files),
                 len(all_rows),
@@ -228,7 +237,7 @@ def run(conversations_root: Path, out_jsonl: Path, out_summary_json: Path) -> No
         "stageb-debug",
         "H2",
         "stage_b_normalize.py:run",
-        "Stage B global timestamp summary",
+        "Stage 02 global timestamp summary",
         {
             "global_min_timestamp_seen": isoformat_utc(global_min_ts) if global_min_ts is not None else None,
             "global_max_timestamp_seen": isoformat_utc(global_max_ts) if global_max_ts is not None else None,
@@ -238,7 +247,7 @@ def run(conversations_root: Path, out_jsonl: Path, out_summary_json: Path) -> No
     )
     # endregion
     logger.info(
-        "Stage B complete: wrote %d normalized messages to %s (rejected=%d).",
+        "Stage 02 complete: wrote %d normalized messages to %s (rejected=%d).",
         len(all_rows),
         out_jsonl,
         rejected,

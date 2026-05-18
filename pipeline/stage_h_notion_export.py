@@ -46,14 +46,14 @@ def run(
     out_ndjson: Path,
 ) -> None:
     logger = get_logger(__name__)
-    cards = read_json(in_cards_json).get("cards", [])
+    cards = [card for card in read_json(in_cards_json).get("cards", []) if card.get("status") == "canonical"]
     meta_cards = read_json(in_meta_cards_json).get("meta_cards", [])
     aliases = read_json(in_alias_json).get("aliases", [])
     snippets = read_jsonl(in_snippets_jsonl)
     profiles = read_json(in_profiles_json).get("profiles", [])
     merge_log = read_jsonl(in_merge_log_jsonl)
     logger.info(
-        "Stage H: exporting lore=%d meta=%d aliases=%d snippets=%d profiles=%d decisions=%d",
+        "Stage 11: exporting lore=%d meta=%d aliases=%d snippets=%d profiles=%d decisions=%d",
         len(cards),
         len(meta_cards),
         len(aliases),
@@ -92,7 +92,7 @@ def run(
                 + "\n"
             )
     logger.info(
-        "Stage H complete: wrote %d total NDJSON records to %s",
+        "Stage 11 complete: wrote %d total NDJSON records to %s",
         len(cards) + len(meta_cards) + len(aliases) + len(snippets) + len(profiles) + len(merge_log),
         out_ndjson,
     )

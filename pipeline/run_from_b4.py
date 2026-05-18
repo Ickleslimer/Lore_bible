@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from time import perf_counter
+
+from pipeline.common import get_logger, read_json, read_jsonl, setup_logging
+from pipeline.stage_b4_conversation_patch_notes import run as run_stage_b4
+from pipeline.stage_c_extract import run as run_stage_c
+from pipeline.stage_d_group import run as run_stage_d
+from pipeline.stage_e_alias import run as run_stage_e
+from pipeline.stage_f_draft import run as run_stage_f
+
+
+REVIEW_REQUIRED_EXIT_CODE = 2
+REVIEW_GATE_MARKERS = (
+    "requiring review",
+    "conversation entity proposal",
+    "identity merge proposal",
+)
+
+
+def _count_jsonl(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return len(read_jsonl(path))
+
+
+def _is_review_gate_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in REVIEW_GATE_MARKERS)
+
+
+def _run_stage(logger, stage_idx: int, total_stages: int, stage_name: str, fn, *args) -> float:
+    logger.info("[%d/%d] START %s", stage_idx, total_stages, stage_name)
+    start = perf_counter()
+    try:
+        fn(*args)
+    except RuntimeError as exc:
+        if _is_review_gate_error(exc):
+            elapsed = perf_counter() - start
+            logger.warning("[%d/%d] REVIEW %s (%.2fs)", stage_idx, total_stages, stage_name, elapsed)
+            logger.warning("Pipeline paused for review: %s", exc)
+            raise SystemExit(REVIEW_REQUIRED_EXIT_CODE) from None
+        raise
+    elapsed = perf_counter() - start
+    logger.info("[%d/%d] DONE  %s (%.2fs)", stage_idx, total_stages, stage_name, elapsed)
+    return elapsed
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Resume the THERIAC pipeline from Stage 05 using completed Stage 04 artifacts.")
+    parser.add_argument("--artifacts-root", type=Path, required=True)
+    parser.add_argument("--log-level", type=str, default=None)
+    args = parser.parse_args()
+    setup_logging(args.log_level)
+    logger = get_logger(__name__)
+    root = args.artifacts_root
+    thematic_runtime_path = root / "learning" / "thematic_profile_runtime.json"
+    total_stages = 9
+
+    _run_stage(
+        logger,
+        5,
+        total_stages,
+        "Stage 05 Conversation Patch Notes",
+        run_stage_b4,
+        root / "02_timeline" / "messages_relevant_conversations.jsonl",
+        root / "02_timeline" / "conversation_segments.json",
+        root / "02_timeline" / "conversation_patch_notes.json",
+        root / "02_timeline" / "conversation_patch_notes.jsonl",
+        root / "02_timeline" / "conversation_patch_note_failures.json",
+        Path("config/pipeline_config.json"),
+    )
+    stage_b4_index = read_json(root / "02_timeline" / "conversation_patch_notes.json")
+    logger.info(
+        "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
+        int(stage_b4_index.get("notes_count", 0)),
+        int(stage_b4_index.get("conversation_count", 0)),
+        int(stage_b4_index.get("failure_count", 0)),
+    )
+
+    _run_stage(
+        logger,
+        6,
+        total_stages,
+        "Stage 06 Snippet Extraction",
+        run_stage_c,
+        root / "02_timeline" / "messages_relevant_conversations.jsonl",
+        root / "03_relevance" / "dm_source_profiles.json",
+        root / "03_relevance" / "snippets_candidates.jsonl",
+        root / "03_relevance" / "snippets_needs_review.jsonl",
+        root / "03_relevance" / "dm_source_profiles.json",
+        Path("config/pipeline_config.json"),
+        root / "01_bootstrap" / "entity_seed.json",
+        thematic_runtime_path,
+        root / "02_timeline" / "conversation_patch_notes.json",
+    )
+    logger.info(
+        "Stage 06 summary: snippets=%d, needs_review=%d, profiles=%d",
+        _count_jsonl(root / "03_relevance" / "snippets_candidates.jsonl"),
+        _count_jsonl(root / "03_relevance" / "snippets_needs_review.jsonl"),
+        len(read_json(root / "03_relevance" / "dm_source_profiles.json").get("profiles", [])),
+    )
+
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07 Entity Resolution",
+        run_stage_e,
+        root / "03_relevance" / "snippets_candidates.jsonl",
+        root / "01_bootstrap" / "entity_seed.json",
+        root / "05_alias" / "alias_map.json",
+        root / "05_alias" / "entity_timelines.json",
+        root / "05_alias" / "resolved_entities.json",
+        Path("canon/review_memory.json"),
+        root / "05_alias" / "conversation_entity_proposals.json",
+        root / "05_alias" / "conversation_entity_decisions.json",
+        Path("config/pipeline_config.json"),
+    )
+
+    _run_stage(
+        logger,
+        8,
+        total_stages,
+        "Stage 08 Snippet Grouping",
+        run_stage_d,
+        root / "03_relevance" / "snippets_candidates.jsonl",
+        root / "05_alias" / "resolved_entities.json",
+        root / "04_grouping" / "snippet_clusters_lore.json",
+        root / "04_grouping" / "snippet_clusters_meta.json",
+        Path("config/pipeline_config.json"),
+        thematic_runtime_path,
+    )
+
+    _run_stage(
+        logger,
+        9,
+        total_stages,
+        "Stage 09 Claim Drafting",
+        run_stage_f,
+        root / "05_alias" / "resolved_entities.json",
+        root / "04_grouping" / "snippet_clusters_lore.json",
+        root / "04_grouping" / "snippet_clusters_meta.json",
+        root / "05_alias" / "alias_map.json",
+        root / "03_relevance" / "snippets_candidates.jsonl",
+        root / "06_drafts" / "card_drafts",
+        Path("config/pipeline_config.json"),
+        Path("canon/review_memory.json"),
+    )
+    logger.info("Stage 05 resume complete. Claim draft outputs written under: %s", root)
+
+
+if __name__ == "__main__":
+    main()

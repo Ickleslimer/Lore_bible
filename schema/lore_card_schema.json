@@ -27,7 +27,7 @@
         "character",
         "faction",
         "organization",
-        "ai_system",
+        "location",
         "quest",
         "event",
         "timeline_node",
@@ -130,6 +130,21 @@
         }
       },
       "additionalProperties": false
+    },
+    "development_history": {
+      "type": "string"
+    },
+    "trivia": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "inspirations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "revision_history": {
       "type": "array",

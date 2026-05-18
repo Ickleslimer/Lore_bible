@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/identity_merge_decision.schema.json",
+  "title": "IdentityMergeDecision",
+  "type": "object",
+  "required": [
+    "proposal_id",
+    "decision",
+    "reviewer",
+    "rationale",
+    "timestamp_utc"
+  ],
+  "properties": {
+    "proposal_id": { "type": "string" },
+    "decision": {
+      "type": "string",
+      "enum": ["approve", "accept", "reject", "defer", "needs_more_context"]
+    },
+    "reviewer": { "type": "string" },
+    "rationale": { "type": "string" },
+    "timestamp_utc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

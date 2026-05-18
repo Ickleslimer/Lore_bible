@@ -24,6 +24,9 @@
     "card_id": {
       "type": "string"
     },
+    "target_entity_id": {
+      "type": "string"
+    },
     "knowledge_track": {
       "type": "string",
       "enum": [
@@ -60,13 +63,16 @@
       "type": "object",
       "additionalProperties": true
     },
+    "claim_payload": {
+      "type": "object",
+      "additionalProperties": true
+    },
     "source_priority": {
       "type": "string",
       "enum": [
         "author_directive",
         "approved_canon",
-        "lore_bible_seed",
-        "discord_inference_draft"
+        "discord_claim_draft"
       ]
     }
   },

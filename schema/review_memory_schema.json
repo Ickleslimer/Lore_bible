@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/review_memory.schema.json",
+  "title": "ReviewMemory",
+  "type": "object",
+  "required": [
+    "version",
+    "accepted_claims",
+    "rejected_claims",
+    "approved_aliases",
+    "entity_merges",
+    "approved_conversation_entities",
+    "rejected_conversation_entities",
+    "approved_cards",
+    "author_directives",
+    "style_corrections",
+    "updated_at_utc"
+  ],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "accepted_claims": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "rejected_claims": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "approved_aliases": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "entity_merges": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "approved_conversation_entities": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "rejected_conversation_entities": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "approved_cards": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "author_directives": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "style_corrections": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "updated_at_utc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

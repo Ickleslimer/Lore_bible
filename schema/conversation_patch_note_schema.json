@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/conversation_patch_note.schema.json",
+  "title": "ConversationPatchNote",
+  "type": "object",
+  "required": [
+    "patch_note_id",
+    "conversation_id",
+    "global_conversation_index",
+    "dm_pair_id",
+    "partner_id",
+    "partner_label",
+    "track",
+    "topic_label",
+    "timestamp_start_utc",
+    "timestamp_end_utc",
+    "message_ids",
+    "summary",
+    "lore_developments",
+    "meta_developments",
+    "entity_updates",
+    "relationship_updates",
+    "timeline_updates",
+    "open_questions",
+    "possible_contradictions",
+    "reinforces_prior_patch_note_ids",
+    "confidence",
+    "status",
+    "created_at_utc"
+  ],
+  "properties": {
+    "patch_note_id": { "type": "string" },
+    "conversation_id": { "type": "string" },
+    "global_conversation_index": { "type": "integer", "minimum": 1 },
+    "dm_pair_id": { "type": "string" },
+    "partner_id": { "type": "string" },
+    "partner_label": { "type": "string" },
+    "track": { "type": "string", "enum": ["lore", "meta", "both"] },
+    "topic_label": { "type": "string" },
+    "topic_summary": { "type": "string" },
+    "timestamp_start_utc": { "type": "string", "format": "date-time" },
+    "timestamp_end_utc": { "type": "string", "format": "date-time" },
+    "message_count": { "type": "integer", "minimum": 1 },
+    "message_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "anchor_entities": { "type": "array", "items": { "type": "string" } },
+    "summary": { "type": "string" },
+    "lore_developments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/development" }
+    },
+    "meta_developments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/metaDevelopment" }
+    },
+    "entity_updates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entityUpdate" }
+    },
+    "relationship_updates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relationshipUpdate" }
+    },
+    "timeline_updates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/timelineUpdate" }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/openQuestion" }
+    },
+    "possible_contradictions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/possibleContradiction" }
+    },
+    "reinforces_prior_patch_note_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "status": { "type": "string", "enum": ["draft", "no_durable_development"] },
+    "created_at_utc": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "development": {
+      "type": "object",
+      "required": ["development_type", "entity_names", "description", "supporting_message_ids", "confidence"],
+      "properties": {
+        "development_type": { "type": "string" },
+        "entity_names": { "type": "array", "items": { "type": "string" } },
+        "description": { "type": "string" },
+        "supporting_message_ids": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "metaDevelopment": {
+      "type": "object",
+      "required": ["development_type", "description", "supporting_message_ids", "confidence"],
+      "properties": {
+        "development_type": { "type": "string" },
+        "description": { "type": "string" },
+        "supporting_message_ids": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "entityUpdate": {
+      "type": "object",
+      "required": ["entity_name", "update_type", "description", "supporting_message_ids", "confidence"],
+      "properties": {
+        "entity_name": { "type": "string" },
+        "update_type": { "type": "string" },
+        "description": { "type": "string" },
+        "supporting_message_ids": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "relationshipUpdate": {
+      "type": "object",
+      "required": ["source_entity", "target_entity", "relationship_type", "description", "supporting_message_ids", "confidence"],
+      "properties": {
+        "source_entity": { "type": "string" },
+        "target_entity": { "type": "string" },
+        "relationship_type": { "type": "string" },
+        "description": { "type": "string" },
+        "supporting_message_ids": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "timelineUpdate": {
+      "type": "object",
+      "required": ["description", "supporting_message_ids", "confidence"],
+      "properties": {
+        "description": { "type": "string" },
+        "supporting_message_ids": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "openQuestion": {
+      "type": "object",
+      "required": ["question", "supporting_message_ids"],
+      "properties": {
+        "question": { "type": "string" },
+        "supporting_message_ids": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "possibleContradiction": {
+      "type": "object",
+      "required": ["description", "conflicts_with_prior_patch_note_ids", "supporting_message_ids", "confidence"],
+      "properties": {
+        "description": { "type": "string" },
+        "conflicts_with_prior_patch_note_ids": { "type": "array", "items": { "type": "string" } },
+        "supporting_message_ids": { "type": "array", "items": { "type": "string" } },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

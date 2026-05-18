@@ -9,12 +9,22 @@ from pipeline.common import CUTOFF_UTC, get_logger, parse_discord_timestamp, rea
 from pipeline.stage_a_bootstrap import run as run_stage_a
 from pipeline.stage_b_normalize import run as run_stage_b
 from pipeline.stage_b2_global_merge import run as run_stage_b2
+from pipeline.stage_b3_segment_conversations import run as run_stage_b3
+from pipeline.stage_b4_conversation_patch_notes import run as run_stage_b4
 from pipeline.stage_c_extract import run as run_stage_c
 from pipeline.stage_d_group import run as run_stage_d
 from pipeline.stage_e_alias import run as run_stage_e
 from pipeline.stage_f_draft import run as run_stage_f
 from pipeline.stage_g_merge_engine import run as run_stage_g
 from pipeline.stage_h_notion_export import run as run_stage_h
+
+
+REVIEW_REQUIRED_EXIT_CODE = 2
+REVIEW_GATE_MARKERS = (
+    "requiring review",
+    "conversation entity proposal",
+    "identity merge proposal",
+)
 
 
 DEFAULT_BASE_DIR = Path("artifacts")
@@ -33,7 +43,15 @@ def _count_jsonl(path: Path) -> int:
 def _run_stage(logger, stage_idx: int, total_stages: int, stage_name: str, fn, *args) -> float:
     logger.info("[%d/%d] START %s", stage_idx, total_stages, stage_name)
     start = perf_counter()
-    fn(*args)
+    try:
+        fn(*args)
+    except RuntimeError as exc:
+        if any(marker in str(exc).lower() for marker in REVIEW_GATE_MARKERS):
+            elapsed = perf_counter() - start
+            logger.warning("[%d/%d] REVIEW %s (%.2fs)", stage_idx, total_stages, stage_name, elapsed)
+            logger.warning("Pipeline paused for review: %s", exc)
+            raise SystemExit(REVIEW_REQUIRED_EXIT_CODE) from None
+        raise
     elapsed = perf_counter() - start
     logger.info("[%d/%d] DONE  %s (%.2fs)", stage_idx, total_stages, stage_name, elapsed)
     return elapsed
@@ -117,17 +135,17 @@ def _looks_post_cutoff(json_path: Path) -> bool:
         return False
 
 
-def create_auto_decisions(lore_patches_path: Path, out_decisions_path: Path) -> None:
-    payload = read_json(lore_patches_path)
+def create_auto_decisions(claim_drafts_path: Path, out_decisions_path: Path) -> None:
+    payload = read_json(claim_drafts_path)
     decisions = []
-    for patch in payload.get("patches", [])[:20]:
-        decision = "accept" if patch.get("confidence", 0) >= 0.65 else "defer"
+    for claim in payload.get("claims", [])[:20]:
+        decision = "accept" if claim.get("confidence", 0) >= 0.65 else "defer"
         decisions.append(
             {
-                "claim_id": patch["claim_id"],
+                "claim_id": claim["claim_id"],
                 "decision": decision,
                 "reviewer": "auto_small_batch_validation",
-                "rationale": "Automated validation decision for pipeline smoke test.",
+                "rationale": "Automated claim validation decision for pipeline smoke test.",
             }
         )
     write_json(out_decisions_path, {"decisions": decisions})
@@ -163,22 +181,22 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         shutil.copy2(src, dst)
         logger.debug("Copied subset file: %s -> %s", src, dst)
 
-    total_stages = 9
+    total_stages = 11
     _run_stage(
         logger,
         1,
         total_stages,
-        "Stage A Bootstrap",
+        "Stage 01 Entity Bootstrap",
         run_stage_a,
         docx_path,
-        work / "01_bootstrap" / "canon_seed.json",
+        work / "01_bootstrap" / "entity_seed.json",
         work / "01_bootstrap" / "schema_descriptor.json",
         base_dir.parent / "config" / "pipeline_config.json",
         thematic_runtime_path,
     )
-    seed_payload = read_json(work / "01_bootstrap" / "canon_seed.json")
+    seed_payload = read_json(work / "01_bootstrap" / "entity_seed.json")
     logger.info(
-        "Stage A summary: provider=%s, entities=%d",
+        "Stage 01 summary: provider=%s, entities=%d",
         seed_payload.get("provider_mode", "unknown"),
         int(seed_payload.get("entity_count", 0)),
     )
@@ -187,7 +205,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         logger,
         2,
         total_stages,
-        "Stage B Normalize",
+        "Stage 02 Message Normalization",
         run_stage_b,
         subset_root,
         work / "02_timeline" / "messages_normalized_per_thread.jsonl",
@@ -195,7 +213,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     )
     stage_b_summary = read_json(work / "02_timeline" / "summary.json")
     logger.info(
-        "Stage B summary: files=%d, normalized_messages=%d, rejected=%d",
+        "Stage 02 summary: files=%d, normalized_messages=%d, rejected=%d",
         int(stage_b_summary.get("input_files", 0)),
         int(stage_b_summary.get("normalized_messages", 0)),
         int(stage_b_summary.get("rejected_before_cutoff_or_invalid", 0)),
@@ -205,7 +223,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         logger,
         3,
         total_stages,
-        "Stage B2 Global Merge",
+        "Stage 03 Timeline Merge",
         run_stage_b2,
         work / "02_timeline" / "messages_normalized_per_thread.jsonl",
         work / "02_timeline" / "messages_global_timeline.jsonl",
@@ -213,7 +231,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     )
     stage_b2_index = read_json(work / "02_timeline" / "global_index.json")
     logger.info(
-        "Stage B2 summary: global_messages=%d, threads=%d",
+        "Stage 03 summary: global_messages=%d, threads=%d",
         int(stage_b2_index.get("message_count", 0)),
         len(stage_b2_index.get("thread_counts", {})),
     )
@@ -222,19 +240,64 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         logger,
         4,
         total_stages,
-        "Stage C Extract",
-        run_stage_c,
+        "Stage 04 Relevant Conversation Segmentation",
+        run_stage_b3,
         work / "02_timeline" / "messages_global_timeline.jsonl",
+        work / "02_timeline" / "messages_relevant_conversations.jsonl",
+        work / "02_timeline" / "conversation_segments.json",
+        work / "02_timeline" / "conversation_index.json",
+        work / "02_timeline" / "conversation_segmentation_failures.json",
+        base_dir.parent / "config" / "pipeline_config.json",
+        work / "01_bootstrap" / "entity_seed.json",
+    )
+    stage_b3_index = read_json(work / "02_timeline" / "conversation_index.json")
+    logger.info(
+        "Stage 04 summary: relevant_segments=%d, relevant_messages=%d, dropped=%d, failures=%d",
+        int(stage_b3_index.get("relevant_segments", 0)),
+        int(stage_b3_index.get("messages_out", 0)),
+        int(stage_b3_index.get("dropped_prefilter_windows", 0)),
+        int(stage_b3_index.get("failed_model_windows", 0)),
+    )
+
+    _run_stage(
+        logger,
+        5,
+        total_stages,
+        "Stage 05 Conversation Patch Notes",
+        run_stage_b4,
+        work / "02_timeline" / "messages_relevant_conversations.jsonl",
+        work / "02_timeline" / "conversation_segments.json",
+        work / "02_timeline" / "conversation_patch_notes.json",
+        work / "02_timeline" / "conversation_patch_notes.jsonl",
+        work / "02_timeline" / "conversation_patch_note_failures.json",
+        base_dir.parent / "config" / "pipeline_config.json",
+    )
+    stage_b4_index = read_json(work / "02_timeline" / "conversation_patch_notes.json")
+    logger.info(
+        "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
+        int(stage_b4_index.get("notes_count", 0)),
+        int(stage_b4_index.get("conversation_count", 0)),
+        int(stage_b4_index.get("failure_count", 0)),
+    )
+
+    _run_stage(
+        logger,
+        6,
+        total_stages,
+        "Stage 06 Snippet Extraction",
+        run_stage_c,
+        work / "02_timeline" / "messages_relevant_conversations.jsonl",
         work / "03_relevance" / "dm_source_profiles.json",
         work / "03_relevance" / "snippets_candidates.jsonl",
         work / "03_relevance" / "snippets_needs_review.jsonl",
         work / "03_relevance" / "dm_source_profiles.json",
         base_dir.parent / "config" / "pipeline_config.json",
-        work / "01_bootstrap" / "canon_seed.json",
+        work / "01_bootstrap" / "entity_seed.json",
         thematic_runtime_path,
+        work / "02_timeline" / "conversation_patch_notes.json",
     )
     logger.info(
-        "Stage C summary: snippets=%d, needs_review=%d, profiles=%d",
+        "Stage 06 summary: snippets=%d, needs_review=%d, profiles=%d",
         _count_jsonl(work / "03_relevance" / "snippets_candidates.jsonl"),
         _count_jsonl(work / "03_relevance" / "snippets_needs_review.jsonl"),
         len(read_json(work / "03_relevance" / "dm_source_profiles.json").get("profiles", [])),
@@ -242,91 +305,108 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
 
     _run_stage(
         logger,
-        5,
+        7,
         total_stages,
-        "Stage D Group",
-        run_stage_d,
-        work / "03_relevance" / "snippets_candidates.jsonl",
-        work / "01_bootstrap" / "canon_seed.json",
-        work / "04_grouping" / "snippet_clusters_lore.json",
-        work / "04_grouping" / "snippet_clusters_meta.json",
-        base_dir.parent / "config" / "pipeline_config.json",
-        thematic_runtime_path,
-    )
-    logger.info(
-        "Stage D summary: lore_clusters=%d, meta_clusters=%d",
-        len(read_json(work / "04_grouping" / "snippet_clusters_lore.json").get("clusters", [])),
-        len(read_json(work / "04_grouping" / "snippet_clusters_meta.json").get("clusters", [])),
-    )
-
-    _run_stage(
-        logger,
-        6,
-        total_stages,
-        "Stage E Alias",
+        "Stage 07 Entity Resolution",
         run_stage_e,
         work / "03_relevance" / "snippets_candidates.jsonl",
-        work / "01_bootstrap" / "canon_seed.json",
+        work / "01_bootstrap" / "entity_seed.json",
         work / "05_alias" / "alias_map.json",
         work / "05_alias" / "entity_timelines.json",
+        work / "05_alias" / "resolved_entities.json",
+        base_dir.parent / "canon" / "review_memory.json",
+        work / "05_alias" / "conversation_entity_proposals.json",
+        work / "05_alias" / "conversation_entity_decisions.json",
+        base_dir.parent / "config" / "pipeline_config.json",
     )
     logger.info(
-        "Stage E summary: aliases=%d, entity_timelines=%d",
+        "Stage 07 summary: resolved_entities=%d seed_only_entities=%d conversation_entity_proposals=%d aliases=%d entity_timelines=%d",
+        len(read_json(work / "05_alias" / "resolved_entities.json").get("resolved_entities", [])),
+        len(read_json(work / "05_alias" / "resolved_entities.json").get("seed_only_entities", [])),
+        len(read_json(work / "05_alias" / "conversation_entity_proposals.json").get("proposals", [])),
         len(read_json(work / "05_alias" / "alias_map.json").get("aliases", [])),
         len(read_json(work / "05_alias" / "entity_timelines.json").get("entity_timelines", {})),
     )
 
     _run_stage(
         logger,
-        7,
-        total_stages,
-        "Stage F Draft",
-        run_stage_f,
-        work / "01_bootstrap" / "canon_seed.json",
-        work / "04_grouping" / "snippet_clusters_lore.json",
-        work / "04_grouping" / "snippet_clusters_meta.json",
-        work / "05_alias" / "alias_map.json",
-        work / "03_relevance" / "snippets_candidates.jsonl",
-        work / "06_drafts" / "card_drafts",
-    )
-    logger.info(
-        "Stage F summary: lore_patches=%d, meta_cards=%d",
-        len(read_json(work / "06_drafts" / "card_drafts" / "lore_patches.json").get("patches", [])),
-        len(read_json(work / "06_drafts" / "card_drafts" / "meta_cards_draft.json").get("meta_cards", [])),
-    )
-    create_auto_decisions(
-        work / "06_drafts" / "card_drafts" / "lore_patches.json",
-        work / "07_review" / "merge_decisions.json",
-    )
-    logger.info(
-        "Auto-decisions summary: decisions=%d",
-        len(read_json(work / "07_review" / "merge_decisions.json").get("decisions", [])),
-    )
-
-    _run_stage(
-        logger,
         8,
         total_stages,
-        "Stage G Merge Engine",
-        run_stage_g,
-        work / "01_bootstrap" / "canon_seed.json",
-        work / "06_drafts" / "card_drafts" / "lore_patches.json",
-        work / "07_review" / "merge_decisions.json",
-        work / "07_review" / "author_directives.json",
-        work / "07_review" / "canonical_cards.json",
-        work / "07_review" / "merge_log.jsonl",
+        "Stage 08 Snippet Grouping",
+        run_stage_d,
+        work / "03_relevance" / "snippets_candidates.jsonl",
+        work / "05_alias" / "resolved_entities.json",
+        work / "04_grouping" / "snippet_clusters_lore.json",
+        work / "04_grouping" / "snippet_clusters_meta.json",
+        base_dir.parent / "config" / "pipeline_config.json",
+        thematic_runtime_path,
     )
     logger.info(
-        "Stage G summary: canonical_cards=%d, merge_log=%d",
-        len(read_json(work / "07_review" / "canonical_cards.json").get("cards", [])),
-        _count_jsonl(work / "07_review" / "merge_log.jsonl"),
+        "Stage 08 summary: lore_clusters=%d, meta_clusters=%d",
+        len(read_json(work / "04_grouping" / "snippet_clusters_lore.json").get("clusters", [])),
+        len(read_json(work / "04_grouping" / "snippet_clusters_meta.json").get("clusters", [])),
     )
 
     _run_stage(
         logger,
         9,
         total_stages,
-        "Stage H Notion Export",
+        "Stage 09 Claim Drafting",
+        run_stage_f,
+        work / "05_alias" / "resolved_entities.json",
+        work / "04_grouping" / "snippet_clusters_lore.json",
+        work / "04_grouping" / "snippet_clusters_meta.json",
+        work / "05_alias" / "alias_map.json",
+        work / "03_relevance" / "snippets_candidates.jsonl",
+        work / "06_drafts" / "card_drafts",
+        base_dir.parent / "config" / "pipeline_config.json",
+        base_dir.parent / "canon" / "review_memory.json",
+    )
+    logger.info(
+        "Stage 09 summary: claim_drafts=%d, meta_cards=%d",
+        len(read_json(work / "06_drafts" / "card_drafts" / "claim_drafts.json").get("claims", [])),
+        len(read_json(work / "06_drafts" / "card_drafts" / "meta_cards_draft.json").get("meta_cards", [])),
+    )
+    create_auto_decisions(
+        work / "06_drafts" / "card_drafts" / "claim_drafts.json",
+        work / "07_review" / "claim_review_decisions.json",
+    )
+    write_json(work / "07_review" / "card_review_decisions.json", {"decisions": []})
+    logger.info(
+        "Auto claim decisions summary: decisions=%d",
+        len(read_json(work / "07_review" / "claim_review_decisions.json").get("decisions", [])),
+    )
+
+    _run_stage(
+        logger,
+        10,
+        total_stages,
+        "Stage 10 Card Synthesis and Canon Merge",
+        run_stage_g,
+        work / "05_alias" / "resolved_entities.json",
+        work / "06_drafts" / "card_drafts" / "claim_drafts.json",
+        work / "07_review" / "claim_review_decisions.json",
+        work / "07_review" / "card_review_decisions.json",
+        work / "07_review" / "author_directives.json",
+        base_dir.parent / "canon" / "review_memory.json",
+        work / "07_review" / "card_drafts.json",
+        work / "07_review" / "canonical_cards.json",
+        work / "07_review" / "merge_log.jsonl",
+        base_dir.parent / "config" / "pipeline_config.json",
+        work / "03_relevance" / "snippets_candidates.jsonl",
+    )
+    logger.info(
+        "Stage 10 summary: draft_cards=%d canonical_cards=%d merge_log=%d",
+        len(read_json(work / "07_review" / "card_drafts.json").get("cards", [])),
+        len(read_json(work / "07_review" / "canonical_cards.json").get("cards", [])),
+        _count_jsonl(work / "07_review" / "merge_log.jsonl"),
+    )
+
+    _run_stage(
+        logger,
+        11,
+        total_stages,
+        "Stage 11 Notion Export",
         run_stage_h,
         work / "07_review" / "canonical_cards.json",
         work / "06_drafts" / "card_drafts" / "meta_cards_draft.json",
@@ -341,7 +421,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     if out_ndjson.exists():
         with out_ndjson.open("r", encoding="utf-8") as f:
             exported_rows = sum(1 for _ in f)
-    logger.info("Stage H summary: notion_records=%d", exported_rows)
+    logger.info("Stage 11 summary: notion_records=%d", exported_rows)
     logger.info("Small-batch validation complete. Output root: %s", work)
 
 

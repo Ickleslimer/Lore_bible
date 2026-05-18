@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/conversation_entity_decision.schema.json",
+  "title": "ConversationEntityDecision",
+  "type": "object",
+  "required": [
+    "proposal_id",
+    "decision",
+    "reviewer",
+    "timestamp_utc"
+  ],
+  "properties": {
+    "proposal_id": { "type": "string" },
+    "candidate_name": { "type": "string" },
+    "decision": {
+      "type": "string",
+      "enum": ["approve", "accept", "reject", "defer", "needs_more_context"]
+    },
+    "canonical_name": { "type": "string" },
+    "entity_type": {
+      "type": "string",
+      "enum": ["character", "faction", "organization", "location", "quest", "event", "timeline_node", "theme", "term"]
+    },
+    "aliases": { "type": "array", "items": { "type": "string" } },
+    "secondary_entity_types": {
+      "type": "array",
+      "items": {
+        "type": "string",
+          "enum": ["character", "faction", "organization", "location", "quest", "event", "timeline_node", "theme", "term"]
+      }
+    },
+    "human_review_recommended": { "type": "boolean" },
+    "human_review_reason": { "type": "string" },
+    "auto_review_policy": { "type": "string" },
+    "reviewer": { "type": "string" },
+    "rationale": { "type": "string" },
+    "timestamp_utc": { "type": "string" }
+  },
+  "additionalProperties": true
+}

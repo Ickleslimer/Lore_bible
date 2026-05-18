@@ -1,73 +1,42 @@
-# THERIAC Canon-Extraction and Wiki Pipeline
+# THERIAC Lore Card Pipeline
 
-This repo now contains an incremental, stage-based pipeline that:
+This repo contains a stage-based pipeline for turning THERIAC Discord exports into reviewed, wiki-style lore cards.
 
-- bootstraps canon from `theriac-coda---lore-bible.docx`
-- ingests and normalizes Discord discrub exports
-- enforces cutoff `2025-01-08T01:05:00Z`
-- merges all DMs into one global chronology
-- extracts THERIAC-relevant snippets and routes `lore` vs `meta`
-- resolves aliases and timelines
-- creates draft lore/meta patches
-- supports UI-first review decisions
-- exports approved results to Notion NDJSON shape
+V2 contract:
 
-## Mixtral Anchor Deciding
+- The initial lore bible is ontology scaffolding only.
+- Bootstrap output is `entity_seed.json`, not canon.
+- Discord snippets become atomic claim drafts, not pasted card prose.
+- Human review accepts/rejects claims first, then approves synthesized card drafts.
+- `canonical_cards.json` contains only human-approved cards.
+- Persistent corrections live in `canon/review_memory.json` and are reused by later runs.
+- Later accepted claims revise the same entity card from the full accepted claim history, rather than appending raw text or leaving the original card untouched.
 
-Stage C supports `anchor_provider` modes in `config/pipeline_config.json`:
+## Flow
 
-- `heuristic`: keyword-only relevance and anchor candidates
-- `mixtral`: model-only classification and anchors
-- `hybrid`: heuristic + Mixtral blend (recommended)
-
-Current default is `hybrid`, targeting Ollama-compatible endpoint:
-
-- `mixtral.base_url`: `http://127.0.0.1:11434`
-- `mixtral.model`: `mixtral`
-- `mixtral.provider`: `auto|mistral_api|ollama`
-- `mixtral.api_base_url`: `https://api.mistral.ai/v1`
-- `mixtral.api_model`: `mistral-large-latest`
-- strict JSON prompt with fallback to heuristics on timeout/invalid output
-
-API key loading:
-
-- reads from environment (`MIXTRAL_API_KEY` or `MISTRAL_API_KEY`)
-- also supports `.env` entries in `KEY=value` or `KEY: "value"` format
-- in `provider=auto`, API is attempted first when key is present, then Ollama fallback
-
-Stage A also supports Mixtral ontology extraction from lore bible:
-
-- `stage_a_anchor_provider`: `heuristic|mixtral|hybrid`
-- `stage_a_mixtral_excerpt_chars`: max lore excerpt size sent to model
-- heuristic fallback is always preserved in `hybrid`
-- model output can include conservative `aliases` and `relationship_hints` for each seeded card
-
-## Thematic Linking (Historical + Musical)
-
-Stage D performs lightweight thematic signal tagging (configurable in `thematic_linking`):
-
-- `historical_markers`: detects historical/civilizational naming motifs
-- `music_markers`: detects music/artist/track motifs
-- pattern hints: quoted song-like titles and `by <Artist>` references
-
-Stage F carries these into lore patch drafts as:
-
-- `thematic_tags`
-- `proposed_relationship_hints` (soft evidence only, conservative confidence)
-
-Continuity memory is also computed in Stage D:
-
-- `thematic_memory.artists` tracks repeated artist mentions over chronology
-- includes co-occurrence counts with character and quest names
-- Stage F boosts music-link hint confidence only when repeated continuity evidence exists
-
-Adaptive thematic updates (safe mode):
-
-- Stage A/C can suggest thematic markers through model outputs.
-- Suggestions are written to runtime profile only, never to base config:
-  - `artifacts/.../learning/thematic_profile_runtime.json`
-- Stage D merges base config markers + active runtime markers.
-- Bad runs do not destroy `config/pipeline_config.json`.
+1. Stage 01 Entity Bootstrap: read `theriac-coda---lore-bible.docx` and write ontology seeds to `01_bootstrap/entity_seed.json`.
+2. Stage 02 Message Normalization: normalize Discord exports.
+3. Stage 03 Timeline Merge: merge normalized exports into a global chronology.
+4. Stage 04 Relevant Conversation Segmentation: split 1:1 DMs into model-approved THERIAC-relevant conversations, bounded first by 12-hour coarse windows and then by topic shifts.
+   - Stage 04 keeps emitted conversation messages non-overlapping. Duplicate or nested model spans are dropped, partial overlaps are trimmed to their non-overlapping tail, and counters are recorded in `conversation_index.json`.
+   - Stage 04 also applies a strict relevance gate: the actual emitted message span must mention THERIAC or a known entity seed/alias. Model-inferred inspiration without an explicit project/entity tie is dropped and counted in `model_segments_dropped_by_relevance`.
+5. Stage 05 Conversation Patch Notes: draft chronological conversation patch notes in global timestamp order, writing `conversation_patch_notes.json` and `.jsonl`.
+   - Stage 05 treats each 1:1 conversation as a development note for the lore/meta state of the project. It can see a rolling window of earlier patch notes only, so repeated explanations to different team members reinforce earlier developments instead of creating artificial contradictions.
+6. Stage 06 Snippet Extraction: extract THERIAC-relevant snippets from `messages_relevant_conversations.jsonl`, using `conversation_id` as the context boundary, Stage 04's relevance metadata, and Stage 05's conversation patch-note context instead of a per-message model pass.
+7. Stage 07 Entity Resolution: resolve entities, aliases, acronyms, and duplicate seed names, then promote only entities text-observed in the current snippets into `05_alias/resolved_entities.json`; bootstrap-only matches stay under `seed_only_entities`.
+   - Text-observed conversation anchors that do not match the bootstrap ontology are written to `05_alias/conversation_entity_proposals.json`.
+   - Conversation entity proposals aggregate type evidence across snippets, so later usage that clashes with the initial designation can revise `proposed_entity_type` and surface type conflicts for review.
+   - Pending proposals stop the run before grouping/drafting, so new entities can be reviewed before they become `unmapped`.
+   - Approved proposals in `05_alias/conversation_entity_decisions.json` become `conversation_candidate_approved` entities on rerun; approved/rejected decisions are persisted to `canon/review_memory.json` for future runs.
+8. Stage 08 Snippet Grouping: group snippets against resolved and approved conversation-born entities.
+9. Stage 09 Claim Drafting: run model-required claim extraction to `06_drafts/card_drafts/claim_drafts.json`.
+10. Review pass 1: accept/reject/edit conversation entity proposals and atomic claims in the UI.
+11. Stage 10 Identity Merge Preflight: propose identity merges from accepted claims such as "ACHILLES renames itself to RUINR" in `07_review/identity_merge_proposals.json`.
+12. Review identity merge proposals in `07_review/identity_merge_decisions.json`; approved merges are persisted to `canon/review_memory.json`.
+13. Stage 10 Card Synthesis: synthesize draft wiki-card revisions from all accepted claims for each touched entity, regrouping claims under approved entity merges.
+14. Review pass 2: approve/edit synthesized card drafts.
+15. Stage 10 Canon Merge: write approved revisions to `07_review/canonical_cards.json`, carrying forward unchanged canonical cards.
+16. Stage 11 Notion Export: export approved canonical cards and supporting records to Notion NDJSON.
 
 ## Install
 
@@ -77,89 +46,112 @@ python -m pip install -r requirements.txt
 
 ## Quickstart
 
-```bash
-python -m pipeline.run_small_batch_validation
-python -m pipeline.ui_review_app
-```
-
-Windows shortcut commands from repo root:
-
-```bash
-run_small_batch.bat
-start_ui.bat
-```
-
-To see verbose stage progress and debug-level internals:
-
-```bash
-python -m pipeline.run_small_batch_validation --log-level DEBUG
-```
-
-## Run Stages A-F
+Generate claim drafts:
 
 ```bash
 python -m pipeline.run_pipeline --docx "theriac-coda---lore-bible.docx" --conversations-root "discord_conversations" --artifacts-root "artifacts"
 ```
 
-`run_pipeline` also supports `--log-level` (`DEBUG|INFO|WARNING|ERROR`).
-
-## Start UI Review (Stage G1)
+Resume an existing run after completed Stage 04 segmentation, regenerating Stage 05-09 artifacts without rerunning normalization or segmentation:
 
 ```bash
-python -m pipeline.ui_review_app
+python -m pipeline.run_from_b4 --artifacts-root "artifacts/runs/<run_folder>"
 ```
 
-This now auto-discovers common paths (`artifacts/...` and `artifacts/small_batch/...`).
-If draft patches are missing, the UI shows a bootstrap screen with a `Run Full Pipeline (Stages A-F)` button so you can generate them directly.
-The UI now includes a live `Pipeline Run Logs` panel (status + streaming output) while a run is in progress.
-
-Optional explicit forms:
+Start the review UI:
 
 ```bash
-python -m pipeline.ui_review_app --artifacts-root "artifacts/small_batch"
-python -m pipeline.ui_review_app --patches "artifacts/06_drafts/card_drafts/lore_patches.json" --decisions "artifacts/07_review/merge_decisions.json" --directives "artifacts/07_review/author_directives.json"
+python -m pipeline.ui_review_app --artifacts-root "artifacts"
 ```
 
-## Apply Decisions (Stage G2)
+Start the native Windows app:
 
 ```bash
-python -m pipeline.stage_g_merge_engine --in-seed-json "artifacts/01_bootstrap/canon_seed.json" --in-lore-patches-json "artifacts/06_drafts/card_drafts/lore_patches.json" --in-decisions-json "artifacts/07_review/merge_decisions.json" --in-author-directives-json "artifacts/07_review/author_directives.json" --out-cards-json "artifacts/07_review/canonical_cards.json" --out-merge-log-jsonl "artifacts/07_review/merge_log.jsonl"
+dist\TheriacLoreDesktop.exe
 ```
 
-## Author Directives
+The desktop app opens as a normal Windows window, includes the run selector for previous CLI-generated batches, and draws the pipeline progress tracker directly on a canvas. Select `New Run` before pressing `Run Full Pipeline` to create a fresh timestamped artifact folder under `artifacts/runs/`.
 
-`author_directive` is treated as highest source of truth in Stage G merge precedence.
+Build or rebuild it with:
 
-Suggested natural-language patterns:
+```bash
+build_desktop_app.bat
+```
 
-- `replace summary with: ...`
-- `append summary: ...`
-- `set status: canonical`
-- `add alias: Working Name`
-- `remove alias: Obsolete Name`
+Start the legacy browser-based packaged app:
 
-## Notion Export (Stage H)
+```bash
+dist\TheriacLoreGUI.exe
+```
+
+The executable opens the review GUI in your browser, auto-selects the most recent reviewable artifact root, and falls back to the next free port if `8787` is busy. Build or rebuild it with:
+
+```bash
+build_gui_exe.bat
+```
+
+The GUI includes a run selector for any artifact root under `artifacts/` that still has pending conversation entity, claim, identity merge, or card review decisions. This lets you open older CLI-generated batches without restarting the app.
+
+After claim review, synthesize card drafts:
+
+```bash
+python -m pipeline.stage_g_merge_engine --in-entities-json "artifacts/05_alias/resolved_entities.json" --in-claim-drafts-json "artifacts/06_drafts/card_drafts/claim_drafts.json" --in-claim-decisions-json "artifacts/07_review/claim_review_decisions.json" --in-card-review-decisions-json "artifacts/07_review/card_review_decisions.json" --in-author-directives-json "artifacts/07_review/author_directives.json" --in-review-memory-json "canon/review_memory.json" --out-card-drafts-json "artifacts/07_review/card_drafts.json" --out-cards-json "artifacts/07_review/canonical_cards.json" --out-merge-log-jsonl "artifacts/07_review/merge_log.jsonl" --in-pipeline-config-json "config/pipeline_config.json"
+```
+
+If Stage 10 reports pending identity merge proposals, review `artifacts/07_review/identity_merge_proposals.json`, save decisions to `artifacts/07_review/identity_merge_decisions.json`, and rerun the same Stage 10 command. Then approve card drafts in the UI and rerun Stage 10 to promote approved cards to canon.
+
+Export approved canon:
 
 ```bash
 python -m pipeline.stage_h_notion_export --in-cards-json "artifacts/07_review/canonical_cards.json" --in-meta-cards-json "artifacts/06_drafts/card_drafts/meta_cards_draft.json" --in-alias-json "artifacts/05_alias/alias_map.json" --in-snippets-jsonl "artifacts/03_relevance/snippets_candidates.jsonl" --in-profiles-json "artifacts/03_relevance/dm_source_profiles.json" --in-merge-log-jsonl "artifacts/07_review/merge_log.jsonl" --out-ndjson "artifacts/08_notion/notion_import.ndjson"
 ```
 
+## Model Requirement
+
+Stages 04, 05, 09, and 10 require a valid model response. If the configured provider is unavailable or returns invalid JSON, the pipeline records the failed conversation window/note or stops rather than producing low-quality fallback prose.
+
+Configure providers in `config/pipeline_config.json`:
+
+- `anchor_provider`: `heuristic|mixtral|hybrid` for legacy Stage 06 relevance routing when Stage 04 metadata is unavailable.
+- `stage_c_anchor_provider`: defaults to `conversation_metadata`, which trusts Stage 04's model-approved conversation segments and avoids per-message model calls.
+- `stage_a_anchor_provider`: `heuristic|mixtral|hybrid` for ontology seed extraction.
+- `mixtral.provider`: `gemini|auto|mistral_api|ollama`. The setting name is historical; `gemini` dispatches to Google AI Studio / Gemini API using `mixtral.api_model`.
+- `mixtral.api_model`: defaults here to `gemini-2.5-flash-lite` for low-cost/high-quota batch work.
+- `mixtral.adaptive_min_interval_seconds`: currently `0.5`; Gemini Tier 1 limits are much higher than the old free-tier cap, and the runtime file will increase this automatically if rate limits appear.
+- `model_routing.profiles.flash_lite`: routes cheap/high-volume work to `gemini-2.5-flash-lite`.
+- `model_routing.profiles.flash_regular`: routes reasoning-sensitive work to `gemini-2.5-flash`.
+- `model_routing.tasks.stage_b3_segmentation`: currently uses synchronous Flash-Lite so segmentation progress remains visible.
+- `model_routing.tasks.stage_b4_patch_notes`: currently uses synchronous Flash-Lite for chronological conversation development notes.
+- `model_routing.tasks.stage_f_claim_extraction`: currently uses synchronous Flash-Lite.
+- `model_routing.tasks.stage_g_card_synthesis`: currently uses synchronous regular Flash so reviewed claims, merge decisions, and synthesis validation stay stateful.
+- `conversation_segmentation.max_gap_hours`: coarse DM window boundary before model topic segmentation; defaults to `12`.
+- `conversation_segmentation.self_user_id`: optional account override for 1:1 DM pair detection.
+- API keys are read from `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `MIXTRAL_API_KEY`, `MISTRAL_API_KEY`, or `.env`.
+
+## Review Memory
+
+`canon/review_memory.json` stores:
+
+- accepted and rejected claims
+- approved aliases and entity merges
+- approved card prose
+- author directives
+- style corrections
+
+Rejected claims suppress repeated bad suggestions in future Stage 09 runs. Accepted claims and approved cards are included in Stage 10 synthesis prompts.
+
+Accepted alias claims are also stored here, so future runs can resolve later mentions of the same entity by that alias.
+
 ## Small Batch Validation
 
 ```bash
-python -m pipeline.run_small_batch_validation
+python -m pipeline.run_small_batch_validation --log-level DEBUG
 ```
 
-Defaults:
+This runs the full small-batch path and auto-decides claim drafts for smoke testing. It still requires the configured model for claim extraction and card synthesis. Because canonical promotion requires human card approval, small-batch output may contain draft cards but zero canonical cards.
 
-- `--base-dir artifacts`
-- `--conversations-root discord_conversations`
-- `--docx theriac-coda---lore-bible.docx` (or a single `.docx` in repo root)
-
-Optional explicit form:
+## Tests
 
 ```bash
-python -m pipeline.run_small_batch_validation --base-dir "artifacts" --conversations-root "discord_conversations" --docx "theriac-coda---lore-bible.docx" --sample-limit-files 6
+python -m unittest discover
 ```
-
-`run_small_batch_validation` also supports `--log-level` (`DEBUG|INFO|WARNING|ERROR`).
