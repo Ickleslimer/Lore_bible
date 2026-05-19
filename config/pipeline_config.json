@@ -6,7 +6,7 @@
     "artifacts_root": "artifacts"
   },
   "model_strategy": {
-    "primary": "gemini",
+    "primary": "openrouter",
     "fallback": "local",
     "temperature": 0.0
   },
@@ -14,18 +14,35 @@
     "default_profile": "flash_lite",
     "profiles": {
       "flash_lite": {
-        "provider": "gemini",
-        "api_model": "gemini-2.5-flash-lite",
-        "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "rate_state_path": "artifacts/learning/gemini_flash_lite_rate_runtime.json",
+        "provider": "openrouter",
+        "api_model": "qwen/qwen3.5-flash-02-23",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5
       },
       "flash_regular": {
-        "provider": "gemini",
-        "api_model": "gemini-2.5-flash",
-        "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "rate_state_path": "artifacts/learning/gemini_flash_rate_runtime.json",
+        "provider": "openrouter",
+        "api_model": "qwen/qwen3.5-flash-02-23",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5
+      },
+      "claude_opus": {
+        "provider": "openrouter",
+        "api_model": "qwen/qwen3-235b-a22b-2507",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_qwen_instruct_rate_runtime.json",
+        "adaptive_min_interval_seconds": 0.5,
+        "timeout_seconds": 180
+      },
+      "claude_sonnet": {
+        "provider": "openrouter",
+        "api_model": "qwen/qwen3-235b-a22b-2507",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_qwen_instruct_rate_runtime.json",
+        "adaptive_min_interval_seconds": 0.5,
+        "timeout_seconds": 180,
+        "max_tokens": 8192
       }
     },
     "tasks": {
@@ -64,25 +81,36 @@
         "batch_display_name": "theriac-f-claim-extraction"
       },
       "stage_g_card_synthesis": {
-        "profile": "flash_regular",
+        "profile": "claude_sonnet",
+        "batch_enabled": false
+      },
+      "stage_09q_story_questions": {
+        "profile": "claude_sonnet",
         "batch_enabled": false
       }
     }
+  },
+  "story_questions": {
+    "enabled": true,
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4-flash",
+    "max_linked_claims_per_question": 8,
+    "application_policy": "moderate"
   },
   "anchor_provider": "hybrid",
   "stage_c_anchor_provider": "conversation_metadata",
   "stage_a_anchor_provider": "hybrid",
   "stage_a_mixtral_excerpt_chars": 24000,
   "mixtral": {
-    "provider": "gemini",
+    "provider": "openrouter",
     "base_url": "http://127.0.0.1:11434",
     "model": "mixtral",
-    "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
-    "api_model": "gemini-2.5-flash-lite",
+    "api_base_url": "https://openrouter.ai/api/v1",
+    "api_model": "qwen/qwen3.5-flash-02-23",
     "api_retries": 2,
     "auto_fallback_to_ollama": true,
     "rate_limit_cooldown_seconds": 90,
-    "rate_state_path": "artifacts/learning/gemini_flash_lite_rate_runtime.json",
+    "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
     "adaptive_min_interval_seconds": 0.5,
     "adaptive_max_interval_seconds": 120.0,
     "adaptive_success_decay": 0.9,

@@ -1,34 +1,37 @@
 ﻿"""AI-powered auto-review for pending THERIAC lore pipeline items.
 
-Sends each pending review item to the Gemini API with a structured prompt,
+Sends each pending review item to OpenRouter with a structured prompt,
 parses the model's accept/reject/defer decision, and writes it to the
 corresponding decisions file.
 """
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-from pipeline.common import get_logger, now_utc_iso, read_json, write_json
+from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, write_json
+from pipeline.review_memory import normalize_claim_text
 
 logger = get_logger(__name__)
+DEFAULT_AUTO_REVIEW_MODEL = "deepseek/deepseek-v4-flash"
 
 
 # ---------------------------------------------------------------------------
-# Gemini helpers (self-contained so auto_review has no coupling to the
-# rate-limit / pacing state inside mixtral_anchor_provider)
+# OpenRouter helpers (self-contained so auto_review has no coupling to the
+# rate-limit / pacing state inside mixtral_anchor_provider). The
+# _gemini_generate function name is retained for older tests/call sites.
 # ---------------------------------------------------------------------------
 
 def _resolve_api_key() -> str | None:
-    """Return the first available Gemini API key from env or .env file."""
+    """Return the first available OpenRouter API key from env or .env file."""
     import os
 
-    for key_name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY"):
+    for key_name in ("OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY"):
         value = os.environ.get(key_name, "").strip().strip('"').strip("'")
         if value:
             return value
@@ -45,7 +48,7 @@ def _resolve_api_key() -> str | None:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        for key_name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY"):
+        for key_name in ("OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY"):
             m = re.match(rf"^\s*{re.escape(key_name)}\s*[:=]\s*(.+?)\s*$", stripped)
             if m:
                 raw = m.group(1).strip()
@@ -59,36 +62,31 @@ def _resolve_api_key() -> str | None:
 def _gemini_generate(
     api_key: str,
     prompt: str,
-    model: str = "gemini-2.5-flash",
+    model: str = DEFAULT_AUTO_REVIEW_MODEL,
     temperature: float = 0.0,
     timeout_seconds: int = 120,
 ) -> dict[str, Any] | None:
-    """Call Gemini generateContent and return parsed JSON or None."""
-    clean_model = model.strip()
-    if clean_model.startswith("models/"):
-        clean_model = clean_model[len("models/"):]
-    model_path = urllib.parse.quote(clean_model, safe="")
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model_path}"
-        f":generateContent?key={urllib.parse.quote(api_key, safe='')}"
-    )
+    """Call OpenRouter chat completions and return parsed JSON or None."""
+    clean_model = model.strip() or DEFAULT_AUTO_REVIEW_MODEL
+    url = "https://openrouter.ai/api/v1/chat/completions"
     payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": prompt}],
-            }
+        "model": clean_model,
+        "messages": [
+            {"role": "system", "content": "You are a precise JSON reviewer. Return strict JSON only with no markdown."},
+            {"role": "user", "content": prompt},
         ],
-        "generationConfig": {
-            "temperature": temperature,
-            "responseMimeType": "application/json",
-            "candidateCount": 1,
-        },
+        "temperature": temperature,
+        "response_format": {"type": "json_object"},
     }
     req = urllib.request.Request(
         url=url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/theriac/lore-bible",
+            "X-Title": "THERIAC Lore Bible",
+        },
         method="POST",
     )
     try:
@@ -101,37 +99,31 @@ def _gemini_generate(
         except Exception:
             pass
         logger.warning(
-            "Gemini auto-review HTTP error status=%s reason=%s body=%s",
+            "OpenRouter auto-review HTTP error status=%s reason=%s body=%s",
             exc.code, exc.reason, err_body[:300],
         )
         return None
     except Exception as exc:
-        logger.warning("Gemini auto-review request failed: %s", exc)
+        logger.warning("OpenRouter auto-review request failed: %s", exc)
         return None
 
     try:
         body = json.loads(raw_body)
     except json.JSONDecodeError:
-        logger.warning("Gemini auto-review response not valid JSON.")
+        logger.warning("OpenRouter auto-review response not valid JSON.")
         return None
     if not isinstance(body, dict):
         return None
 
     # Extract text from response
-    candidates = body.get("candidates", [])
-    if not isinstance(candidates, list) or not candidates:
+    choices = body.get("choices", [])
+    if not isinstance(choices, list) or not choices:
         return None
-    first = candidates[0] if isinstance(candidates[0], dict) else {}
-    content = first.get("content", {}) if isinstance(first, dict) else {}
-    parts = content.get("parts", []) if isinstance(content, dict) else []
-    if not isinstance(parts, list):
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    message = first.get("message", {}) if isinstance(first, dict) else {}
+    if not isinstance(message, dict):
         return None
-    text_parts = [
-        str(p.get("text", ""))
-        for p in parts
-        if isinstance(p, dict) and str(p.get("text", "")).strip()
-    ]
-    text = "\n".join(text_parts).strip()
+    text = str(message.get("content", "")).strip()
     if not text:
         return None
 
@@ -145,7 +137,7 @@ def _gemini_generate(
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        logger.warning("Gemini auto-review content not valid JSON: %s", text[:200])
+        logger.warning("OpenRouter auto-review content not valid JSON: %s", text[:200])
         return None
     if isinstance(parsed, dict):
         return parsed
@@ -224,7 +216,8 @@ You are reviewing an atomic lore claim extracted from THERIAC Discord
 conversations. Decide whether this claim should be ACCEPTED into the lore
 bible or REJECTED.
 
-The claim is:
+The review item includes the claim, source snippet context, support warnings,
+exact duplicate grouping, and other claims that share the same source set:
 ```json
 {item_json}
 ```
@@ -232,6 +225,8 @@ The claim is:
 Respond with a JSON object:
 {{
   "decision": "accept" or "reject",
+  "human_review_recommended": true or false,
+  "human_review_reason": "<short reason if human_review_recommended is true; otherwise empty>",
   "rationale": "<1-2 sentence explanation>"
 }}
 
@@ -239,10 +234,25 @@ Guidelines:
 - ACCEPT claims that describe concrete lore facts, character traits, world
   events, game mechanics, faction relationships, or timeline events.
 - REJECT claims that are purely meta/production discussion with no lore
-  content, speculative ideas that were explicitly abandoned, duplicates
-  of obviously identical earlier claims, or real-world personal chat.
+  content, speculative ideas that were explicitly abandoned, unsupported
+  repetitions of already-established facts, or real-world personal chat.
+- Use source_context as the primary evidence. A claim should be accepted only
+  if its source snippets directly support it.
+- Treat support_warnings as caution flags. They do not require rejection by
+  themselves, but they usually require human_review_recommended=true unless
+  the source_context clearly resolves the warning.
+- If duplicate_claim_ids contains more than one claim, review the group once.
+  If the claim is otherwise valid, accept the representative decision but set
+  human_review_recommended=true so the human can decide whether to collapse or
+  ignore the duplicates.
+- Use source_set_peer_claims to notice over-fragmentation from the same exact
+  source set. Do not reject a claim merely because there are peers; reject only
+  claims that are redundant, unsupported, or contradicted by the source.
+- If contradiction_notes are non-empty, make the best decision and set
+  human_review_recommended=true.
 - When in doubt, ACCEPT - it's better to have a slightly noisy lore bible
-  than to lose genuine lore.
+  than to lose genuine lore, but set human_review_recommended=true when the
+  uncertainty matters.
 """
 
 _IDENTITY_MERGE_PROMPT = """\
@@ -315,6 +325,76 @@ def _decision_ids(path: Path, id_fields: list[str]) -> set[str]:
             if value:
                 ids.add(value)
     return ids
+
+
+def _run_root_from_claims_path(path: Path) -> Path:
+    """Best-effort run root detection for 06_drafts/card_drafts/claim_drafts.json."""
+    resolved = path.resolve()
+    candidates: list[Path] = []
+    try:
+        candidates.append(resolved.parents[2])
+    except IndexError:
+        pass
+    candidates.extend([resolved.parent, *resolved.parents])
+    for candidate in candidates:
+        if (candidate / "07_review").exists() or (candidate / "06_drafts").exists():
+            return candidate
+    return resolved.parent
+
+
+def _story_answered_claim_ids(root: Path) -> set[str]:
+    """Claim ids already covered by answered Story Questions should not be auto-reviewed."""
+    session_path = root / "07_review" / "story_question_session.json"
+    session = _read_json_or_default(session_path, {})
+    if not isinstance(session, dict):
+        return set()
+    answered_question_ids = {
+        str(answer.get("question_id", "")).strip()
+        for answer in session.get("answers", []) or []
+        if isinstance(answer, dict) and str(answer.get("question_id", "")).strip()
+    }
+    for application in session.get("applications", []) or []:
+        if isinstance(application, dict) and str(application.get("question_id", "")).strip():
+            answered_question_ids.add(str(application.get("question_id", "")).strip())
+    pending_proposal = session.get("pending_application_proposal")
+    if isinstance(pending_proposal, dict) and str(pending_proposal.get("question_id", "")).strip():
+        # The author has already answered and is reviewing the application proposal.
+        answered_question_ids.add(str(pending_proposal.get("question_id", "")).strip())
+
+    answered_claim_ids: set[str] = set()
+    for question in session.get("questions", []) or []:
+        if not isinstance(question, dict):
+            continue
+        question_id = str(question.get("question_id", "")).strip()
+        if question_id not in answered_question_ids and str(question.get("status", "")).strip().lower() != "answered":
+            continue
+        for claim_id in question.get("linked_claim_ids", []) or []:
+            claim_id_text = str(claim_id).strip()
+            if claim_id_text:
+                answered_claim_ids.add(claim_id_text)
+    return answered_claim_ids
+
+
+def _author_claim_normalized_texts(root: Path) -> set[str]:
+    """Return normalized author-supplied claim texts for duplicate suppression."""
+    payload = _read_json_or_default(root / "07_review" / "author_claims.json", {"claims": []})
+    texts: set[str] = set()
+    for claim in payload.get("claims", []) if isinstance(payload, dict) else []:
+        if not isinstance(claim, dict):
+            continue
+        normalized = str(claim.get("normalized_claim_text", "")).strip()
+        if not normalized:
+            normalized = normalize_claim_text(str(claim.get("claim_text", "") or ""))
+        if normalized:
+            texts.add(normalized)
+    return texts
+
+
+def _claim_normalized_text(claim: dict[str, Any]) -> str:
+    normalized = str(claim.get("normalized_claim_text", "")).strip()
+    if normalized:
+        return normalized
+    return normalize_claim_text(str(claim.get("claim_text", "") or ""))
 
 
 def _has_human_override_for_proposal(payload: dict[str, Any], proposal_id: str) -> bool:
@@ -540,13 +620,26 @@ def _postprocess_entity_type(candidate_name: str, entity_type: str, item: dict[s
     return decided_type, secondary_types, reason
 
 
-def _append_attention_item(decisions_path: Path, item: dict[str, Any]) -> None:
-    attention_path = decisions_path.with_name("conversation_entity_auto_review_attention.json")
+def _append_attention_item(
+    decisions_path: Path,
+    item: dict[str, Any],
+    *,
+    filename: str = "conversation_entity_auto_review_attention.json",
+    id_fields: tuple[str, ...] = ("proposal_id",),
+) -> None:
+    attention_path = decisions_path.with_name(filename)
     payload = _read_json_or_default(attention_path, {"items": []})
-    existing_ids = {str(row.get("proposal_id", "")) for row in payload.get("items", []) if isinstance(row, dict)}
-    proposal_id = str(item.get("proposal_id", "")).strip()
-    if proposal_id and proposal_id in existing_ids:
-        return
+    existing_ids = {
+        (field, str(row.get(field, "")).strip())
+        for row in payload.get("items", [])
+        if isinstance(row, dict)
+        for field in id_fields
+        if str(row.get(field, "")).strip()
+    }
+    for field in id_fields:
+        value = str(item.get(field, "")).strip()
+        if value and (field, value) in existing_ids:
+            return
     payload.setdefault("items", []).append(item)
     write_json(attention_path, payload)
 
@@ -569,11 +662,188 @@ class AutoReviewResult:
         )
 
 
+def _claim_source_ids(claim: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for source_id in claim.get("source_snippet_ids", []) or []:
+        sid = str(source_id).strip()
+        if sid and sid not in out:
+            out.append(sid)
+    return out
+
+
+def _claim_source_set_key(claim: dict[str, Any]) -> str:
+    return "|".join(sorted(_claim_source_ids(claim)))
+
+
+def _claim_duplicate_key(claim: dict[str, Any]) -> tuple[str, str, str]:
+    target = str(claim.get("target_entity_id") or claim.get("target_entity_name") or "").strip().lower()
+    normalized_claim = str(claim.get("normalized_claim_text") or normalize_claim_text(str(claim.get("claim_text", ""))))
+    return target, normalized_claim, _claim_source_set_key(claim)
+
+
+def _source_snippets_path_for_claims(patches_path: Path) -> Path | None:
+    for parent in [patches_path.parent, *patches_path.parents]:
+        for candidate in (
+            parent / "03_relevance" / "snippets_candidates.jsonl",
+            parent / "snippets_candidates.jsonl",
+        ):
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def _load_source_snippets_for_claims(patches_path: Path, claims: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    wanted = {sid for claim in claims for sid in _claim_source_ids(claim)}
+    if not wanted:
+        return {}
+    source_path = _source_snippets_path_for_claims(patches_path)
+    if source_path is None:
+        return {}
+    rows: dict[str, dict[str, Any]] = {}
+    try:
+        for row in read_jsonl(source_path):
+            snippet_id = str(row.get("snippet_id", "")).strip()
+            if snippet_id in wanted:
+                rows[snippet_id] = row
+                if len(rows) >= len(wanted):
+                    break
+    except Exception:
+        return rows
+    return rows
+
+
+def _compact_source_context(claim: dict[str, Any], source_snippets: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    context: list[dict[str, Any]] = []
+    for source_id in _claim_source_ids(claim):
+        row = source_snippets.get(source_id)
+        if not row:
+            continue
+        text = (
+            row.get("patch_item_text")
+            or row.get("display_text_normalized")
+            or row.get("conversation_patch_summary")
+            or row.get("raw_text")
+            or ""
+        )
+        raw_text = str(row.get("raw_text", "")).strip()
+        context.append(
+            {
+                "snippet_id": source_id,
+                "conversation_id": row.get("conversation_id", ""),
+                "conversation_global_index": row.get("conversation_global_index", ""),
+                "timestamp_start_utc": row.get("timestamp_start_utc", ""),
+                "topic_label": row.get("conversation_topic_label", ""),
+                "topic_summary": str(row.get("conversation_topic_summary", ""))[:700],
+                "knowledge_track": row.get("knowledge_track", ""),
+                "source_kind": row.get("source_kind", ""),
+                "patch_item_type": row.get("patch_item_type", ""),
+                "patch_item_text": re.sub(r"\s+", " ", str(text)).strip()[:1400],
+                "supporting_messages": raw_text[:1400],
+            }
+        )
+    return context
+
+
+def _claim_review_item(
+    representative: dict[str, Any],
+    duplicate_claims: list[dict[str, Any]],
+    source_set_claims: list[dict[str, Any]],
+    source_snippets: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    duplicate_ids = [str(claim.get("claim_id", "")) for claim in duplicate_claims if str(claim.get("claim_id", "")).strip()]
+    duplicate_warnings = list(
+        dict.fromkeys(
+            str(warning).strip()
+            for claim in duplicate_claims
+            for warning in claim.get("support_warnings", []) or []
+            if str(warning).strip()
+        )
+    )
+    duplicate_contradictions = [
+        str(claim.get("contradiction_notes", "")).strip()
+        for claim in duplicate_claims
+        if str(claim.get("contradiction_notes", "")).strip()
+    ]
+    source_set_peers = []
+    for claim in source_set_claims[:12]:
+        claim_id = str(claim.get("claim_id", "")).strip()
+        if not claim_id:
+            continue
+        source_set_peers.append(
+            {
+                "claim_id": claim_id,
+                "target_entity_name": claim.get("target_entity_name", ""),
+                "claim_type": claim.get("claim_type", ""),
+                "claim_text": claim.get("claim_text", ""),
+                "support_warnings": claim.get("support_warnings", []) or [],
+                "confidence": claim.get("confidence", ""),
+            }
+        )
+    return {
+        "claim_id": representative.get("claim_id", ""),
+        "duplicate_claim_ids": duplicate_ids,
+        "duplicate_group_size": len(duplicate_ids),
+        "source_set_claim_ids": [
+            str(claim.get("claim_id", ""))
+            for claim in source_set_claims
+            if str(claim.get("claim_id", "")).strip()
+        ],
+        "source_set_group_size": len(source_set_claims),
+        "source_set_peer_claims": source_set_peers,
+        "target_entity_id": representative.get("target_entity_id", ""),
+        "target_entity_name": representative.get("target_entity_name", ""),
+        "claim_text": representative.get("claim_text", ""),
+        "claim_type": representative.get("claim_type", ""),
+        "knowledge_track": representative.get("knowledge_track", ""),
+        "confidence": representative.get("confidence", ""),
+        "contradiction_notes": "; ".join(dict.fromkeys(duplicate_contradictions)),
+        "support_warnings": duplicate_warnings,
+        "source_snippet_ids": _claim_source_ids(representative),
+        "source_context": _compact_source_context(representative, source_snippets),
+        "review_rule": (
+            "Make one best accept/reject decision for the representative claim. "
+            "The same decision will be copied to exact duplicate_claim_ids. "
+            "Use human_review_recommended for duplicates, support warnings, contradictions, or weak source support."
+        ),
+    }
+
+
+def _claim_attention_reasons(
+    review_item: dict[str, Any],
+    response: dict[str, Any],
+    decision: str,
+) -> list[str]:
+    reasons: list[str] = []
+    warnings = [str(w).strip() for w in review_item.get("support_warnings", []) or [] if str(w).strip()]
+    if warnings:
+        reasons.append("support warnings: " + ", ".join(warnings[:4]))
+    if str(review_item.get("contradiction_notes", "")).strip():
+        reasons.append("claim has contradiction notes")
+    if not review_item.get("source_context"):
+        reasons.append("source snippet context was unavailable")
+    try:
+        confidence = float(review_item.get("confidence", 0) or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence and confidence < 0.65:
+        reasons.append(f"low confidence: {confidence:.2f}")
+    if int(review_item.get("duplicate_group_size", 0) or 0) > 1:
+        reasons.append(f"exact duplicate group: {review_item.get('duplicate_group_size')} claims")
+    if int(review_item.get("source_set_group_size", 0) or 0) >= 6:
+        reasons.append(f"large source-set group: {review_item.get('source_set_group_size')} claims share the same source set")
+    if str(decision).strip().lower() not in {"accept", "reject"}:
+        reasons.append("model requested human review or returned a non-final decision")
+    if _coerce_bool(response.get("human_review_recommended", False)):
+        reason = str(response.get("human_review_reason", "")).strip()
+        reasons.append(reason or "model recommended human review")
+    return list(dict.fromkeys(reason for reason in reasons if reason))
+
+
 def run_auto_review(
     paths: dict[str, Path],
     progress_callback: Callable[[str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
-    model: str = "gemini-2.5-flash",
+    model: str = DEFAULT_AUTO_REVIEW_MODEL,
     inter_request_delay: float = 1.0,
 ) -> AutoReviewResult:
     """Run AI auto-review on all pending items in the given artifact paths.
@@ -584,7 +854,7 @@ def run_auto_review(
                 identity_merge_proposals, identity_merge_decisions,
                 conversation_entity_proposals, conversation_entity_decisions).
         progress_callback: Optional function receiving status messages.
-        model: Gemini model name to use.
+        model: OpenRouter model name to use.
         inter_request_delay: Seconds to wait between API calls.
 
     Returns:
@@ -593,9 +863,9 @@ def run_auto_review(
     result = AutoReviewResult()
     api_key = _resolve_api_key()
     if not api_key:
-        result.log_lines.append("[auto-review] ERROR: No Gemini API key found.")
+        result.log_lines.append("[auto-review] ERROR: No OpenRouter API key found.")
         if progress_callback:
-            progress_callback("[auto-review] ERROR: No Gemini API key found.")
+            progress_callback("[auto-review] ERROR: No OpenRouter API key found.")
         return result
 
     def log(msg: str) -> None:
@@ -763,7 +1033,7 @@ def _auto_review_conversation_entities(
                 "human_review_recommended": human_review_recommended,
                 "human_review_reason": human_review_reason,
                 "auto_review_policy": "best_guess_with_attention_queue_v1",
-                "reviewer": "gemini_auto_review",
+                "reviewer": "openrouter_auto_review",
                 "rationale": f"[AI auto-review] {rationale}",
                 "timestamp_utc": timestamp,
             }
@@ -864,7 +1134,7 @@ def _auto_review_conversation_entities(
             "human_review_recommended": human_review_recommended,
             "human_review_reason": human_review_reason,
             "auto_review_policy": "best_guess_with_attention_queue_v1",
-            "reviewer": "gemini_auto_review",
+            "reviewer": "openrouter_auto_review",
             "rationale": f"[AI auto-review] {rationale}",
             "timestamp_utc": now_utc_iso(),
         }
@@ -901,51 +1171,132 @@ def _auto_review_claims(
         return
 
     existing_decisions = _decision_ids(decisions_path, ["claim_id"])
+    run_root = _run_root_from_claims_path(patches_path)
+    story_answered_claim_ids = _story_answered_claim_ids(run_root)
+    author_claim_texts = _author_claim_normalized_texts(run_root)
     pending = [
         c for c in claims
         if str(c.get("claim_id", "")).strip()
         and str(c.get("claim_id", "")) not in existing_decisions
+        and str(c.get("claim_id", "")) not in story_answered_claim_ids
+        and _claim_normalized_text(c) not in author_claim_texts
     ]
     if not pending:
         return
 
-    log(f"[auto-review] {len(pending)} claims to review.")
-    for i, claim in enumerate(pending, 1):
+    skipped_by_story = len(
+        [
+            c for c in claims
+            if str(c.get("claim_id", "")).strip()
+            and str(c.get("claim_id", "")) not in existing_decisions
+            and str(c.get("claim_id", "")) in story_answered_claim_ids
+        ]
+    )
+    skipped_by_author = len(
+        [
+            c for c in claims
+            if str(c.get("claim_id", "")).strip()
+            and str(c.get("claim_id", "")) not in existing_decisions
+            and str(c.get("claim_id", "")) not in story_answered_claim_ids
+            and _claim_normalized_text(c) in author_claim_texts
+        ]
+    )
+    if skipped_by_story or skipped_by_author:
+        log(
+            "[auto-review] Skipping claims already resolved by author input: "
+            f"{skipped_by_story} story-question linked, {skipped_by_author} direct author duplicate(s)."
+        )
+
+    source_snippets = _load_source_snippets_for_claims(patches_path, pending)
+    duplicate_groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    source_set_groups: dict[str, list[dict[str, Any]]] = {}
+    for claim in pending:
+        duplicate_groups.setdefault(_claim_duplicate_key(claim), []).append(claim)
+        source_set_groups.setdefault(_claim_source_set_key(claim), []).append(claim)
+    grouped_pending = [claims[0] for claims in duplicate_groups.values()]
+    duplicate_reduction = len(pending) - len(grouped_pending)
+
+    log(
+        f"[auto-review] {len(pending)} claims to review "
+        f"({len(grouped_pending)} model group(s), {duplicate_reduction} exact duplicate claim(s) grouped)."
+    )
+    for i, claim in enumerate(grouped_pending, 1):
         if cancel_check and cancel_check():
             break
         claim_id = str(claim.get("claim_id", ""))
         entity = str(claim.get("target_entity_name", "(unknown)"))
-        log(f"[auto-review] [{i}/{len(pending)}] Reviewing claim for {entity}: {claim_id[:20]}...")
-        result.total += 1
+        duplicate_claims = duplicate_groups.get(_claim_duplicate_key(claim), [claim])
+        source_set_claims = source_set_groups.get(_claim_source_set_key(claim), [claim])
+        log(
+            f"[auto-review] [{i}/{len(grouped_pending)}] Reviewing claim for {entity}: "
+            f"{claim_id[:20]}... duplicates={len(duplicate_claims)} source_set={len(source_set_claims)}"
+        )
+        result.total += len(duplicate_claims)
 
-        item_json = _truncate_item(claim)
+        review_item = _claim_review_item(claim, duplicate_claims, source_set_claims, source_snippets)
+        item_json = _truncate_item(review_item, max_chars=12000)
         prompt = _CLAIM_PROMPT.format(item_json=item_json)
         resp = _gemini_generate(api_key, prompt, model=model)
 
         if resp is None:
             log(f"[auto-review]   FAILED: API returned no valid response")
-            result.failed += 1
+            result.failed += len(duplicate_claims)
             time.sleep(delay)
             continue
 
-        decision = str(resp.get("decision", "accept")).lower()
+        raw_decision = str(resp.get("decision", "accept")).lower()
+        decision = raw_decision if raw_decision in {"accept", "reject"} else "accept"
         rationale = str(resp.get("rationale", "")).strip()
+        attention_reasons = _claim_attention_reasons(review_item, resp, raw_decision)
+        human_review_recommended = bool(attention_reasons)
+        human_review_reason = "; ".join(attention_reasons)
 
         if decision == "accept":
-            result.accepted += 1
+            result.accepted += len(duplicate_claims)
         else:
-            result.rejected += 1
-        log(f"[auto-review]   -> {decision.upper()}: {entity} | {rationale[:80]}")
+            result.rejected += len(duplicate_claims)
+        if human_review_recommended:
+            result.skipped += len(duplicate_claims)
+        attention_suffix = " | human review recommended" if human_review_recommended else ""
+        log(f"[auto-review]   -> {decision.upper()}: {entity} | {rationale[:80]}{attention_suffix}")
 
         data = _read_json_or_default(decisions_path, {"decisions": []})
-        data.setdefault("decisions", []).append({
-            "claim_id": claim_id,
-            "decision": decision,
-            "reviewer": "gemini_auto_review",
-            "rationale": f"[AI auto-review] {rationale}",
-            "timestamp_utc": now_utc_iso(),
-        })
-        existing_decisions.add(claim_id)
+        for duplicate_claim in duplicate_claims:
+            duplicate_claim_id = str(duplicate_claim.get("claim_id", "")).strip()
+            if not duplicate_claim_id or duplicate_claim_id in existing_decisions:
+                continue
+            decision_entry = {
+                "claim_id": duplicate_claim_id,
+                "decision": decision,
+                "reviewer": "openrouter_auto_review",
+                "rationale": f"[AI auto-review] {rationale}",
+                "timestamp_utc": now_utc_iso(),
+                "human_review_recommended": human_review_recommended,
+                "human_review_reason": human_review_reason,
+                "auto_review_policy": "claim_best_guess_with_attention_queue_v1",
+                "representative_claim_id": claim_id,
+                "duplicate_group_id": "|".join(_claim_duplicate_key(claim)),
+                "duplicate_claim_ids": review_item.get("duplicate_claim_ids", []),
+                "source_set_group_id": _claim_source_set_key(claim),
+                "source_set_claim_ids": review_item.get("source_set_claim_ids", []),
+                "support_warnings": duplicate_claim.get("support_warnings", []) or [],
+                "source_snippet_ids": duplicate_claim.get("source_snippet_ids", []) or [],
+            }
+            data.setdefault("decisions", []).append(decision_entry)
+            if human_review_recommended:
+                _append_attention_item(
+                    decisions_path,
+                    {
+                        **decision_entry,
+                        "target_entity_name": duplicate_claim.get("target_entity_name", ""),
+                        "claim_text": duplicate_claim.get("claim_text", ""),
+                        "claim_type": duplicate_claim.get("claim_type", ""),
+                        "confidence": duplicate_claim.get("confidence", ""),
+                    },
+                    filename="claim_auto_review_attention.json",
+                    id_fields=("claim_id",),
+                )
+            existing_decisions.add(duplicate_claim_id)
         write_json(decisions_path, data)
         time.sleep(delay)
 
@@ -1008,7 +1359,7 @@ def _auto_review_identity_merges(
         data.setdefault("decisions", []).append({
             "proposal_id": proposal["proposal_id"],
             "decision": decision,
-            "reviewer": "gemini_auto_review",
+            "reviewer": "openrouter_auto_review",
             "rationale": f"[AI auto-review] {rationale}",
             "timestamp_utc": now_utc_iso(),
         })
@@ -1082,7 +1433,7 @@ def _auto_review_cards(
         entry: dict[str, Any] = {
             "card_id": card_id,
             "decision": decision,
-            "reviewer": "gemini_auto_review",
+            "reviewer": "openrouter_auto_review",
             "rationale": f"[AI auto-review] {rationale}",
             "timestamp_utc": now_utc_iso(),
         }

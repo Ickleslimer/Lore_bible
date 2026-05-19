@@ -14497,6 +14497,2131 @@
       "created_at_utc": "2026-05-16T05:00:00Z"
     }
   ],
+  "story_question_answers": [
+    {
+      "answer_id": "story_answer_5c5908703d77dc76",
+      "question_id": "story_question_d439f3dbf61ea73d",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The lab is a physical facility, and is the main setting for the game. It acts as their home and base of operations, as well as the target for the player's management throughout the game. Any generic reference to a \"facility\" thus likely refers to this. The lab may also refer to the organisation as a faction, in the same way \"Harvard\" may refer to the campus, or the faculty and management of that institution.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-18T21:21:55.945212Z",
+      "question_text": "What exactly is The Lab - is it a physical research facility where the immortality-seeking scientists work, a location/level within the game world that the player visits, or both? And how does it relate to the THERIAC facility mentioned separately?",
+      "linked_claim_ids": [
+        "fdf05b64-283d-466a-b3a2-a2386047fd79",
+        "328ed0f3-2a29-4803-9f81-567a207c07e5",
+        "3d3732bc-92ea-47f3-9489-943f9d740eaf",
+        "30617091-2b04-412e-a6b1-3397ba8cb981",
+        "e765b2cf-9c59-4cbd-b891-17d4fae7786e",
+        "fc78465c-84ba-4fae-8d5d-56fbb60ced49"
+      ],
+      "target_entity_ids": [
+        "entity_1b32efc2589aeae9",
+        "entity_689de7942477be44"
+      ],
+      "target_entity_names": [
+        "The Lab",
+        "Theriac Facility"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_f148a8dd5b31aef4",
+        "claim_decision_358167acef232c13"
+      ],
+      "author_claim_ids": [
+        "author_claim_866e6a27b4dc03c7",
+        "author_claim_94398ce0d6317aa6",
+        "author_claim_d7131f0d79af15af",
+        "author_claim_00a821bfc62d6dcf",
+        "author_claim_8d9ac59ff0e8adef"
+      ],
+      "application_summary": "Applied answer confirming The Lab is the main physical facility and setting, accepting directly linked claims and those about it being a location. Deferred character-specific claims as they need individual verification beyond this general facility confirmation."
+    },
+    {
+      "answer_id": "story_answer_4e9610710a6dd9ee",
+      "question_id": "story_question_18a2199e0230fdd2",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "These are working names as the cast was originally developed based on the concept of different motivations for immortality. Each of them was later updated with a canonical name, except Joy, as hers became her canonical name. Together, they make up the staff of the lab, which is crewed primarily by these 6 characters, each of whom takes on a different role in the lab's operation.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-18T21:39:24.144219Z",
+      "question_text": "The Lab appears to have multiple named characters (Loss, Love, Fear, Joy, Altruism, Greed) with detailed backstories and relationships. Are these actual individual characters that exist within the lab facility, or are they symbolic/thematic representations of concepts? If they are real characters, how do they relate to the broader THERIAC facility and its management mechanics?",
+      "linked_claim_ids": [
+        "328ed0f3-2a29-4803-9f81-567a207c07e5",
+        "46c98a82-d25c-416b-be5a-d43418e04a82",
+        "5d6ab7e0-c1f5-4157-af38-664e5a96d189",
+        "69f4d410-e17b-4e62-91ef-a3f308eaf9c5",
+        "9b45c38f-d3fd-4acf-a8d9-bec1621ae42f",
+        "b9adb4e5-f981-415e-b8c2-4a2d9070ce04",
+        "bf6a87ff-59c5-46d6-a84f-d8a5dd8d096a",
+        "7dd0e9b3-619c-45db-b84a-ad77fb01e769"
+      ],
+      "target_entity_ids": [
+        "entity_689de7942477be44"
+      ],
+      "target_entity_names": [
+        "The Lab"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_2c9753749c4ac87b",
+        "claim_decision_0950dd65f10b68bf",
+        "claim_decision_05118fe1aeaccf3c",
+        "claim_decision_c99b93e136db6ccf",
+        "claim_decision_3325cdd046df4412",
+        "claim_decision_ac697a54e41ef070",
+        "claim_decision_561056ec33217a32",
+        "claim_decision_19026235c66a1400",
+        "claim_decision_8070f2f2c3347f16",
+        "claim_decision_1d574dead1fe67d4",
+        "claim_decision_47fd9bdddd15ab6c",
+        "claim_decision_60db6b13da531ad3",
+        "claim_decision_4e9519537ab87fe7",
+        "claim_decision_1d295a132719fbac",
+        "claim_decision_400c6291fd069079",
+        "claim_decision_366d03f7ecf43db9",
+        "claim_decision_6804c773b1704995",
+        "claim_decision_3009c309c907df88"
+      ],
+      "author_claim_ids": [
+        "author_claim_d613a3de17059a09",
+        "author_claim_64df4d2d86827873",
+        "author_claim_856deae07b641390",
+        "author_claim_ff8b7b4fc6105fce"
+      ],
+      "application_summary": "Applied answer confirming Loss, Love, Fear, Joy, Altruism, and Greed are real lab staff members with working names based on immortality motivations. Accepted all linked claims about these characters and their roles."
+    },
+    {
+      "answer_id": "story_answer_2ad2341e022f5ab2",
+      "question_id": "story_question_1b8793bd85e9412a",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Correct on all counts.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-18T22:54:54.555086Z",
+      "question_text": "Is Leonidas — the unnamed character who took over Khava Zimov's organization and rebranded it as the Krypteia — still the active leader of the Krypteia during the events of the game, or is he a historical founder figure? And is he the same person who commissioned HECTR from Penemue and developed the Myrmidon suits for the planned coup?",
+      "linked_claim_ids": [
+        "4be36f6b-5277-4546-a14a-8e9b6062ee18",
+        "b68de1a8-6e50-4325-9dd1-47e836272e5c",
+        "27217a84-f4ea-4c7f-a3ff-be2a74eb366b",
+        "581cac4a-5694-410c-8331-01876d08aa3d",
+        "0a491fb7-5209-4043-b287-6cf267a341dd",
+        "dbcd6864-5e8c-4d2f-9d77-cc2ed9df71ee",
+        "1b81b123-1b43-48f4-b20e-687956f1eca9",
+        "3d02680f-b8ce-47b4-bc5f-b86a1a9558c5"
+      ],
+      "target_entity_ids": [
+        "entity_53dc6f75968a4cfc",
+        "entity_6c88e032379aed32",
+        "entity_e71bed3c2488f05c",
+        "entity_f76afb72bd885e06"
+      ],
+      "target_entity_names": [
+        "HECTR",
+        "Myrmidon Suits",
+        "Penemue",
+        "Unnamed Character"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_1e5d768d7ad5d17d",
+        "claim_decision_ab333a4a10b21444",
+        "claim_decision_2697e0d91464c005",
+        "claim_decision_0e0fd78765e6e848",
+        "claim_decision_3e4a6361e6682955",
+        "claim_decision_4c2ae41146f0006b",
+        "claim_decision_3f868f0844c008e0",
+        "claim_decision_fc6bbdbea08928ea"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The author confirmed the question's linked claims as correct."
+    },
+    {
+      "answer_id": "story_answer_95519ec4af1f14d6",
+      "question_id": "story_question_d97aa5d5f3ace5ec",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Autotanks predate the mycelium wars by several years, but were the first active conflict in which they saw widespread use and iteration. They made up the majority of the fighting force of those wars, and are culturally associated with them. They were capable of processing biomatter, and due to the fact they were produced in quantities in the millions, this resulted in swarms of autotanks causing massive ecological damage during the first year of the war which saw the most overland conflict.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T00:56:14.333186Z",
+      "question_text": "Are the Autotanks a direct creation of the Mycelium Wars conflict, or are they a separate autonomous force that emerged afterward, and how does their resource consumption ('eating forests') tie into the broader war's timeline and objectives?",
+      "linked_claim_ids": [
+        "611126ce-0ef6-485c-b9d1-2c02449902eb",
+        "c1c6d945-01e2-437f-b53e-01df66e8170f",
+        "03d5306c-22f6-413b-957b-0798c916996d",
+        "60744302-8e9c-4171-8d67-e2db9dce2c77",
+        "fe3542b8-2939-4dc8-9e76-ee76c6e760ca",
+        "c9f20e90-53c7-4b8b-a365-26f2e336d419",
+        "19dbc112-8679-4282-9c93-e3391c3a4eac",
+        "a3a98d5e-7905-462e-9b51-18843cb22e5f"
+      ],
+      "target_entity_ids": [
+        "entity_e0df2db2d4fc4e1c"
+      ],
+      "target_entity_names": [
+        "Autotanks"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_0bb5bd7a9b07af02",
+        "claim_decision_762fc3cd239b7c0c",
+        "claim_decision_5a807621c2558e8f",
+        "claim_decision_ee9dc2d3150ec2cc",
+        "claim_decision_3a5de9edcaf0af75"
+      ],
+      "author_claim_ids": [
+        "author_claim_1b69617df26eb04a",
+        "author_claim_15fa90abfe5d46a5",
+        "author_claim_ac80b851fa6ae2bd",
+        "author_claim_810457f03cdf7569",
+        "author_claim_63ac1cc809e477aa"
+      ],
+      "application_summary": "Answer confirms Autotanks predate Mycelium Wars, were first widespread conflict, majority force, culturally associated, produced in millions, caused ecological damage in first year. Accepted related claims; left unrelated pending."
+    },
+    {
+      "answer_id": "story_answer_9e0ba35d12f74176",
+      "question_id": "story_question_b7585bb409518de8",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Titania is the Akkadian attempt at building a mycelial AI, based on stolen Sumerian blueprints for Oberon. It is in the sense that they are created from the same blueprint that they are \"twins\", and are the only AI of their kind. Oberon and Titania form something approximating a romantic relationship.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T01:02:02.290582Z",
+      "question_text": "Is Titania a single mycelial AI entity created by a separate nation, or is it a twin superintelligence with Oberon, and how does its relationship with Oberon (subterranean growths, same organization) fit with its creation by a separate nation?",
+      "linked_claim_ids": [
+        "9f715df8-e4de-4117-8fdd-524601fe3bd5",
+        "ad06d907-ba14-469a-ada4-d0e6eac3b1af",
+        "e76d3980-542c-4a66-ad9d-16632e3e849d",
+        "4676aad4-32e7-4a5e-992a-1bab3f51c727",
+        "bafeeb50-3b89-4b8f-8a09-003b0d94108a",
+        "83fa329d-ca97-48f2-adfa-70e289fb0ba2",
+        "1e7a09da-dfb7-4863-bbd3-c5f74662fe8b",
+        "51a79863-1af9-4478-b25a-76bfa863bcaa"
+      ],
+      "target_entity_ids": [
+        "entity_b1cd9a6773f79ac9"
+      ],
+      "target_entity_names": [
+        "Titania"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_201a5e1554bfbc91",
+        "claim_decision_bb9e8ef86cfa9ff8",
+        "claim_decision_a9703f45bbb362ff",
+        "claim_decision_f7a6d8e1d7abc779",
+        "claim_decision_ca9cdea1abb4f5ce",
+        "claim_decision_b1e333f98adb9041",
+        "claim_decision_7f12b620e2a8f19a"
+      ],
+      "author_claim_ids": [
+        "author_claim_249c29afcf33281d",
+        "author_claim_32366ecd7156adbc"
+      ],
+      "application_summary": "Answer clarifies Titania is an Akkadian mycelial AI built from stolen Sumerian blueprints for Oberon; they are 'twins' sharing a blueprint and have a romantic relationship."
+    },
+    {
+      "answer_id": "story_answer_6a9ae07a88172bc9",
+      "question_id": "story_question_13d3ddc9a66dd7ef",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "That character is Halayudtha, Ramasinta's general and the later founder of Manunggal following a Majapahit coup.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T01:20:54.769915Z",
+      "question_text": "Is the Transhumanist Character a distinct character from the unnamed player-character/radio contact archetype, or is this simply a role that the player fills directly — and if a distinct NPC, what is their canonical name?",
+      "linked_claim_ids": [
+        "06f8fdb9-b706-4438-a5cb-a865dbf50a47",
+        "b0624d4a-cd37-4644-8cb7-a39d369d280b",
+        "da5157c5-964d-4e3f-94a0-052f5840b849",
+        "6587dd37-617b-49dd-bd79-e3ea2a043ad0",
+        "55a67e02-240a-4548-9ec8-92fe00a12af0",
+        "84e68997-69ee-426d-9994-c6229ddb1924",
+        "94ba60a9-d0fc-4acb-983f-d14d54e342f2",
+        "9c1969ee-b8e6-4d99-bb16-073450a2f5dc"
+      ],
+      "target_entity_ids": [
+        "entity_f0dd3075abc8b8a0"
+      ],
+      "target_entity_names": [
+        "Transhumanist Character"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_74aacfee025a83c4",
+        "claim_decision_2a1c66a6dd7b6558",
+        "claim_decision_af166eab033507f5"
+      ],
+      "author_claim_ids": [
+        "author_claim_6e52d70058d24640",
+        "author_claim_b7db3e98df3e65f9",
+        "author_claim_91a1b03d8eae2872"
+      ],
+      "application_summary": "Answer identifies Transhumanist Character as Halayudtha, Ramasinta's general and founder of Manunggal. All unrelated claims left pending."
+    },
+    {
+      "answer_id": "story_answer_2a9a38b844de8b92",
+      "question_id": "story_question_28627046a512f881",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "He is the same character, yes. And he is still the active leader of the Krypteia, yes.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T01:23:24.718586Z",
+      "question_text": "Is Leonidas, the founder of the Krypteia who commissioned HECTR and the Myrmidon suits, still the active leader of the Krypteia during the game's events, or is he a historical figure, and is he the same person as the unnamed character who gathered a following within Khava Zimov's organization, became obsessed with Greece, and disagreed with her pursuit of biological immortality?",
+      "linked_claim_ids": [
+        "33fbbacf-23d4-4d58-a39d-519e397b778a",
+        "f7683c24-7612-4da1-91ae-c7616ece9578",
+        "015ac178-5e0b-4634-941f-241bd245d2d4",
+        "1782e904-e016-49b7-8f19-f3456435fe4c",
+        "8533d5c9-3a6c-4335-9c85-3b4910062bf2",
+        "68e884af-c5ce-4ff4-8ce6-8db4ebfe52cd",
+        "4ca083be-d032-4d4f-bf54-0edf2ef99794",
+        "3191464b-e682-41da-a36f-bb3b7c3e5a57"
+      ],
+      "target_entity_ids": [
+        "entity_6c88e032379aed32",
+        "entity_f76afb72bd885e06"
+      ],
+      "target_entity_names": [
+        "HECTR",
+        "Unnamed Character"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_b17322392c4cfdac",
+        "claim_decision_7548ef7839c206c6",
+        "claim_decision_c1a730b0c9485a62",
+        "claim_decision_04664937a2962513",
+        "claim_decision_3916b408f42e9447"
+      ],
+      "author_claim_ids": [
+        "author_claim_f28a5f0b6e5d6254",
+        "author_claim_950063d6485821d1"
+      ],
+      "application_summary": "The answer confirms that Leonidas is the unnamed character and remains the active Krypteia leader, accepting linked identity claims."
+    },
+    {
+      "answer_id": "story_answer_835631ca2b498f2a",
+      "question_id": "story_question_f4b21be7b7e1d5b5",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "\"HI Ach (Achilles AI Alpha)\" is not an entity, but HECTR is. HECTR is an AI originally made as a war planner for the Krypteia, but was considered too slow, and thus ACHILLES was the replacement, built into the same mainframe. Both of them are contained within the Krypteia's olympus facility on a supercomputer mainframe and HECTR is now used as a coordination interface for all the Ilion Corp's robots.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T01:35:11.765464Z",
+      "question_text": "Are HECTR and the HI Ach (Achilles AI Alpha) the same entity—a single repurposed Krypteia war AI that contains the remnants of Achilles—and is HECTR physically housed within the Olympus facility as a separate supercomputer that the robots interface with, or is HECTR a distributed AI system integrated across the facility's infrastructure?",
+      "linked_claim_ids": [
+        "4ca083be-d032-4d4f-bf54-0edf2ef99794",
+        "3191464b-e682-41da-a36f-bb3b7c3e5a57",
+        "5fb30082-d145-42c3-9f01-8cc49bad319f",
+        "e5afcb53-1111-44a5-8af8-e0914c83bea6",
+        "3f633852-bb80-45ec-a478-c75d4632fefb",
+        "3a7aa017-5d03-40bd-b212-2650463e7956",
+        "64a4bfe5-8e06-4ab6-a364-ab1064fc5d6c",
+        "81052af1-05db-495d-b2b6-ce40cd7130da"
+      ],
+      "target_entity_ids": [
+        "entity_6c88e032379aed32"
+      ],
+      "target_entity_names": [
+        "HECTR"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_d379e7ffe9223183",
+        "claim_decision_1142e59011c493d2",
+        "claim_decision_591a15401d20b595",
+        "claim_decision_24cc33070449dcfd",
+        "claim_decision_c76dd798e67065c3"
+      ],
+      "author_claim_ids": [
+        "author_claim_2af4f9a34c732866",
+        "author_claim_c67b83457bc49e42",
+        "author_claim_fb45f8a272e38245"
+      ],
+      "application_summary": "Answer clarifies HECTR is a war AI repurposed from Krypteia, sharing supercomputer mainframe with ACHILLES at Olympus facility. Confirms father-son relationship with RUINR, housing location, but does not address Alcove, RUINR deletion, or other entity/role claims. Rejects HI Ach as entity; defers alias pronunciation."
+    },
+    {
+      "answer_id": "story_answer_0ca7c05b949daaa4",
+      "question_id": "story_question_52355b786e13f7c8",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The concrete shell was intended to cover buildings 1 through 4 but only successfully covered building 1 and half of the skybridge to building 2 before funding was cut, and thus all work was stopped and never resumed.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T01:39:06.256472Z",
+      "question_text": "In the Theriac Facility lore, is the concrete shell intended to cover buildings 1 through 4, but only built over building 1 and halfway to building 2 before funding was pulled, or did it fully cover all intended structures—and is the interruption solely due to funding loss from war, or were there also bomb-resistant retrofits added mid-construction?",
+      "linked_claim_ids": [
+        "30617091-2b04-412e-a6b1-3397ba8cb981",
+        "e765b2cf-9c59-4cbd-b891-17d4fae7786e",
+        "fc78465c-84ba-4fae-8d5d-56fbb60ced49",
+        "06001f95-efa9-439b-b8a3-6e63e4f27fe1",
+        "50ae3015-09ff-4f66-b592-9e600febf13c",
+        "9ba379ab-29e5-484d-bc2c-2caf515b1e95",
+        "b7aa80f5-ec92-453b-8ab0-fe437aec3118",
+        "c4578eee-db90-49c1-a351-af22de5ec136"
+      ],
+      "target_entity_ids": [
+        "entity_1b32efc2589aeae9"
+      ],
+      "target_entity_names": [
+        "Theriac Facility"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_98817516dce95d28"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The answer confirms the concrete shell was intended for bldgs 1-4 but only covered bldg 1 & half skybridge to bldg 2 before funding was cut. Claims about war interruption, bomb-resistant retrofits, or full coverage are rejected. Unrelated claims are left pending."
+    },
+    {
+      "answer_id": "story_answer_5e9ce1a25f14df87",
+      "question_id": "story_question_5bb5f9dd09b3a6bb",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The mundane cause is the correct one. The supernatural cause is a mythological parallel contained in the literary subtext of that war.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T01:44:01.219788Z",
+      "question_text": "Is the Mycelium Wars conflict primarily a single war with both a mundane cause (Akkad stealing Sumerian AI technology, triggering a conventional global conflict between Sumer and Akkad that escalated into World War 3) and a supernatural cause (fallen angels and demons birthing abominations, linked to the 'war of the nephilim'), or are these two separate proposed origins that need to be reconciled into one as the physical/historical war and the other as a spiritual or mythological parallel or separate conflict?",
+      "linked_claim_ids": [
+        "64828498-8063-436b-8a01-aa2a467153c0",
+        "b893d01f-f475-4dff-8e8d-e8eedf7c0b14",
+        "589c25d2-be11-425c-9d43-cfda092dffa4",
+        "8b0b2282-522e-4873-8253-c19b29f7ee7d",
+        "d5818719-b451-438d-bab8-69a16c93f553",
+        "ec58e9ab-cd71-436d-a405-05b280cc565f",
+        "8c6cebb2-825e-405c-a8b5-ea16e9dddfcd",
+        "1eaa79e7-63ca-4e73-91a9-c8e18b7f7d70"
+      ],
+      "target_entity_ids": [
+        "entity_c1f06850df2f0972",
+        "entity_f867b1022219398e"
+      ],
+      "target_entity_names": [
+        "Mycelium Wars",
+        "The Mycelium Wars"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_f0d9205e98e744f0",
+        "claim_decision_e5fbde5e2c6458b1",
+        "claim_decision_a61ca98687960c80",
+        "claim_decision_de9c8e57d638c3a5",
+        "claim_decision_95a725430b2feac9",
+        "claim_decision_d959e0a8fb5fed30",
+        "claim_decision_137ee97d5ff43a8b",
+        "claim_decision_968e3ac60221733f",
+        "claim_decision_3ca9d730934322ef",
+        "claim_decision_9b22eac9178bc474",
+        "claim_decision_4769aadba1d2afbc",
+        "claim_decision_3ae7b06855f5e607",
+        "claim_decision_d95806b14b01d1ab",
+        "claim_decision_9e7738047a4b0f50",
+        "claim_decision_e956af680093d22f"
+      ],
+      "author_claim_ids": [
+        "author_claim_41c4476ff8e3c5ec"
+      ],
+      "application_summary": "The author confirms the Mycelium Wars have a single mundane cause (Akkad stealing Sumerian AI tech); the supernatural 'war of the nephilim' is only a mythological parallel in subtext, not literal lore."
+    },
+    {
+      "answer_id": "story_answer_02a670c43b658dd5",
+      "question_id": "story_question_4c02ea776babdfd9",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "These are all correct. The bomb-resistant retrofits refer to the pouring of the concrete shell via helicopter.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T01:48:16.303451Z",
+      "question_text": "The Theriac Facility claims include that its concrete shell was interrupted by war (e765b2cf), it is inspired by the Chernobyl sarcophagus (fc78465c), includes a supply road and antenna array (06001f95), sits on a mesa (50ae3015), has destroyed buildings and skybridge (9ba379ab), received bomb-resistant retrofits mid-construction (b7aa80f5), accommodates over 100 people (c4578eee), and began with a sleek futuristic design (e7fa77a5). However, a prior answer stated the shell was only built over building 1 and half the skybridge due to funding cuts, and rejected war interruption and retrofit claims. Please clarify: exactly which of these claims about the Theriac Facility's construction, design, scale, and location are canonically correct, and which should be rejected as incorrect or superseded?",
+      "linked_claim_ids": [
+        "e765b2cf-9c59-4cbd-b891-17d4fae7786e",
+        "fc78465c-84ba-4fae-8d5d-56fbb60ced49",
+        "06001f95-efa9-439b-b8a3-6e63e4f27fe1",
+        "50ae3015-09ff-4f66-b592-9e600febf13c",
+        "9ba379ab-29e5-484d-bc2c-2caf515b1e95",
+        "b7aa80f5-ec92-453b-8ab0-fe437aec3118",
+        "c4578eee-db90-49c1-a351-af22de5ec136",
+        "e7fa77a5-a2b3-4d66-ad24-b785704853bc"
+      ],
+      "target_entity_ids": [
+        "entity_1b32efc2589aeae9"
+      ],
+      "target_entity_names": [
+        "Theriac Facility"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_9c7e08a0c442ba94",
+        "claim_decision_c1cf444daa601400",
+        "claim_decision_1a37a7f7ddc6d53d",
+        "claim_decision_c57e85811449670b",
+        "claim_decision_34ec1dd80f5faa56",
+        "claim_decision_db2eca0c627dd39c",
+        "claim_decision_7ffe93e731439c17",
+        "claim_decision_0de828c22366e423"
+      ],
+      "author_claim_ids": [
+        "author_claim_a19272fa6b8b80aa"
+      ],
+      "application_summary": "The answer confirms all eight linked claims about the Theriac Facility as correct, including war interruption, Chernobyl inspiration, bomb-resistant retrofits, supply road/antenna array, mesa location, destroyed buildings/skybridge, over 100 capacity, and sleek futuristic start."
+    },
+    {
+      "answer_id": "story_answer_81ffacc977997165",
+      "question_id": "story_question_c8bdde597e2371d3",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Correct on all counts.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:34:22.104269Z",
+      "question_text": "Is Golok a humanoid entity created by Manunggal, and is his combat style defined by the use of an oversized machete or karambits, and is he loyal to Manunggal, and is he a dark mirror to Ramasinta, and is his band Judas Priest?",
+      "linked_claim_ids": [
+        "94c0bb58-c1fb-4c66-83e9-acd756d72a5d",
+        "f2858873-e494-440b-950c-2ae83565f6f3",
+        "1cd08420-3acd-4ef7-b0e4-818b9ed12f25",
+        "61d2bd42-6df4-46c2-b91b-45c22288a60c",
+        "80163722-11d1-47fe-a520-eedd771f77e3",
+        "939110d9-0743-4b07-85e2-2f6cdfcfc339",
+        "fc2e1f7a-84ae-421f-beb9-9a810ae813c1",
+        "71189dae-60e5-4be2-b18a-6b53f3e49dc0"
+      ],
+      "target_entity_ids": [
+        "entity_a670429b68cee868"
+      ],
+      "target_entity_names": [
+        "Golok"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_9ea105df73757864",
+        "claim_decision_48808f08dda4ff3b",
+        "claim_decision_b4933a4aedaf0fc0",
+        "claim_decision_dc819a3fa9e20688",
+        "claim_decision_252feb5a42c6a1ed",
+        "claim_decision_392d1238cd2d6716",
+        "claim_decision_e2e615c21e032976",
+        "claim_decision_e8c9f4175e9a522b"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The author confirmed the question's linked claims as correct."
+    },
+    {
+      "answer_id": "story_answer_0a4b1d6f2697886a",
+      "question_id": "story_question_2d1f8352da8626a5",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Yes on all counts, and her name is Izanami.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:35:42.438390Z",
+      "question_text": "Please clarify the Architect's family relationships and timeline: Is she the mother of both Greed and Pandora? Is she married to the person who took over Khava's organization? Is she the daughter of a prominent member of Khava's organization? Is she a fellow victim of Leonidas with Enoch? Is she co-parent of the lab with Enoch? And is she younger than Pandora due to cryogenics?",
+      "linked_claim_ids": [
+        "0e9afde9-cefe-4d49-90a7-f6c356eb8147",
+        "2358249f-f3f0-4196-be95-b1d2b8743fa4",
+        "91ec17a8-5a1f-4309-8154-3063324732ef",
+        "ec7a60ae-77e9-4b7c-96d5-21dd4726af6f",
+        "30d77183-775c-4edb-82ef-9cb5e0e69e61",
+        "53108c39-0ecd-4861-8b6d-1a3ea7488426",
+        "b0dcc40b-e0bd-415d-a4e4-0dbfe964474a",
+        "a7e0b3d2-5382-4454-8857-9cbe60c9792a"
+      ],
+      "target_entity_ids": [
+        "entity_f2e40fc1edb72ee9"
+      ],
+      "target_entity_names": [
+        "Architect"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_57e0c628affb5e94",
+        "claim_decision_caf7abf43ae29ca6",
+        "claim_decision_bec67ff70f5cc28f",
+        "claim_decision_55a0480fed06f7c3",
+        "claim_decision_c24454c6e957494f",
+        "claim_decision_dc81aec1886f8ef7",
+        "claim_decision_9ecac2d494036066",
+        "claim_decision_2296a0178e3a777c"
+      ],
+      "author_claim_ids": [
+        "author_claim_ab07979eac6f0406"
+      ],
+      "application_summary": "The answer confirms all eight linked claims: the Architect is Izanami, mother of Greed and Pandora, married to Khava's successor, daughter of a prominent member, fellow victim with Enoch, co-parent of the lab, and younger than Pandora due to cryogenics."
+    },
+    {
+      "answer_id": "story_answer_25218652e45b9eff",
+      "question_id": "story_question_ebe72354a09cec14",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "It classifies any advanced technology, especially those of an evil nature that were created as a result of the Mycelium Wars. It is not a wide-spread term, but is used by Enoch in a derogatory fashion. Thematically it shares a theme with the Houses of Heaven and Enoch as being inspired by biblical esoterica.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:38:57.476318Z",
+      "question_text": "Please define the term 'Nephilim' in THERIAC lore: what entities does it classify (e.g., RUINR, Autotanks, Ramasinta), what is its origin (Mycelium Wars, biblical inspiration), and what are its characteristics (consumption of plant life and humans, association with negative memories)?",
+      "linked_claim_ids": [
+        "dd7e03ee-da4c-4122-9551-9f6305ba1ea5",
+        "7399d1bf-5813-4219-9cc1-f4667f8c285e",
+        "7e6076d4-db47-4577-b3fb-6c0f00099325",
+        "6962114c-c18f-4d83-88dd-97ebc4c7ea0a",
+        "7e7c3908-8990-4b06-a5a0-7e47bf9c578e",
+        "2908e56e-3956-498f-943c-ab164639781d",
+        "4f25ef5b-c494-48cb-8c10-4542d1b10be7",
+        "a8254dc6-0d27-4624-bf2e-c4452dbf7f9a"
+      ],
+      "target_entity_ids": [
+        "entity_5a9434fdf924cdfb"
+      ],
+      "target_entity_names": [
+        "Nephilim"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_d3c2eb409b32d5b0",
+        "claim_decision_440265590f4c6289",
+        "claim_decision_9c9d85fd782cf0ac",
+        "claim_decision_db03d293b29aa992",
+        "claim_decision_54f83ceaffac2a58",
+        "claim_decision_1dd0d0d9af59cb9c"
+      ],
+      "author_claim_ids": [
+        "author_claim_65abd5ee4b04cecb",
+        "author_claim_34d1a16c2217310c",
+        "author_claim_5221100bb9003192"
+      ],
+      "application_summary": "The answer defines Nephilim as advanced evil tech from the Mycelium Wars, used derogatorily by Enoch, with biblical inspiration. It directly supports claims about origin, classification, Enoch's usage, and inspiration, but contradicts or leaves unsupported claims about consumption of life or negative memories."
+    },
+    {
+      "answer_id": "story_answer_b4d41da029cfee50",
+      "question_id": "story_question_8acd24afc21d426e",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Mostly correct, however the Houses of Heaven are only thematically spiritual, in terms of function they were quite similar to the Krypteia. The Houses of Heaven function moreso as a predecessor to the Krypteia, and are a largely defunct organisation by the time the Krypteia arise. The transition point between the two organisations is the Watchers. And yes, Enoch's accounts of Khava are the main way this exposition is delivered in game.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:41:54.413364Z",
+      "question_text": "Is the Enoch's accounts of Khava are a primary source for discovering the 'Houses of Heaven' lore. Given that Leonidas is confirmed as the active leader who rebranded Khava's organization into the Krypteia, and that Penemue is confirmed to have defected from the 'Houses of Heaven' (Khava's organization), are the Houses of Heaven and the Krypteia directly opposing factions with conflicting over the management of immortality research and AI development of technology, with the Houses of Heaven representing a divine/spiritual approach versus the Krypteia's militaristic/transhumanist approach?",
+      "linked_claim_ids": [
+        "e6e73051-7e39-41dd-b58a-945e3536e447",
+        "1f9e2d8f-9ab9-472f-8d1b-df615602128e"
+      ],
+      "target_entity_ids": [
+        "entity_594c27048f43a508"
+      ],
+      "target_entity_names": [
+        "Houses Of Heaven"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_91905f740d14c181",
+        "claim_decision_5f373ad63448d7eb",
+        "claim_decision_63edeed15d112e96",
+        "claim_decision_c7c017557b41a10f",
+        "claim_decision_37b04e0c98739405",
+        "claim_decision_feece6ec7672da2a",
+        "claim_decision_073c16e155a3aa77",
+        "claim_decision_b1ad9a0fffeac283"
+      ],
+      "author_claim_ids": [
+        "author_claim_f144dab50f869d81",
+        "author_claim_854a3f58e1f1c4ee",
+        "author_claim_551b6708046025c1"
+      ],
+      "application_summary": "The answer confirms Enoch's accounts as primary source for Houses of Heaven lore, clarifies Houses of Heaven is a defunct predecessor to Krypteia, not a direct opposing faction, and notes they were thematically spiritual but functionally similar."
+    },
+    {
+      "answer_id": "story_answer_fe64fdae60b23bcd",
+      "question_id": "story_question_c10189b7c6dc910c",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The suit refers to the Myrmidon suit of armour, developed by the Krypteia. The player is in possession of one, and they are linked to RUINR remotely, with the superintelligence capable of providing certain external functions such as targeting to the suit.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:44:50.543324Z",
+      "question_text": "Is the entity known as Suit (entity_21839e0eb260dda7) a distinct faction or organization with a defined leadership and role in the game's world, or is it simply a generic class of equipment—specifically, the combat suits used by the player and possibly the Krypteia—and if it is a distinct actor, what is its relationship to RUINR, the Krypteia, and the player's suit?",
+      "linked_claim_ids": [
+        "0c29ea9e-94bf-471c-8fcc-50de35eca177",
+        "543b4647-7767-4bec-b828-93bb51cdc141",
+        "729ecd5c-a1d3-4f1d-bad5-89f7310bac70",
+        "eed9560c-b62c-4d1c-8a12-65bf4db39d8f",
+        "129fd7ce-094f-40a1-8a1c-607072dee0f1",
+        "d18411da-3dd6-4e6e-9cac-faee71ba6d17",
+        "0454dd38-8024-4175-8180-cd38908ad14c",
+        "2fe9f790-46cf-49da-a109-9dff26574e01"
+      ],
+      "target_entity_ids": [
+        "entity_21839e0eb260dda7"
+      ],
+      "target_entity_names": [
+        "Suit"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_bbd06a99877a57d5",
+        "claim_decision_bd865743949d9a92",
+        "claim_decision_cb9405a8ed5bed28",
+        "claim_decision_1ab6395a74baa206",
+        "claim_decision_12492417173a6b95"
+      ],
+      "author_claim_ids": [
+        "author_claim_41422bfc4687f7dd",
+        "author_claim_6506924fc3754276"
+      ],
+      "application_summary": "The answer confirms Suit is a Myrmidon suit, used by the player, linked to RUINR. It resolves that Suit is equipment, not a faction. Directly linked claims about suit capabilities are largely supported; unrelated claims are left pending."
+    },
+    {
+      "answer_id": "story_answer_b1f05c876bef09a7",
+      "question_id": "story_question_7ab0bc21658fb5aa",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The Enclave is not from Theriac lore but is from Fallout's, but it serves as an external inspiration for the Krypteia, as a similar \"deep state\" organisation with comparable modus operandi.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:47:44.027215Z",
+      "question_text": "What is the relationship between the Enclave and the Krypteia—are they the same faction, are they separate but allied, or are they in conflict—and does the Enclave function as a 'deep state' faction in the Fallout universe, or is that role specific to the Krypteia's, or are both overlapping?",
+      "linked_claim_ids": [
+        "e7e97c85-7b48-4b80-9e05-56a5026f9b60",
+        "19fb449f-36cf-406f-a0ea-67fd89351f13",
+        "f6973114-925e-4576-8481-092814105ced",
+        "4de2d44b-151b-47a1-9abb-c8558af2d988"
+      ],
+      "target_entity_ids": [
+        "entity_0c6d9d2b8ee34aa1"
+      ],
+      "target_entity_names": [
+        "The Enclave"
+      ],
+      "claim_decision_ids": [],
+      "author_claim_ids": [
+        "author_claim_ab16ce4ce22979f5"
+      ],
+      "application_summary": "The answer states the Enclave is not Theriac lore but an external inspiration for the Krypteia. This rejects the 'deep state' role claim as lore, while all other linked claims are unrelated to the answer and left pending. An author claim is added for the inspiration statement."
+    },
+    {
+      "answer_id": "story_answer_98fe4023fadff22b",
+      "question_id": "story_question_bc750fd8a46364fd",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Mannungal (demonym = Manungallans) is a nation that was at war with, and destroyed most of Sumer. Altruism (Zi-er)'s tribe are the survivors of this conflict. When Manunngal invades again, they find the AI Ninhursag during their occupation of the lab. They initially tolerate the robotic presence despite their ideological hatred of automation, but after the events of the quest Man of War, the stationed soldiers make the decision to destroy Ninhursag, who uses the lab robots to carve a final message to the lab members.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:51:27.415638Z",
+      "question_text": "What is the relationship between the Mannungalans (Sumerians, Mannungalans, Altruism's tribe, and the inhabitants) and the AI Ninhursag—specifically, did the Mannungalans' role and the decision to capture and shut her down? Are these tribes all human factions that coexist or have some overlap? Also are the initial claims about the Mannungalans being spooked by lab robots and then transmitting a final message from Ninhursag confirmed?",
+      "linked_claim_ids": [
+        "520d8e03-67e1-403e-a44b-2961b0ecff5f",
+        "4355c1ab-2dd1-41aa-b99d-35e8636c9492",
+        "707e25fd-24ce-44e5-b13c-ac5d432758fc",
+        "aec87f9c-b31d-4142-be36-d65ff6aa10f2",
+        "b4078652-8314-494b-a444-8495905113ee",
+        "2dd6eae3-404c-4504-a36f-531415cc79cf",
+        "bb2e47eb-10c9-4dfb-89d1-c923aa4ece39",
+        "059f941f-14dd-4fcd-9378-646157997880"
+      ],
+      "target_entity_ids": [
+        "entity_5dda5038c07da9f6",
+        "entity_9827c3223f3089ec"
+      ],
+      "target_entity_names": [
+        "Mannungalans",
+        "Sumerians"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_e9d56d4d21171c46",
+        "claim_decision_fb665ad752d5d571",
+        "claim_decision_0b547ca5c9dfebe0",
+        "claim_decision_376eab92cf7f1ad4",
+        "claim_decision_a7f5617a879432c0",
+        "claim_decision_163620346ab903cf",
+        "claim_decision_75800d5773816c44",
+        "claim_decision_8a296c2eef77374f",
+        "claim_decision_352c6928c98e3241",
+        "claim_decision_d10cab3f461eb41e"
+      ],
+      "author_claim_ids": [
+        "author_claim_7f64b9d7ad7a6f72",
+        "author_claim_6b797e4f5f4a4081",
+        "author_claim_e6da55e0110846e5"
+      ],
+      "application_summary": "Applied author answer confirming Mannungal captured Ninhursag, initially watched then destroyed after Man of War, using robots for final message. Related claims accepted; unrelated Sumerian claims left pending."
+    },
+    {
+      "answer_id": "story_answer_ea9a9537d8106f8f",
+      "question_id": "story_question_7758769fc058f60e",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Yes. The Orokin and Sentients are from the game Warframe. Penemue, RUINR and the Myrmidon suits are from Theriac.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:54:01.405774Z",
+      "question_text": "Is the Orokin merchant class (which includes Parvos Granum and survived as the Corpus) distinct entities from the 'Krypteia AI' lineage of Penemue, RUINR, and the Myrmidon suits—meaning the Orokin and Corpus are purely human factions unrelated to the AI factions, and do the Orokin have any direct control over Sentients, or is that relationship actually about the Krypteia's war AIs, and are the claims about Orokin identity (merchant class, enslavement, Sentient control) contradictions with or parallel to the Penemue/RUINR/Myrmidon lore?",
+      "linked_claim_ids": [
+        "9b8c3964-9ee4-4279-8d49-636859335a52",
+        "67bcf7bc-67f0-4ce8-87ba-fc181e5685ba",
+        "ba37f5da-c538-4018-8f9d-f0f1e14258ab",
+        "93b8aefa-ce76-4b26-88d2-a85a25ae9543",
+        "6638dd8a-78e8-4837-8e33-39fe78e4a278",
+        "59b5f71b-2807-419b-bc19-f40938045be4",
+        "7eeea94d-3217-404d-ae32-2d7698de5ad0",
+        "de723a72-9a99-41aa-a529-ac03f77d4e2b"
+      ],
+      "target_entity_ids": [
+        "entity_092d28d41afc8908",
+        "entity_e71bed3c2488f05c"
+      ],
+      "target_entity_names": [
+        "Orokin",
+        "Penemue"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_8b8ddd8d2c644d8b",
+        "claim_decision_1d93309a8c2e1bd5",
+        "claim_decision_dc98968a0edc33b6",
+        "claim_decision_6fb315e36d197bb5"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The answer clearly separates Warframe's Orokin/Sentients from Theriac's Penemue/RUINR/Myrmidon, confirming distinct franchises. All Orokin-linked claims are rejected as related to Warframe, not Theriac. Claims about Penemue, Krypteia AI, and Myrmidon suits are either accepted as Theriac lore or left pending when unresolved."
+    },
+    {
+      "answer_id": "story_answer_2e93ccacca0248c1",
+      "question_id": "story_question_d3787c352c39fa5a",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Izanami is named for a Japanese goddess of creation and death, which serves as her thematic backing, but in the context of Theriac lore she is Pandora's mother and the architect of the lab, correct.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T02:56:04.019388Z",
+      "question_text": "Is Izanami a singular character (a Japanese goddess of creation and death, ruler of the underworld, Pandora's mother, and architect of Enoch's lab) or should she be split into multiple distinct entities (e.g., the mythological Izanami vs. a separate character named Izanami who was married to Leonidas, had parents in the Krypteia, and worked on Enoch's lab)?",
+      "linked_claim_ids": [
+        "b97e4393-6e47-42b1-adec-d11d6e8c4a48",
+        "74b95b85-6ebf-4ac1-9166-b41a9619986f",
+        "2eb55110-dc77-4c24-a89a-176a45015ed7",
+        "703b3203-b644-472d-94ea-a48d3fa73ddb",
+        "72089bc8-9eb3-494c-bcad-97dee042eb1a",
+        "cc494835-67d6-4752-8bb6-03085bb115be",
+        "b2c76006-2add-4ac1-867c-be230572626a"
+      ],
+      "target_entity_ids": [
+        "entity_7bee01fcd9055f25"
+      ],
+      "target_entity_names": [
+        "IZANAMI"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_5a9489e940adcc63",
+        "claim_decision_0724ee5c9d218b7a",
+        "claim_decision_ba50533d5c43980a"
+      ],
+      "author_claim_ids": [
+        "author_claim_fc302f29408c694c",
+        "author_claim_f40dbaa59c260c9a"
+      ],
+      "application_summary": "Answer confirms Izanami is one character, thematically backed by the Japanese goddess but in-lore is Pandora's mother and lab architect. Direct supporting claims accepted; mythological-only claims partially supported as thematic; contradictory detail claims about Krypteia parents, Leonidas marriage, unhappiness left pending where unrelated to answer's scope."
+    },
+    {
+      "answer_id": "story_answer_8ccbca76185ba697",
+      "question_id": "story_question_9215ab9a3fe46157",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "They are present from beginning to end of the conflict, were a first-resort and only targeted civilians when low on fuel and in urban environments where biomass was not otherwise available.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:00:34.504568Z",
+      "question_text": "What is the specific role and behavior of Autotanks in the THERIAC war—are they overwhelming, last-ditch forces that destroy military assets and then cause ecological catastrophe by consuming biomass, or are they primarily a terrifying but passive presence that do not actively target civilians unless hungry, and do they mark the end of the conflict?",
+      "linked_claim_ids": [
+        "611126ce-0ef6-485c-b9d1-2c02449902eb",
+        "c1c6d945-01e2-437f-b53e-01df66e8170f",
+        "03d5306c-22f6-413b-957b-0798c916996d",
+        "60744302-8e9c-4171-8d67-e2db9dce2c77",
+        "a3a98d5e-7905-462e-9b51-18843cb22e5f",
+        "caffdc35-c6ab-4f06-90da-d85f80026db0",
+        "5cae93e1-7283-48e2-a322-10e244d6e7ba"
+      ],
+      "target_entity_ids": [
+        "entity_e0df2db2d4fc4e1c"
+      ],
+      "target_entity_names": [
+        "Autotanks"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_43882bdb6a6e4924",
+        "claim_decision_42e95b5252cfac0e",
+        "claim_decision_95e6ef7843d7cffd"
+      ],
+      "author_claim_ids": [
+        "author_claim_7bba9892081b0f90",
+        "author_claim_e9d64cd5b0af71b9",
+        "author_claim_a5b9fcbf153c4417"
+      ],
+      "application_summary": "The answer states autotanks are present throughout the conflict, first-resort, and only target civilians when low on fuel in urban areas where biomass is unavailable. This resolves several linked claims but leaves others contradictory or unspecified."
+    },
+    {
+      "answer_id": "story_answer_bf3f8f26fce46187",
+      "question_id": "story_question_5a4f1796f8668097",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The Enclave is external to Theriac's setting and serves as an inspiration.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:05:06.238415Z",
+      "question_text": "In THERIAC lore, does the Enclave (entity_0c6d9d2b8ee34aa1) function as a canon in-universe 'deep state' faction that Mr. House is aware of and fears due to their potential to disrupt his plans, who possesses more advanced technology than the Brotherhood of Steel, and whose portrayal varies across Fallout games—or is the Enclave entirely external to THERIAC's setting, serving only as an inspiration for the Krypteia, meaning all claims about the Enclave being part of THERIAC's lore should be rejected?",
+      "linked_claim_ids": [
+        "e7e97c85-7b48-4b80-9e05-56a5026f9b60",
+        "19fb449f-36cf-406f-a0ea-67fd89351f13",
+        "7a61a46a-9996-4296-9ad9-d071d13033a0",
+        "f6973114-925e-4576-8481-092814105ced",
+        "4de2d44b-151b-47a1-9abb-c8558af2d988",
+        "3e21164b-2564-4487-b10a-90c0eb429d4f",
+        "4941bdde-d995-48b4-b01d-2b692a98cf28",
+        "9dc7f539-0dfe-4ff7-b562-5b3e92b1e674"
+      ],
+      "target_entity_ids": [
+        "entity_0c6d9d2b8ee34aa1"
+      ],
+      "target_entity_names": [
+        "The Enclave"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_567fa835327a9aba",
+        "claim_decision_c2f22c5b7f870d9f",
+        "claim_decision_849f97d7bfd3676c",
+        "claim_decision_d1d8b897e867a180",
+        "claim_decision_00584068a375018e",
+        "claim_decision_aa6961350d2ddc6b",
+        "claim_decision_5757bc092ca23f55"
+      ],
+      "author_claim_ids": [
+        "author_claim_ddc3f6e90dab7de9"
+      ],
+      "application_summary": "Answer confirms Enclave is external to THERIAC, serving only as inspiration. All 8 linked lore claims are actively contradicted and rejected. Unrelated claims omitted."
+    },
+    {
+      "answer_id": "story_answer_c4515e83151f3a80",
+      "question_id": "story_question_82f873b8e54c3c10",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The player's role in Theriac is to assist the lab in overcoming the ban on brain rejuvenation research. The way they do this is through managing the lab, including their relationship with its members.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:06:33.912943Z",
+      "question_text": "Is the player's role in THERIAC to solve biological aging by overcoming the ban on brain rejuvenation research, or is the central problem of aging actually about societal/cognitive stagnation caused by population decline, which the player addresses through other means such as lab management and character relationships?",
+      "linked_claim_ids": [
+        "88b7ac90-0d51-4114-8521-a22ea7191857",
+        "ec1d2014-6f57-42af-b524-3402b75cbcea",
+        "149d80c9-eb0d-45d3-9e3d-36272e651fa4",
+        "2dab05a0-3aa1-4320-92a6-cff9c659cb39"
+      ],
+      "target_entity_ids": [
+        "entity_fbac8a3f9969c928"
+      ],
+      "target_entity_names": [
+        "Aging"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_ebf44ec266b2bf2c"
+      ],
+      "author_claim_ids": [
+        "author_claim_287a15134b9c033e",
+        "author_claim_53e8d5270fd2809d"
+      ],
+      "application_summary": "The answer clarifies the player's role: assisting the lab to overcome a brain rejuvenation ban via lab management and relationships. Directly linked claims about population decline, cognitive/biological aging, and the 'forever' concept remain unresolved or unrelated. Non-linked claims about composite aging, body replacement, and eyesight decline are left pending."
+    },
+    {
+      "answer_id": "story_answer_337e90dcd62c6075",
+      "question_id": "story_question_1720df429d07e4ad",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The autotanks consumed forests in the first year of the war, when they were sent en-masse overland. In the second year of the war onwards, they are instead sent towards cities via underground rail networks. When they engage in urban combat, the only available biomass is usually humans, hence they then consume humans. Manunggal actively fights the autotanks in the final year of the war.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:09:45.261566Z",
+      "question_text": "How do Autotanks transition between the urban combat environment described (where they engage Manunggal forces, are shielded from close air support, and operate in cities) and their mass consumption of biomass that causes ecological catastrophe—specifically, are these separate phases or theaters of war, do the same Autotanks both fight in cities and later consume forests/people, and is the combat in cities driven by their need to acquire biomass or by military orders from the Manunggal war?",
+      "linked_claim_ids": [
+        "66fc9ada-4f50-4c61-a5c8-d43a6213b7ac",
+        "6dfd5355-c147-4aee-bdc1-03a5a4af58e5",
+        "cb341ef3-1a19-4f52-b93f-5dbd0f5ba292",
+        "ab5f4c64-cba9-40f9-89b9-35be06122950",
+        "1907d0ba-45fc-40ff-bb8a-5dd0d95ef9aa",
+        "285d01ec-02f9-4d56-b529-6816c1a2e10e",
+        "32bc2026-3e0e-4a47-a60a-f56178ce63b6"
+      ],
+      "target_entity_ids": [
+        "entity_9b9c5d24cc19efa0"
+      ],
+      "target_entity_names": [
+        "Autotank"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_329a92c755c6d70a",
+        "claim_decision_2e7cd6470b213bce",
+        "claim_decision_730f1bbb19bf1a49",
+        "claim_decision_ccfdbf44f0ad66a0",
+        "claim_decision_007efcd65be62cfc",
+        "claim_decision_6462d3e35b8f2f78",
+        "claim_decision_2d73a739044f7dae"
+      ],
+      "author_claim_ids": [
+        "author_claim_688c391c3326d17d",
+        "author_claim_2df1305eac8ba60f",
+        "author_claim_c0010160e76f3c29"
+      ],
+      "application_summary": "Answer clarifies timeline: Autotanks consumed forests in year 1, then shifted to cities via underground rail from year 2 onwards, where they consume humans due to lack of other biomass. Manunggal fights them in the final year."
+    },
+    {
+      "answer_id": "story_answer_b35ae2facf130c65",
+      "question_id": "story_question_29211a6196d052d8",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Yes, the two characters are the same, and the final canonical name for this character is Enoch.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:12:35.710534Z",
+      "question_text": "In the lab member cluster, there is a 'final character' described as an older, experienced leader with a fatherly relationship to younger members, who embodies the motivation of having lost too much and is emotionally tortured. Separately, there is a character named 'Loss,' described as older (approx. 90), afraid to love again due to past trauma, with buried feelings for another lab member, and who 'envies Love' and is resented by Love for his pessimism. Meanwhile, 'Love' is resentful of Loss, and Loss envies Love. Are the 'final character' and 'Loss' the same character? If so, please confirm that Loss IS the final character (the last lab member the player encounters) and that Loss has all the following attributes: fatherly mentor, older leader, emotionally tortured from losing too much, has a hesitant love interest and buried feelings, and has a mutually jealous/envious relationship with Love. If they are not the same, please clearly distinguish which attributes belong to which distinct character.",
+      "linked_claim_ids": [
+        "4e49ab16-c1d4-412d-96a8-0f9c8b8f366d",
+        "c4993aec-050b-4ea9-bce3-d352e1a863a5",
+        "1404273b-ffd9-468b-8b60-b475447c7b53",
+        "33485c92-52ec-46a6-8cb3-7af188ea3b84",
+        "e3069c27-6336-4bbd-a6d3-f1203cb4f960",
+        "53d9c0cb-091b-496b-9a43-4f82820e8c10",
+        "5531c1dc-d94e-4208-8399-7e331dc74a38",
+        "74bc570b-a3e2-4a58-90d5-a9a4ad832e68"
+      ],
+      "target_entity_ids": [
+        "entity_4384d5d10bcf335b"
+      ],
+      "target_entity_names": [
+        "Lab Members"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_44710b2a8704d9c3",
+        "claim_decision_ee18454a8ee5142f",
+        "claim_decision_995958341a5979b3",
+        "claim_decision_a3319a798e97f5f9",
+        "claim_decision_f3d1aa55b974f7be",
+        "claim_decision_87cbcc9d2e133b99"
+      ],
+      "author_claim_ids": [
+        "author_claim_28029e54ff01ded9"
+      ],
+      "application_summary": "The answer confirms the 'final character' and 'Loss' are the same character, named Enoch. Directly linked claims about identity and relationships are accepted; unrelated claims are omitted."
+    },
+    {
+      "answer_id": "story_answer_5722f770b986caed",
+      "question_id": "story_question_8e708853a2d3ee3f",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Yes, these are the same characters, and this character is Oyuun.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:14:01.344265Z",
+      "question_text": "Is the character with the clock mechanism in her arm (who monitors her blood, hides a fun personality, and is linked to the biohacker community) the same character as the technician with multiple watches including a prominent 'death clock' that displays her remaining lifespan, or are these two separate characters?",
+      "linked_claim_ids": [
+        "15cf12d4-c790-49e6-97a5-2b7198dcf8e6",
+        "e80258c2-708f-4ba8-8df4-176fb13e95c1",
+        "20cb4829-015e-4fd7-a13b-f14392c88a6f",
+        "0bf3966e-fdfd-4541-be08-1683cee56874",
+        "29641703-c411-4ff7-ac91-a8f04b66fa03",
+        "337db54d-3db3-4023-af43-4b020717e57c",
+        "3d321732-7ebf-4527-b793-9690a6208733",
+        "417273cd-0fbe-42a3-bc90-2545ed4307be"
+      ],
+      "target_entity_ids": [
+        "entity_898eff0b069ba7b6"
+      ],
+      "target_entity_names": [
+        "Cybernetics"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_5a74522cdff57bd3",
+        "claim_decision_3eb1e779b223998c",
+        "claim_decision_0431e70005485bfd"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "Answer confirms clock-arm character, death-clock technician, and Oyuun are the same. Directly linked claims 15cf12d4, e80258c2, 20cb4829 are accepted; others are left pending."
+    },
+    {
+      "answer_id": "story_answer_5f3f1dbffee6d7f2",
+      "question_id": "story_question_33f93454ee4a7af2",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The name is simply an alias adopted by the usurper. He names himself after the Spartan King.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:16:56.733249Z",
+      "question_text": "Please confirm whether Leonidas, the founder and current leader of the Krypteia who commissioned HECTR and developed the Myrmidon suits, is the same character as the historical Spartan king Leonidas, or if the name is simply an alias adopted by the usurper of Khava Zimov's organization. Additionally, is Leonidas the same person as the decrepit, wheelchair-bound individual Enoch might kill, and potentially the Transhumanist Character (Halayudtha) interact with, and is he is sometimes referenced as a potential target for Enoch's kill? If Leonidas is a different character from Halayudtha and the historical Spartan, please clarify his exact identity and role in relation to these other figures and the Krypteia.",
+      "linked_claim_ids": [
+        "da1a2200-74ae-47ad-9647-5427cf7eec71",
+        "c00d21e4-1e5a-4609-b566-0a6095263fd8",
+        "03f69a9d-6a5a-419c-94c4-4da29ffe12b8",
+        "da5157c5-964d-4e3f-94a0-052f5840b849",
+        "0e9740c8-b96a-49e2-ae46-e6d84fecb976"
+      ],
+      "target_entity_ids": [
+        "entity_232851c3072c5297",
+        "entity_d634bf7c01467896",
+        "entity_f0dd3075abc8b8a0"
+      ],
+      "target_entity_names": [
+        "ACHILLES",
+        "Leonidas",
+        "Transhumanist Character"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_070827836189ebe3"
+      ],
+      "author_claim_ids": [
+        "author_claim_4534b8767ccbb4be",
+        "author_claim_eb950297b54419d5"
+      ],
+      "application_summary": "The answer confirms Leonidas is an alias adopted by the usurper, not the historical Spartan king, resolving directly linked alias claims but leaving unrelated ones pending."
+    },
+    {
+      "answer_id": "story_answer_a730f634f65b5b6e",
+      "question_id": "story_question_116818b3911be4d3",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Fan-exported lore from Cyberpunk 2077. Unrelated to Theriac. Reject all claims.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:18:18.321034Z",
+      "question_text": "Is Morgan Blackhand a character who appears in the THERIAC narrative and has a specific role in the game's story, or are the claims about him being aware of Cyberpunk 2077 events, having a 'sleeper build', using Adam Smasher as a shield, and being a 'combat smarts god' simply fan-exported lore from the Cyberpunk 2077 setting that does not apply to THERIAC's original characters and story?",
+      "linked_claim_ids": [
+        "4462336c-462b-4a2f-9296-2361b9d257aa",
+        "80e3fe7d-b849-47bc-a78e-ec552b411efe",
+        "ae2e4a4f-66e0-4432-b8d5-4f366aaa52c3",
+        "1242d70f-90aa-48c7-9976-e04e09aa3b25"
+      ],
+      "target_entity_ids": [
+        "entity_0b453d7dc19abd2d"
+      ],
+      "target_entity_names": [
+        "Morgan Blackhand"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_779499eca44f0f7b",
+        "claim_decision_df5c0074f26e367f",
+        "claim_decision_5d175831b71bfb57"
+      ],
+      "author_claim_ids": [
+        "author_claim_e5c55a254e6ca2de"
+      ],
+      "application_summary": "The author confirms Morgan Blackhand is fan-exported Cyberpunk 2077 lore unrelated to THERIAC, directly rejecting all four linked claims about him."
+    },
+    {
+      "answer_id": "story_answer_8118f8c288e54bd3",
+      "question_id": "story_question_0d5444f0e79ef2e1",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The humanizing goal applies to the broader immortalist community in real life, with the lab serving as proxies for this. Most of the characters in the lab are immortalists I would say, but not all. Some are more comfortable with the idea of immortality than others, but Enoch who leads the lab is most definitely an immortalist.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:20:02.353710Z",
+      "question_text": "You described several characters as 'Immortalists' — including a group that hides from society and uses working names like 'Loss', 'Love', 'Fear', 'Joy', 'Altruism', 'Altruism', and 'Greed' who staff the lab, and also a broader community that is often negatively portrayed in media, countered by THERIAC's goal to present a humanized perspective. Is every character in the lab (Loss, Love, Fear, Joy, Altruism, Greed) definitely an Immortalist, or is 'Immortalist' a narrower category that only some of them belong to? And does the humanizing goal apply specifically to the lab members, or to the wider Immortalist community beyond the lab?",
+      "linked_claim_ids": [
+        "300d73ba-0315-4ff1-845f-141dc0da199f",
+        "b3a5c1fa-e374-414a-a85c-db5eab9c5d78",
+        "06f10d44-58fa-483d-8c96-726b0c1788e0",
+        "0e2675d8-76d4-440f-8c63-ec4c470274d4",
+        "2a423506-91f5-477c-98ea-c7453c913a1e",
+        "40f57936-d093-4f92-a2c1-b53e5a4766ef",
+        "6d18e028-a0e2-41fb-ba69-04f1acad6ea2",
+        "0b3e3a60-2a55-4936-adc7-6d49ab5c8976"
+      ],
+      "target_entity_ids": [
+        "entity_5b952a1c2a22e68c"
+      ],
+      "target_entity_names": [
+        "Immortalist"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_34d0c5f095e77688",
+        "claim_decision_dca682f261864035",
+        "claim_decision_fbe4788d4ec4f8f5"
+      ],
+      "author_claim_ids": [
+        "author_claim_6238c3d3113a7ae6",
+        "author_claim_8e169dca1f25e9c5"
+      ],
+      "application_summary": "The answer confirms the humanizing goal applies to the broader immortalist community, with lab members as proxies. Most lab members are immortalists, but not all; Enoch is definitively one."
+    },
+    {
+      "answer_id": "story_answer_fdacfaf1d5398e3e",
+      "question_id": "story_question_328f7cb95c4f87d7",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The Garden of Eden connection is a thematic linkage. Yes, they are the same individual. The resemblance is left directly up to interpretation but serves as a reasoning for Enoch's immediate attachment to Fear (Oyuun).",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:22:45.527267Z",
+      "question_text": "Is the 'Eve' character, who is described as a worse person than Enoch, possesses a genuine love for Enoch, has 'fire and brimstone' motivations, is compared to Gendo, and who froze herself and her daughter in Enoch's backstory—the same individual as the 'Eve' who resembles Fear and has a similar hair color, and if so, what is the canonical explanation for the resemblance between Eve and Fear, and does Eve's freezing herself and her daughter directly link to the Garden of Eden narrative and the consequences of the 'tree of knowledge' as a literal in-universe event, or is that linkage purely thematic?",
+      "linked_claim_ids": [
+        "2619774c-3e71-45dc-a4c5-4573397aec74",
+        "38e073d3-4a20-4329-ac3f-c74dd68aff4f",
+        "f86bdff6-4bc5-4114-8dbb-7c66d00c0734",
+        "74d14661-e9b8-48d9-aed8-8541f97c5b1a",
+        "8b45cae0-2fdd-4a8c-ac39-08f9927e6cd6",
+        "1cffc8b1-5c91-4926-899c-053f4bdad6ae",
+        "243b5838-cdd0-421a-a019-2a0fbb0744df",
+        "33f9552f-79bf-491c-bf1e-0fe437c8d3dc"
+      ],
+      "target_entity_ids": [
+        "entity_85262adf74518bbb"
+      ],
+      "target_entity_names": [
+        "Eve"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_2a04c7ed9c88c6d3",
+        "claim_decision_35befeb7e3d43df2",
+        "claim_decision_9f992a299ab3b576",
+        "claim_decision_62474e3c3d87b346",
+        "claim_decision_fc1e3ea61358611b",
+        "claim_decision_6d831328f3a50b7b",
+        "claim_decision_50f5ba2a47c1e63a",
+        "claim_decision_16e973a167be93eb"
+      ],
+      "author_claim_ids": [
+        "author_claim_3187b98ef22b5cb4",
+        "author_claim_d584a91adc3abbd6",
+        "author_claim_eabc6d826d077389"
+      ],
+      "application_summary": "Accepted identity and resemblance claims. Thematic Eden link rejected; other unrelated claims left pending."
+    },
+    {
+      "answer_id": "story_answer_86f141c2cd0ec252",
+      "question_id": "story_question_ba6d43f7355ccc49",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "It is an opportunistic behaviour that occurs when fighting in urban environments and low on power. It is a possible behaviour in order to extend their uptime when low on fuel. The ecological catastrophe is indeed a direct consequence of their mass deployment.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:28:13.448959Z",
+      "question_text": "In the THERIAC setting, are the Autotanks' biomass consumption and ecological catastrophe (claims 23e42ed5, 3b24250d, fad20468, a4b27f8e) driven purely by their wartime function as overwhelming military forces (claims c5e9bb1b, cd6290dd), or should they be understood as primarily a post-war or environmental force that emerged threat? Specifically, do Autotanks actively hunt and consume people as a primary fuel source when plant life is scarce (as per 3b24250d), or is that a secondary, less common behavior? And is the ecological catastrophe ('Year 1') a direct consequence of their mass deployment in the Mycelium Wars, or a separate event involving autonomous swarms?",
+      "linked_claim_ids": [
+        "23e42ed5-2378-4c07-bf0b-68fd12725242",
+        "3b24250d-cc65-48bf-b271-30f99ed49bdc",
+        "fad20468-b4a2-4318-9f82-118bff3f31d7",
+        "c5e9bb1b-17a8-4631-8497-7c62ab7e8a39",
+        "cd6290dd-956b-4b59-a73e-7d4a3992029c",
+        "31a75640-67dd-41ad-8554-f8e0e6f8b22c"
+      ],
+      "target_entity_ids": [
+        "entity_aab3c9626ddcbdbb"
+      ],
+      "target_entity_names": [
+        "Autotank Biomass Consumption"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_d0d6d995acb2d857",
+        "claim_decision_132a24c53a4d826d",
+        "claim_decision_1324d4425c132b15",
+        "claim_decision_31e0ad4f468f4e45",
+        "claim_decision_ad34b15ce87e6892",
+        "claim_decision_d33e7a8e23b78259"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The answer clarifies that Autotank consumption of people is opportunistic when low on power in urban settings, not a primary behavior. Year 1 ecological catastrophe is a direct consequence of mass deployment."
+    },
+    {
+      "answer_id": "story_answer_e707168daaf8bd02",
+      "question_id": "story_question_3bbdb40f4dbbc52d",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Enkidu Project is the development team behind Theriac.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:29:43.279286Z",
+      "question_text": "In the THERIAC setting, what exactly is the Enkidu Project—is it an entirely separate game/spin-off with its own story and mechanics, or is it a sub-project or code-name for the main THERIAC game's development, and how does it relate to the main story and world, and what is the exact nature of its relationship to the Krypteia (if any)?",
+      "linked_claim_ids": [
+        "ddfefa25-b3eb-4fd7-b131-b9374a35080c",
+        "20b4be0a-c629-4931-9909-49c2fb98d45a",
+        "813bda1d-0db9-4e2c-b40a-f598fe0d932f",
+        "a58643e5-cf74-409a-8bb1-f8311131d461",
+        "d589f78c-1cb5-4fba-95f5-3f8e80134c20",
+        "fd039751-eee5-45d4-bd9e-be5a458e6f99",
+        "a9fbddbd-1fd2-4b2a-a3fa-5b8d7c7231e0"
+      ],
+      "target_entity_ids": [
+        "entity_58084294191c12d4"
+      ],
+      "target_entity_names": [
+        "Enkidu Project"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_14b245f8ff5b0033",
+        "claim_decision_1ca3a0498c1d2eeb",
+        "claim_decision_182da7477cf61c37"
+      ],
+      "author_claim_ids": [
+        "author_claim_64b87cf00a6cb15b"
+      ],
+      "application_summary": "The answer defines 'Enkidu Project' as the development team behind Theriac, contradicting claims that it's a spin-off or brand name. Closely related claims are rejected; unrelated claims are omitted."
+    },
+    {
+      "answer_id": "story_answer_56e3aa8bbcd01dcd",
+      "question_id": "story_question_a5d55b9fe96fb558",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The former only.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:30:44.700055Z",
+      "question_text": "Is the purpose of the Neural Organoids tech tree step to produce lab-grown brain tissue for research into immortality (as a component of the THERIAC research path), or is it specifically a means to interface with and control Organic AIs (such as Oberon and Titania) as implied by the need for optogenetics components and bioelectricity cell fate modulation—or both?",
+      "linked_claim_ids": [
+        "1506b221-4c8e-40c3-b545-8ca33c53db7f",
+        "c6d68571-40bd-41c7-b105-948eecd78d52",
+        "0561cf7e-10ee-42b9-bd00-adac973feadb",
+        "fdafbf46-f9ba-4bd4-8f6a-0c0a750c531c"
+      ],
+      "target_entity_ids": [
+        "entity_825bd382d82bfeca"
+      ],
+      "target_entity_names": [
+        "Neural Organoids"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_64316fa13040c106",
+        "claim_decision_96c9e81e3e309a4e",
+        "claim_decision_5e207090abde61d0",
+        "claim_decision_f9d7eb83d55d0fbf"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "Answer confirms Neural Organoids are solely for immortality research, not for interfacing with Organic AIs. Accepted directly linked claims about sub-targets/milestones; unrelated claims left pending."
+    },
+    {
+      "answer_id": "story_answer_06976f4e15326eb4",
+      "question_id": "story_question_edfbd2f53afc5479",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Correct on all counts. Love is Beau, Loss is Enoch.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:32:52.969913Z",
+      "question_text": "Are Loss and the 'final character' (the older, fatherly leader who has lost too much and is emotionally tortured) the same character, with Loss being approximately 90 years old, afraid to love again due to past trauma, with buried feelings for another lab member, who envies Love and is resented by Love for his pessimism, and whose spouse is in cryostasis?",
+      "linked_claim_ids": [
+        "4905f274-5d43-48aa-a3ad-6f83a14954e3",
+        "5fc338e7-e737-40b2-b880-b0581f14d9fa",
+        "057a30e8-6bf8-44c9-bf02-81c521ed763a",
+        "b4d57c1f-8a34-48cd-8d57-e616763695a9",
+        "b42816e0-5daa-4b6d-8c8d-f1a0e187ed12",
+        "fd5f4cdd-fb47-4a83-a738-5472828e7194"
+      ],
+      "target_entity_ids": [
+        "entity_686f746a95b6f836"
+      ],
+      "target_entity_names": [
+        "Love"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_83b846545b1c3e3a",
+        "claim_decision_4916196f6838ce76",
+        "claim_decision_489f0a52042f3871",
+        "claim_decision_9616e17db6d14efa",
+        "claim_decision_86bd0994d42a21c4"
+      ],
+      "author_claim_ids": [
+        "author_claim_340678627308f512",
+        "author_claim_2225c0ed173aaee9"
+      ],
+      "application_summary": "The answer confirms Love is Beau, Loss is Enoch, validating all linked claims about these characters' identities and relationships. Unrelated claims remain pending."
+    },
+    {
+      "answer_id": "story_answer_b18299620eead3c4",
+      "question_id": "story_question_e00cd913eddaa757",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Both. It is both a retelling of Spartan history and a result of Leonidas's obsession with the in-universe historical Sparta.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:35:02.228182Z",
+      "question_text": "In the THERIAC setting, is the historical account of Sparta (including its eugenics, citizenship requirements, slave ownership, and social structure) intended to be directly reflected literally in the game's world as the direct historical and cultural foundation for the Krypteia organization, or is Sparta's inclusion primarily a thematic or metaphorical parallel, possibly filtered through the 'mythological parallel in literary subtext' model you established for the Mycelium Wars? Additionally, what is the canonical relationship between this Spartan lore and the Krypteia—are the Krypteia directly descended from or inspired by ancient Spartan institutions, or is the connection purely thematic?",
+      "linked_claim_ids": [
+        "a6c8c51b-a85e-47c7-8baf-b28302dca67c",
+        "24f1cff9-6d09-4834-b60c-f0d32a63cf50",
+        "bb4e80a4-a1ba-4477-a121-75609386e031",
+        "cde0b704-7fe8-40a5-ae1e-fd4c07dc1bde",
+        "06fd4692-ca10-4b88-807f-b757a4f1be54",
+        "11920542-d90b-4bf9-80c9-63d0530c2dbd",
+        "846534a6-d6ab-4028-9bb4-c1773acfb5cd",
+        "b34a60ae-2a6b-4eab-87f1-58b03408c122"
+      ],
+      "target_entity_ids": [
+        "entity_754eb644cac7a905"
+      ],
+      "target_entity_names": [
+        "Sparta"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_5720cec15e9f8ea6",
+        "claim_decision_e80258351da64d95",
+        "claim_decision_8d3184a9e02c0214",
+        "claim_decision_ff6b775372ba290a",
+        "claim_decision_61bba29ed9160788",
+        "claim_decision_fbe1a558596f94a4",
+        "claim_decision_6fcb6b049a164c56",
+        "claim_decision_a3fd7bcbac19a7ad"
+      ],
+      "author_claim_ids": [
+        "author_claim_86f02bd9cb7bed76"
+      ],
+      "application_summary": "Answer confirms Sparta's history literally exists in-universe, as both a retelling and Leonidas's obsession. All Sparta claims are accepted as canonical lore. The Krypteia connection remains pending as the answer does not address it directly."
+    },
+    {
+      "answer_id": "story_answer_c0a73b4866e069fd",
+      "question_id": "story_question_3200a722c9aa5dea",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Restraint Level 0 is a possible choice resulting from taking Path B, though it is not guaranteed. The protagonist in Furi is silent, the protagonist in Theriac not necessarily.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:38:01.549454Z",
+      "question_text": "Is the protagonist's destructive Path B — where they defect from the lab, become an antagonist, act as a 'guillotine' embodying death, and devastate the main cast — intended to be the canonical 'intended' path that results from activating Restraint Level 0, where the suit's AI takes full control, and should the protagonist's silence and lack of known background be understood as a narrative device specifically to support this descent into an AI-hijacked antagonist, or is the silence a separate, player-driven roleplaying choice that does not necessarily lead to the AI takeover and Path B devastation?",
+      "linked_claim_ids": [
+        "f231e156-6ba5-4174-8086-cd581b247fb1",
+        "35d9941a-21a6-4cbd-82c4-cee917bc3db0",
+        "1dc3cd70-a86c-484e-b9c4-4f2c483eaa1f",
+        "fcb5981e-9de3-4a08-83f1-652f79268572",
+        "e4f04082-f3fe-4678-9ed2-34cc27c84702",
+        "2f933798-01eb-4499-b1b9-5c5e92e6b98c",
+        "3816ac61-184d-4dfa-aabd-34c820a35b47",
+        "5580ef0b-94f4-4e45-8629-e5a2142e8191"
+      ],
+      "target_entity_ids": [
+        "entity_278b46df0ed765f0"
+      ],
+      "target_entity_names": [
+        "Protagonist"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_33977940215646ea",
+        "claim_decision_0f0dd8cdf2ee3a07",
+        "claim_decision_55fb6c4ebbdc6834",
+        "claim_decision_3a32487ab3f72e39",
+        "claim_decision_00f81b7d015e3272",
+        "claim_decision_59c5a0f6a9bc6555",
+        "claim_decision_07e08054ea429b3e",
+        "claim_decision_aba1b11488436adf",
+        "claim_decision_d63624c35206ce3c"
+      ],
+      "author_claim_ids": [
+        "author_claim_6ba4d68d65152851",
+        "author_claim_6f498adc9b9b65f3"
+      ],
+      "application_summary": "The answer clarifies that Restraint Level 0 is a possible non-guaranteed outcome of Path B, and the protagonist's silence is not a fixed narrative device. Directly linked claims about Path B devastation and the Furi inspiration are confirmed or clarified; claims about the protagonist's silence are rejected or left pending."
+    },
+    {
+      "answer_id": "story_answer_7af0791dbed97774",
+      "question_id": "story_question_e946c2e255055697",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The Jesus part is not accurate, however the rest is. Altruism (Zi-er)'s tribe are the remaining Sumerian survivors.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:40:25.730435Z",
+      "question_text": "Does the 'Sumerian Sumerian diaspora' side of the Sumerians entity refer to the same in-game group that includes Altruism's tribe, who are the remaining sterility-plagued survivors of the homeland, and is that group the same entity that was 'delivered from death' by a 'Jesus figure' and that provides raw materials to the lab, or are these separate Sumerian sub-groups with distinct narrative roles?",
+      "linked_claim_ids": [
+        "0e93bfe1-a6b4-4606-bb1d-8e7bc0cbc356",
+        "1589360d-7e70-4cfc-a1b8-6c35c134e478",
+        "5ca6a6a9-00b2-4b22-8610-ed91801b5a24",
+        "20f4e178-d627-4a07-8aaf-d58ebaad35d3"
+      ],
+      "target_entity_ids": [
+        "entity_5dda5038c07da9f6",
+        "entity_fe5ddf26426c622b"
+      ],
+      "target_entity_names": [
+        "Armaros",
+        "Sumerians"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_5345d64d2ad22d0d",
+        "claim_decision_0ac13ac58aa4e85b",
+        "claim_decision_568bfe4ad5560c4d"
+      ],
+      "author_claim_ids": [
+        "author_claim_0043c70e3e23de24"
+      ],
+      "application_summary": "Answer clarifies that Altruism's tribe are the Sumerian survivors, but rejects the 'Jesus figure' notion. Applied to directly linked claims on entity identity and group membership."
+    },
+    {
+      "answer_id": "story_answer_37a338b6ad11977b",
+      "question_id": "story_question_290714f40fb21b79",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Same entity.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:41:44.170977Z",
+      "question_text": "Is the AI that takes over combat operations at Restraint Level 0, described as hijacking the player's neural processes and turning their body into a 'hyperefficient robot', the SAME AI entity as RUINR, or is there a separate AI within the suit that assumes control at this level?",
+      "linked_claim_ids": [
+        "5261f3ca-e874-428d-9ba9-0c62117d6024",
+        "6bf301e7-98fe-4d83-94dc-d118075dfb84",
+        "20002ce4-c6fc-47bf-8a0c-e32c93e09707",
+        "5fe34ed7-5b49-40ed-8be8-d6e42435cfbb",
+        "6199635b-f42a-4a03-b6eb-ed76bf9ec22f"
+      ],
+      "target_entity_ids": [
+        "entity_86d1ae56fcea2a21"
+      ],
+      "target_entity_names": [
+        "Restraint Level 0"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_b5f4f73d7116b7c3",
+        "claim_decision_16fa70c91df77417",
+        "claim_decision_1ac80e126cfda7ac",
+        "claim_decision_3770a5e7235200f9",
+        "claim_decision_73d9de71cbda8a43",
+        "claim_decision_c413acb51c2e2d7f",
+        "claim_decision_68aa2b802d483f58"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The answer 'Same entity' identifies the AI at Restraint Level 0 as RUINR, directly resolving the identity question. Linked claims describing the AI's role are accepted; unrelated claims are left pending."
+    },
+    {
+      "answer_id": "story_answer_fc18e680140171b7",
+      "question_id": "story_question_56cf9017854de745",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Metaphorical parallels only. Not an in-universe book.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:43:06.452051Z",
+      "question_text": "Is the 'Book of Enoch' entity in THERIAC a literal in-universe book that characters actively reference, or is it solely a thematic/metaphorical inspiration drawn from real-world apocryphal texts for certain claims (e.g., and does its content—including the concepts of Metatron as a 'lesser Jehovah', the 'Son of Man' proto-Jesus, the Watchers/Nephilim, the Krypteia being analogous to Watchers, and the reversal of rich/poor in heaven—directly describe actual lore, history, and cosmology of the game world, or are these only metaphorical parallels that should not be treated as true in-universe events?",
+      "linked_claim_ids": [
+        "7896ac0c-49c5-4e99-bf35-6d74592525fc",
+        "9e15f6b2-c145-44e7-8801-48365f79fd3f",
+        "1840d5bb-bc52-4c96-87cd-115a90740fac",
+        "10aef84c-881c-4b66-a5c8-e22f278bc609",
+        "a1d39f20-b8aa-4469-b2c0-022eca354717"
+      ],
+      "target_entity_ids": [
+        "entity_6ec7fe617377b4aa"
+      ],
+      "target_entity_names": [
+        "Book Of Enoch"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_3078f492dcd0bac6",
+        "claim_decision_1a1d89c50c28b2bd",
+        "claim_decision_e5f767ca579e7f79",
+        "claim_decision_61d2ef456782be16",
+        "claim_decision_63b10311b75322d4",
+        "claim_decision_0ad20285ef30d624",
+        "claim_decision_842cc4409971cc5f",
+        "claim_decision_52620e5019710bfa",
+        "claim_decision_e68b754533ea1516"
+      ],
+      "author_claim_ids": [
+        "author_claim_73ac37288daa73b4"
+      ],
+      "application_summary": "The answer states the Book of Enoch is metaphorical parallels only, not an in-universe book. Therefore, claims treating its content as literal lore are rejected, while factual claims about the real-world text remain pending or are adjusted."
+    },
+    {
+      "answer_id": "story_answer_7386b53d8f3b44a8",
+      "question_id": "story_question_e86a62cb1296219f",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "This all refers to one entity, TALOS.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:45:09.925797Z",
+      "question_text": "Is the Mech entity (a single entity piloted by a specific AI (e.g., the AI in the lab or Raskolnikov) that is a requisitioned wartime invention and should be humanoid to reflect that reflects its pilota desire to tower over others and be a monumental invincible machine, or are there multiple separate Mech entities described by these claims (e.g., one that is humanoid and shiny black, another that is inspired by Sahelanthropus and another that is simply a recipient of symbolic laurels)?",
+      "linked_claim_ids": [
+        "3350b406-fa20-4b9e-99c3-4785fa35a702",
+        "aaed307f-32e6-48b7-8778-c565a7530652",
+        "f85b587c-2427-403f-a456-54e16b4671ef",
+        "68126f46-6a2b-42d9-8d98-84e86bf2e499",
+        "e5924a2a-b8f0-4c54-9e69-9c31ea25ccda",
+        "3b2bde77-b5ab-4a6a-be2d-bfd397e81c87",
+        "41cf2a7a-57c7-405a-86a5-6379ad65ede4",
+        "729b63b8-c8ab-4a3f-ac79-2c7caba7f659"
+      ],
+      "target_entity_ids": [
+        "entity_95c81f3c556ddb79"
+      ],
+      "target_entity_names": [
+        "Mech"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_af940696569559f1",
+        "claim_decision_1cff5b397ba14c3a",
+        "claim_decision_0a96b83bebe072cc",
+        "claim_decision_74a7dacc906454f3",
+        "claim_decision_35365a06e38f3289",
+        "claim_decision_031c73fededfc4e0",
+        "claim_decision_58b9974e17e5a774",
+        "claim_decision_864b22e4e17147f5"
+      ],
+      "author_claim_ids": [
+        "author_claim_8a046b08fc27004e"
+      ],
+      "application_summary": "The answer identifies all linked claims as referring to one entity, TALOS, resolving the identity question. The single Mech entity encompasses all described attributes."
+    },
+    {
+      "answer_id": "story_answer_7d27b5fe9d4ce337",
+      "question_id": "story_question_011b569721fc4234",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Distinct from his legal function, but both part of his character.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:47:07.996863Z",
+      "question_text": "Is the AI character Raskolnikov, who runs the global legal system through the international criminal court, intended to be the same entity as a court-proposed AI in a minor scene (the literary reference), or is that proposal evolved into the ultimate authority role, and is Raskolnikov's 'terrifying godtier justice' persona and alien aesthetic part of its character distinct from its legal function, or does that derive from it?",
+      "linked_claim_ids": [
+        "80a0582d-4dd1-4271-98c6-af683518c631",
+        "c0bcf35a-0d8c-4ccf-9bd6-d7e4417cacc2",
+        "14bf87cc-d48c-4e9c-8300-161c83e27622",
+        "9c0708a2-f2a2-4d05-8aee-44919360207a",
+        "bef9188a-343c-42e1-bfd3-2f62e3e4e99b",
+        "46a166a0-acfd-41c5-b283-60d85c245a6f",
+        "2b1782fe-67bf-4605-9603-0fb9745b5478"
+      ],
+      "target_entity_ids": [
+        "entity_dfcd285ad901fce8"
+      ],
+      "target_entity_names": [
+        "Raskolnikov"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_255a7cd6f7a38a7f",
+        "claim_decision_53bd92695fe916c7",
+        "claim_decision_07958621c73c8c69",
+        "claim_decision_6f405e4ad4589912",
+        "claim_decision_6bcfb2b32c8c36d1",
+        "claim_decision_03d4ec2483c56585",
+        "claim_decision_e0e12eed49ac4d0d",
+        "claim_decision_c97b3bf5f27758d5"
+      ],
+      "author_claim_ids": [
+        "author_claim_9a4e00dc29c691cc"
+      ],
+      "application_summary": "The answer confirms Raskolnikov's role as global legal authority and clarifies 'godtier justice' persona as distinct from but part of his character, while noting minor scene role evolved into ultimate authority."
+    },
+    {
+      "answer_id": "story_answer_0536967abd0e23bd",
+      "question_id": "story_question_6b96ad7134ea7bf7",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Leonidas and the eccentric individual are one and the same, and those details are accurate about him. Khava Zimov is the leader of the Houses of Heaven of which Leonidas was formerly a part, but whom usurped it from her following her death.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:51:13.502783Z",
+      "question_text": "What is the canonical relationship between Leonidas (leader of the Krypteia), Khava Zimov (founder of the original organization), and the Eccentric Individual who married an architect, killed the architect, is the father of Greed, opposed immortality, has Hellenic interests, and took over leadership after Khava's death—are these all separate entities, or are some of them the same person (for example, is the Eccentric Individual actually Leonidas, or is he a different person who succeeded Khava and was then succeeded by Leonidas)?",
+      "linked_claim_ids": [
+        "92a05e43-9291-4c9e-9ffa-3ccea878b9c4",
+        "5533119b-c48e-4819-bb1e-6cdbbb390017",
+        "f4a15ca9-bd6c-47ef-a840-55c4a522a16a",
+        "61128614-a16f-4f73-bbe9-beb944b47061",
+        "826ab9cf-6bc0-4c62-a7ec-ca4e423457f6"
+      ],
+      "target_entity_ids": [
+        "entity_60fa52fe193ada34"
+      ],
+      "target_entity_names": [
+        "Eccentric Individual"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_25d60bcfd6c853b9",
+        "claim_decision_6aa8a1eddcadef62",
+        "claim_decision_2321035ae1004145",
+        "claim_decision_1ed8f7309b70529b",
+        "claim_decision_a93f5bb4d892be27",
+        "claim_decision_f9e426051d0edbce"
+      ],
+      "author_claim_ids": [
+        "author_claim_d63c777a06af9ef2",
+        "author_claim_1d85c538c05ff6ad",
+        "author_claim_b78b425dafbff5de"
+      ],
+      "application_summary": "Answer confirms Leonidas and the Eccentric Individual are same; linked claims about him are accurate. Unlinked claims remain pending."
+    },
+    {
+      "answer_id": "story_answer_d662891ed00f0966",
+      "question_id": "story_question_d18d62591e079b7d",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The latter.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:52:12.656063Z",
+      "question_text": "In the 'Houses of Heaven' angelic naming system, is Leonidas's assigned name Samael intended to literally identify him as the biblical figure Lucifer (who rebelled against God), and is Khava Zimov's assigned name Eve intended to literally identify her as the first woman from the Genesis account—meaning these characters are direct in-universe reincarnations or avatars of those figures—or are these merely thematic or symbolic codenames chosen to evoke the mythology?",
+      "linked_claim_ids": [
+        "c3ee9b9b-888d-480b-afcc-bf86f3a94352",
+        "62645841-9d32-4f61-96bb-6f17c4542928",
+        "ae64fc1e-68b1-46d6-a2d0-aff0d10737d9",
+        "b5b614cf-7036-4957-bc8f-ccd8ea1b952f",
+        "36065527-c3db-4105-8120-c978e75cd628",
+        "6c169876-5b6e-4422-a055-48cd6a51feb1"
+      ],
+      "target_entity_ids": [
+        "entity_594c27048f43a508"
+      ],
+      "target_entity_names": [
+        "Houses Of Heaven"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_593f002cabed2163"
+      ],
+      "author_claim_ids": [
+        "author_claim_5b0542456d9a07b5"
+      ],
+      "application_summary": "The question asks whether 'Samael' and 'Eve' are literal biblical reincarnations or symbolic codenames. The answer 'The latter' confirms they are symbolic codenames/thematic evocations, not literal identities."
+    },
+    {
+      "answer_id": "story_answer_88b83f9ffa34ffae",
+      "question_id": "story_question_e7609933dcfd1ccf",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "RUINR is part of the Krypteia, but no, they are exclusively for Krypteia use and for discreet VIP transport.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:53:47.247034Z",
+      "question_text": "Are Krypteia Gliders designed exclusively for discreet VIP transport by Krypteia members, or were any of them produced for public sale or used by non-Krypteia forces such as RUINR as claimed?",
+      "linked_claim_ids": [
+        "11fc6838-2412-4eb9-937f-72dd8f58852e",
+        "602ae842-0013-4255-87e2-f1d2f63ae522"
+      ],
+      "target_entity_ids": [
+        "entity_c16d1835f8d17ffd"
+      ],
+      "target_entity_names": [
+        "Krypteia Gliders"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_043a638023ca2de1",
+        "claim_decision_8275417986e322b4"
+      ],
+      "author_claim_ids": [
+        "author_claim_664b982d9abdd6ae"
+      ],
+      "application_summary": "Answer confirms Krypteia Gliders are exclusively for Krypteia VIP transport, rejecting any non-Krypteia use or theft by RUINR."
+    },
+    {
+      "answer_id": "story_answer_490378de9a32baf1",
+      "question_id": "story_question_47cf04b10282ed29",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The secretive organisation is the Krypteia. The larger agency is also the Krypteia. The GFNS banned aging research, but was not involved with HECTR. All of those claims are otherwise correct.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T03:59:00.065339Z",
+      "question_text": "Given that the Secretive Organization operates as a deep state within a larger agency that repurposed a mainframe for weapons after a field ban, possibly sparking a war, and Enoch approved early RUINR specs using embezzled funds: Is that larger agency the same entity as the Global Federation of Nation States (GFNS), which banned aging research, shows cognitive dissonance about immortality, can be blackmailed via Krypteia, and left the crisis too late; and does the mainframe repurposing relate to the same technology that created both HECTR and the weapons systems, thus linking the Secretive Organization's war history to the Krypteia's AI development and the GFNS's legal bans?",
+      "linked_claim_ids": [
+        "d87aed88-df0f-4b89-9969-997edd897f8a",
+        "d6fe02e6-defd-4fd6-a7e4-5f24abbf11fa",
+        "1c00e286-8923-4e99-93e2-63593ae508f2",
+        "6db2fdc8-c2c6-4e39-a093-84ca1314b79a",
+        "71c45fe2-d500-4dc1-b0f8-ecdff1e8705b",
+        "4a69b03c-c859-4128-a6c6-92edca1f3731",
+        "46d127c9-858a-43a1-9cc4-50ba4765b835"
+      ],
+      "target_entity_ids": [
+        "entity_67b95eae414b4fa8",
+        "entity_aa035281aa263705"
+      ],
+      "target_entity_names": [
+        "Global Federation of Nation States",
+        "Secretive Organization"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_d23792198e9218a2",
+        "claim_decision_ffae10ec9a8f1de1"
+      ],
+      "author_claim_ids": [
+        "author_claim_f63dd8fc34fc563b",
+        "author_claim_a9f15a27593e0e24"
+      ],
+      "application_summary": "The answer reveals the secretive organization IS the Krypteia and that organization is NOT within a larger benevolent agency. The GFNS banned aging research but had no involvement with HECTR. This directly resolves several linked claims and contradicts the claim of a larger benevolent agency. Claims about RUINR, war-sparking, and mainframe repurposing are left pending as the answer does not address them."
+    },
+    {
+      "answer_id": "story_answer_3cd83a540015dc45",
+      "question_id": "story_question_bd297f22eb3e8ece",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "This is real life history, not Theriac lore.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:03:32.169261Z",
+      "question_text": "What is the canonical status of the claim that the Guti were a primitive people with canine instincts and monkeys' features, and that their rule caused thousands of years of damage through neglect, an inability to read, farm, or build, and a lack of developed culture and agriculture—is this an accurate historical account within the game's world that is directly drawn upon as literal backstory, or is it a racially biased historical characterization that is intentionally challenged or reinterpreted in the game's narrative, similar to how the 'oldest documented case of racism' inspiration was noted?",
+      "linked_claim_ids": [
+        "9f351d9e-b3a1-44d7-a2d7-1ea223a4c56f",
+        "41d400c9-8f3f-48d5-bf6e-d9fdfb690b1a",
+        "d7e99d17-998a-4e51-8163-5a37f8f7a5db",
+        "e2ef1846-f460-42cc-b64a-5171c35e98a0",
+        "4db53bf4-97a3-4173-b35e-b454489674df",
+        "0efb8541-e278-4890-8711-eb72ef3f303d",
+        "26fbc684-5682-4ea7-92b0-8c2c126e9234",
+        "4fd498d2-1672-4601-892a-71f810db8083"
+      ],
+      "target_entity_ids": [
+        "entity_af835505b0d0fc1f"
+      ],
+      "target_entity_names": [
+        "Guti"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_d87a28150def989c",
+        "claim_decision_6051aa53b2647c69"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "Answer states the Guti account is real history, not Theriac lore. This contradicts all lore claims treating it as in-world backstory, so they are rejected. Inspiration claim about 'oldest racism' is unaffected and remains pending."
+    },
+    {
+      "answer_id": "story_answer_7d586bd4c76d85c2",
+      "question_id": "story_question_d9e466f4d4eb5d4b",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Yes, those are all correct.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:04:22.716336Z",
+      "question_text": "Is Loss the oldest lab member (around 90 with partially reversed aging), the final boss of the Destructive Path, motivated by personal tragedy and afraid to love again due again, and should an attempted suicide attack at the end of that path be considered canon, or is Loss's age, role, backstory, or intended final action different from these descriptions?",
+      "linked_claim_ids": [
+        "967f4e1c-599d-4504-a5eb-7e5c7d2f43f4",
+        "3d51ecbc-276e-4a3d-9db1-72aa50a927c7",
+        "47540c15-75db-4184-8659-f3a48540a47a",
+        "992f6581-8a1b-4f84-b817-ae8c668aa3d3",
+        "b8eb9cbd-705e-4c76-bc45-ba1bd71b4ced",
+        "8c822884-57d9-4953-bbf8-08f9d11c93cf",
+        "148dc85c-8c29-41ca-8873-083aeefb20fb"
+      ],
+      "target_entity_ids": [
+        "entity_2ea71c18131a7f03"
+      ],
+      "target_entity_names": [
+        "Loss"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_66ac1611ddaf3033",
+        "claim_decision_1fab0a432453c004",
+        "claim_decision_b9ee7f400bf83fed",
+        "claim_decision_3c5d6116291c1724",
+        "claim_decision_2ca536cfa6edbf81",
+        "claim_decision_c07112e02b94b285",
+        "claim_decision_a3c0c2f028fddc66"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The answer confirms all listed claims about Loss. Linked claims are accepted; non-linked candidate claims about Loss are not contradicted by the answer and are left pending."
+    },
+    {
+      "answer_id": "story_answer_abbfe7ebe8200a33",
+      "question_id": "story_question_82c9bc6d37c325a1",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Correct.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:05:34.189014Z",
+      "question_text": "Was the Transhumanist Character, Halayudtha, directly responsible for recruiting and transforming Ramasinta into a cyborg soldier, and does this role as Ramasinta's commander and the founder of Manunggal encompass all claims 6f143eda, 808862df, 8ae9f655, f1383462, and f412e200 about Manunggal's tactics and unit composition, as well as the nature and recruitment of the Manunggal Cyborg Soldiers — specifically claims 5b130b25, 6db9af73, 0c6bd7fd, 92b265a2, 99020f6b, b027772e, b772e, b5641d35, d7aa273c — all correctly derive from his command and the ethical compromises of his recruitment program?",
+      "linked_claim_ids": [
+        "b0624d4a-cd37-4644-8cb7-a39d369d280b",
+        "6db9af73-1dd4-48bb-a2f8-0f41aefd93c3",
+        "0c6bd7fd-bf5c-47f1-8ce5-27d0bb70c5dc",
+        "99020f6b-656d-42c4-9b20-2e11819b0041",
+        "b027772e-fcf3-494e-a049-a9726fcb743c",
+        "b5641d35-57d5-4d64-a2c9-859930013557",
+        "d7aa273c-2434-4154-9d2e-135872f867ea",
+        "6f143eda-24bc-41e1-a9e4-c5cc8710c41b"
+      ],
+      "target_entity_ids": [
+        "entity_934298825fd3c2ad",
+        "entity_acaa378561a4165d",
+        "entity_f0dd3075abc8b8a0"
+      ],
+      "target_entity_names": [
+        "Manunggal",
+        "Manunggal Cyborg Soldiers",
+        "Transhumanist Character"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_7ad81763d7fc2374",
+        "claim_decision_0ae3ba0ca3d06b58",
+        "claim_decision_244841ab249fa213",
+        "claim_decision_a388568b811ad673",
+        "claim_decision_856990b8758ba7a8",
+        "claim_decision_f74bca279a055e01",
+        "claim_decision_2c401460828760d0",
+        "claim_decision_cb7ff325deebc726"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The author confirmed the question's linked claims as correct."
+    },
+    {
+      "answer_id": "story_answer_5cc9e9aa5f69815f",
+      "question_id": "story_question_832f685849f7401a",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Correct.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:05:54.851557Z",
+      "question_text": "Do the Sumerian AI (who renamed itself Oberon) and the Akkadian AI (which renamed itself Titania) share the same fundamental technological origin as the mycelial AI megaproject, and is Oberon's romantic relationship with Titania the same as the 'protective feelings' the Sumerian AI developed for the Akkadian AI, or are these separate relationship dynamics?",
+      "linked_claim_ids": [
+        "229a34fa-eef4-4e15-8d46-ac2467906826",
+        "22003f1b-b35f-4985-98cc-33be8143ead0",
+        "916f982a-03b0-4540-9bca-fc9d0d782fe4",
+        "e8137f78-b32b-4369-a76a-0b2230807a90",
+        "b5645289-7e69-4829-a491-369c4c610155",
+        "64a4bfe5-8e06-4ab6-a364-ab1064fc5d6c",
+        "eeac0803-0da2-44fd-a94e-72aa18effeff",
+        "20fba19c-ce7b-492e-b0d4-75bb9d718dcd"
+      ],
+      "target_entity_ids": [
+        "entity_0025451786d09b11",
+        "entity_6c88e032379aed32",
+        "entity_bdc2eb3fb358fd7e"
+      ],
+      "target_entity_names": [
+        "HECTR",
+        "Mycelial Ai",
+        "Sumerian Ai"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_f9f494cf96797e65",
+        "claim_decision_db431650266510cd",
+        "claim_decision_fd21c56a07adcf08",
+        "claim_decision_2dae940187e100e9",
+        "claim_decision_c27c4b980d19ef8a",
+        "claim_decision_a95478ab992255c2",
+        "claim_decision_6b2c524a5880fe89",
+        "claim_decision_4490d8945fbc3b5e"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The author confirmed the question's linked claims as correct."
+    },
+    {
+      "answer_id": "story_answer_c433c30fc3042362",
+      "question_id": "story_question_0a54576a4683efef",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "They rely on HECTR for their ability to speak English and for higher level reasoning, but are capable of low level basic functions on their own.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:07:30.314156Z",
+      "question_text": "What is the relationship between the robots (entity_23f49fcc0de8265d) and HECTR (entity_6c88e032379a32) in terms of translation and processing: Do the robots rely on HECTR for their ability to speak English and general processing, or are they self-contained units with their own capabilities, and is HECTR merely an interface for organization-wide coordination rather than a processing backend?",
+      "linked_claim_ids": [
+        "6eca9197-00f0-4ddd-b357-63fe714fcf71",
+        "70e19a4e-4c7b-48b2-ae26-c4fb36034e13",
+        "bf67fda2-3418-48bb-ac7e-51dbe3f65ffb",
+        "60ff65d1-c579-422e-858d-e8d9f9d385a8",
+        "79e41a1f-598c-47e2-9772-2a146c5a3efe",
+        "c9453085-92df-445c-9293-76063a9b6cd8",
+        "c2a9cabe-e1c7-44ae-a76c-c7983e2cfe25",
+        "e1fc3e9a-38d5-40d0-83a5-2e4726c3f843"
+      ],
+      "target_entity_ids": [
+        "entity_23f49fcc0de8265d"
+      ],
+      "target_entity_names": [
+        "Robots"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_31aa863d8d30d43e",
+        "claim_decision_532cccadc472d8d2",
+        "claim_decision_21bccfa2628fd71d"
+      ],
+      "author_claim_ids": [
+        "author_claim_21c140e9235e61b8",
+        "author_claim_3a01872bc6562914"
+      ],
+      "application_summary": "The answer confirms robots rely on HECTR for English and high-level reasoning but handle basic functions independently. Accepts directly linked relationship claims; rejects contradictory claims; leaves unrelated claims pending."
+    },
+    {
+      "answer_id": "story_answer_21462c44e5c1e8ac",
+      "question_id": "story_question_6a1ed45dd1a5b464",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Correct.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:08:30.364080Z",
+      "question_text": "Is Leonidas the same character as Samael (the angelic name assigned to him in the Houses of Heaven security apparatus, equated with Lucifer and later Satan) and also the same as the unnamed character who gathered a following within Khava Zimov's organization, became obsessed with Greece, and disagreed with her pursuit of biological immortality?",
+      "linked_claim_ids": [
+        "db35dccb-f020-425f-892d-2c899ad903dd",
+        "96686722-aa63-41e0-8e36-482587427b05",
+        "19dbf0ec-42bb-49c0-82f4-bf05df2b780e",
+        "2211b676-7458-4204-9bf3-b5a022e2bc6a",
+        "3635ab8b-7bad-49ef-b74d-03b27445f748"
+      ],
+      "target_entity_ids": [
+        "entity_65e5592b490e6e54"
+      ],
+      "target_entity_names": [
+        "Samael"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_5897a1d4149770ae",
+        "claim_decision_d9a9419a4bc8cf9e",
+        "claim_decision_4a1aec45bbe0ef7c",
+        "claim_decision_f90b572d2671eebd",
+        "claim_decision_639d651367b5be19"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The author confirmed the question's linked claims as correct."
+    },
+    {
+      "answer_id": "story_answer_8e8d9d846a9d3caf",
+      "question_id": "story_question_45565d01ecf27928",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Correct.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:09:06.967247Z",
+      "question_text": "Is Armaros a single entity who was both a Sumerian member of the Krypteia and a designer/AI infrastructure creator for HECTR, Pythia, RUINR (working alongside Penemue), or are these separate entities with the same name—specifically, does the same Armaros who was also responsible for teaching humanity magic, or is that role purely a historical/mythological reference separate from the Krypteia/AI designer identity?",
+      "linked_claim_ids": [
+        "2324d6a7-6fab-4990-aff0-9d760ba7ccf6",
+        "cafc916b-e7d1-4e54-b620-87e89d9b6075",
+        "667e0f46-7af5-4549-ac33-57f0b8983fb5",
+        "f7e62a05-8e20-4a78-8849-d7dc451b6ff7",
+        "4a626931-b1d1-4b67-a152-fed87cf38968",
+        "d4032776-3caa-4a66-9f56-5a0241e70bcd",
+        "d720cbf9-a608-4cfb-bdf2-dcde9a383133"
+      ],
+      "target_entity_ids": [
+        "entity_fe5ddf26426c622b"
+      ],
+      "target_entity_names": [
+        "Armaros"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_f47e85b87794cabd",
+        "claim_decision_caaff7227825b44c",
+        "claim_decision_69ca79269e45f4ca",
+        "claim_decision_d17a902023ba889e",
+        "claim_decision_e18880440e62a6e9",
+        "claim_decision_743c2c0dd234eae0",
+        "claim_decision_baedafa6347eba9f"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The author confirmed the question's linked claims as correct."
+    },
+    {
+      "answer_id": "story_answer_cd18b9a8edf52475",
+      "question_id": "story_question_d5161700b46032e4",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The player's identity is a blank slate and is left open for the player to insert themselves into.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:11:06.150391Z",
+      "question_text": "What is the canonical name of the Player Character (entity_64e5fd8c95f52cc9) — is it intended to be a silent, largely unknown protagonist whose background is deliberately left blank, or has a specific canonical name and backstory been established — and is the role of being an 'agent sent to shut down a longevity research lab' and embodying a potentially 'villainous' or 'destructive' force the same single character concept, or are there multiple distinct Player Character paths (e.g., one for Path A: Destructive Path and another for Path B: Peaceful Path) with different identities?",
+      "linked_claim_ids": [
+        "5077257d-9229-4feb-a8fc-03cf611fd16a",
+        "61ad94dd-bb58-42f7-a1a9-ce4acc1ac349",
+        "b582fc56-feb8-4bef-bab5-9bd8ccae007b",
+        "da64a232-fb95-470d-afda-6d027aa762aa",
+        "64c3bd71-209c-4d29-ad18-c297e9cd75d4",
+        "d8db793f-bed0-4048-a642-40b5920805ed",
+        "2dbdc280-4bc6-4450-a184-e2ec82c39853",
+        "1b7dcf41-a7dc-4409-8764-eec562f93b03"
+      ],
+      "target_entity_ids": [
+        "entity_954119374106fff5",
+        "entity_cdb59355f3ba2939"
+      ],
+      "target_entity_names": [
+        "Path A: Destructive Path",
+        "Player"
+      ],
+      "claim_decision_ids": [],
+      "author_claim_ids": [
+        "author_claim_dd6bb3855586294b"
+      ],
+      "application_summary": "The answer confirms the player character is a blank slate with no canonical identity. Directly linked claims about a canonical name or backstory are rejected. All other claims about narrative paths or details about narrative paths, mechanics, and themes are unrelated and left pending."
+    },
+    {
+      "answer_id": "story_answer_0834e05549bf73bc",
+      "question_id": "story_question_25da5da6c3a5851b",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "ACHILLES was the original name of RUINR. Yes Achilles was injected into HECTR, ACHILLES does lead the myrmidons in real life and hence interfaces with the myrmidon suits in Theriac lore, and yes, ACHILLES/RUINR \"siphons\" HECTR for processing power.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T04:13:21.276449Z",
+      "question_text": "Is ACHILLES a distinct AI entity that was created as a replacement for HECTR within the Krypteia's Olympus facility, or is ACHILLES merely a prior identity or alias for RUINR, and was ACHILLES secretly injected into HECTR's degradation mechanism and later integrated into HECTR, while also being secretly injected by the player as an antivirus; plus, did ACHILLES lead the Myrmidons, and is HECTR's deliberate throttling to siphon power to ACHILLES correct description of their relationship?",
+      "linked_claim_ids": [
+        "632cda14-c37f-4fa5-b659-152ae4a109cc",
+        "1774527e-d9ae-4c1e-a8ff-0718915805f2",
+        "ba655c40-08ec-4f5c-8145-aa68e0d0b27f",
+        "13d4698a-b5a6-4c8a-85fe-eb70f12b67b6",
+        "d76e21c2-df6f-40db-b85a-68c16079271d"
+      ],
+      "target_entity_ids": [
+        "entity_d634bf7c01467896"
+      ],
+      "target_entity_names": [
+        "ACHILLES"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_47687d65abc9246a",
+        "claim_decision_fb52db1cc319caba",
+        "claim_decision_1497a8439af9c395",
+        "claim_decision_ed4201776ab5a117"
+      ],
+      "author_claim_ids": [
+        "author_claim_c14bc6a560c2d3c7",
+        "author_claim_43c72aba397a0108",
+        "author_claim_d59d2b638b1e6c4c",
+        "author_claim_0bc6f421954d086c"
+      ],
+      "application_summary": "The answer confirms ACHILLES is the original name of RUINR, was injected into HECTR, leads the Myrmidons, and siphons HECTR's power. Directly linked claims are accepted or clarified; unrelated claims are omitted or marked pending due to insufficient detail."
+    },
+    {
+      "answer_id": "story_answer_41e2967068c04ddd",
+      "question_id": "story_question_a4eeed8a88bbcd3c",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "The Sumerians generally may refer to the people before the war, but post-war these all refer to the tribal reservation.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T15:33:06.814400Z",
+      "question_text": "Are the Sumerians (entity_5dda5038c07da9f6) and the Sumerian Tribe (entity_575bbe9b7dc6edd9) the same distinct clan or civilization in the game's lore, such that the claims about the Sumerians' background (obliteration in war, radiation sterility, diaspora, being Altruism's tribe, connection to a Sumerian-Greek character and a 'Jesus figure' deliverer) all refer to the same group as the tribe that lives on a reservation near the lab, is the last bastion of true culture, faces extinction from fertility problems, and which an ex-military character intends to help?",
+      "linked_claim_ids": [
+        "5bb970dc-e11a-436a-bdb1-d897523d3c0e",
+        "7bbc37c7-b338-4639-9ddd-a89dd2463441",
+        "9a4bfea9-f0d4-4274-861d-f52eca854702",
+        "baf2eb98-5695-410f-a184-8c413bb21d4f",
+        "bed827e6-ba05-40b8-83bf-13f9dc9bfabe",
+        "da160a1d-b5a6-4172-b292-20c7b8d1cde5",
+        "f28214f3-c181-4240-a364-c89cf4201048",
+        "ae4f3a4b-6839-4f89-ace6-f281d65117b2"
+      ],
+      "target_entity_ids": [
+        "entity_5dda5038c07da9f6"
+      ],
+      "target_entity_names": [
+        "Sumerians"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_4498775354970a0d",
+        "claim_decision_53bf081fecfa527f",
+        "claim_decision_9672412d4b6a3bdc",
+        "claim_decision_aa8411d16ddd7af3",
+        "claim_decision_ab1e02d40c432b6f"
+      ],
+      "author_claim_ids": [
+        "author_claim_5fa2b75a63e75beb"
+      ],
+      "application_summary": "The answer clarifies that pre-war Sumerians are distinct from the post-war Sumerian Tribe (reservation). Accepted 5 linked claims as post-war lore. Rejected no claims. Left 3 linked claims pending as ambiguous about pre-war vs post-war. Unrelated claims omitted."
+    },
+    {
+      "answer_id": "story_answer_359af664c5822912",
+      "question_id": "story_question_0cbc97f4b9a8363d",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Yes, those are all discussions in-universe or explored via the game's premises.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T15:34:47.159038Z",
+      "question_text": "Are the claims about Consciousness being a central theme—that perfect neural reconstruction could yield a different person, that personality is like a reinforcement learning algorithm, that the true ending involves Enoch transplanting his consciousness into a cloned 'Enoch Reborn' body, that the nature of consciousness is an open philosophical question, that stochastic personality's stochastic personality formation would make true recreation impossible, that consciousness is theorized to be electrical, and that Ramasinta's CO might have their brain moved or be an uploaded consciousness—all directly part of, or explicitly discussed within, the in-universe lore of THERIAC (e.g., as a topic debated by characters, or as the basis for a technology) rather than being meta-commentary from the author about real-world philosophy or game design?",
+      "linked_claim_ids": [
+        "05ee93e1-344b-4c06-8dbe-0b514ae48f14",
+        "0ef026f4-aa46-42c5-a296-570fc8d07e0b",
+        "bf35be2a-bb86-4a4b-8af3-fd3cd80b9848",
+        "346afb7e-b1ba-425a-9c67-2c0340f4458f",
+        "cbf57106-5863-4e09-b3ac-101a4675966c",
+        "e89779e9-a056-4938-85d2-17879dc7179e",
+        "c542167f-9970-414f-99c3-63865bd0ae6a"
+      ],
+      "target_entity_ids": [
+        "entity_003a7a99f8dc0add"
+      ],
+      "target_entity_names": [
+        "Consciousness"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_1241633cea4156b4",
+        "claim_decision_6a2932475cb61136",
+        "claim_decision_928abf74cb920aa1",
+        "claim_decision_ca9e808b1cb03ef7",
+        "claim_decision_c6dc1931ed8fd57b"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "Author confirms all consciousness claims are in-universe discussions or game premises. All linked claims accepted as lore. No unrelated claims are rejected."
+    },
+    {
+      "answer_id": "story_answer_598c114bd44dc7f6",
+      "question_id": "story_question_05e7c59660cdd396",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Controlling the myrmidon suits is only one of RUINR's functions, and the fight with fear is separate to the restraint level 0 scenario. Both are fights during the destructive path.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T15:44:37.282002Z",
+      "question_text": "Is the fight with Fear a separate event from the 'Restraint Level 0' scenario that RUINR fights Loss in, or do these two fights occur in the same timeline and scenario, with RUINR and is RUINR's purpose limited to controlling the Myrmidon suits or does it have other independent functions beyond that, such as overwriting consciousness or fighting Fear?",
+      "linked_claim_ids": [
+        "01f3b0f0-1414-4d3d-bfac-f0858864aef5",
+        "1c3d7fa8-2624-4365-b4b1-e3784b952838",
+        "0a687eb5-a1d5-4c97-a9f3-cc85d48bbe04",
+        "3cdc9703-d0de-4ef5-8b46-c8f132f4c34f"
+      ],
+      "target_entity_ids": [
+        "entity_53dc6f75968a4cfc",
+        "entity_8daa35b78b12270e"
+      ],
+      "target_entity_names": [
+        "Myrmidon Suits",
+        "RUINR"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_8f39ea92778c5a06",
+        "claim_decision_213aa8eeba2fbe84",
+        "claim_decision_9e9b22c3ca902b3e",
+        "claim_decision_e055d48d3575bc9c"
+      ],
+      "author_claim_ids": [
+        "author_claim_1c1a6cb361ad8517",
+        "author_claim_5b12fbd0e0dd0b4d"
+      ],
+      "application_summary": "The answer clarifies that RUINR's fight with Fear is separate from the Restraint Level 0 scenario (Loss fight), and that Myrmidon control is only one of RUINR's functions. This rejects the 'sole original purpose' claim and confirms both fights occur on the destructive path."
+    },
+    {
+      "answer_id": "story_answer_907cbf2b36bb5532",
+      "question_id": "story_question_5fb74adc58fec58a",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "Those are universally true.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T15:49:00.207152Z",
+      "question_text": "Does the Player Character, as a silent agent sent to shut down the longevity research lab, canonically have a named partner and interact with approximately five lab members, or are these details dependent on the narrative path (Destructive vs. Peaceful) and therefore not universally true?",
+      "linked_claim_ids": [
+        "26507d08-4aee-461d-9255-920b9a50f9aa",
+        "9f310c13-b6ff-483f-87f0-41c8a4e6e144",
+        "330e1095-8fea-4a0b-820a-e77f6179e3ef",
+        "4d8b58a1-3e8b-4667-98c7-71048605586a",
+        "a7938df7-3a41-473a-aa1d-96a9be0517b1",
+        "75345256-1567-4451-9160-4ed9314df411",
+        "382217ab-ca36-4756-926e-2445b1fe72fd",
+        "563449b0-b02d-4601-a325-6d901b3b5e22"
+      ],
+      "target_entity_ids": [
+        "entity_64e5fd8c95f52cc9"
+      ],
+      "target_entity_names": [
+        "Player Character"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_d4dbeafd49c59003",
+        "claim_decision_da02f668fcc2931e",
+        "claim_decision_4bc710938529e6b3",
+        "claim_decision_228786e2da75ce86",
+        "claim_decision_12022b3d98459c06",
+        "claim_decision_5c63a9c6c36321b9"
+      ],
+      "author_claim_ids": [
+        "author_claim_57aebafafcfc35de"
+      ],
+      "application_summary": "Answer confirms all linked claims as universally true; 8 claims accepted; no rejections; 1 author claim added. No claims left pending or unresolved despite being directly addressed."
+    },
+    {
+      "answer_id": "story_answer_bc2a3be45cc9d453",
+      "question_id": "story_question_d729a31c0544bad6",
+      "session_id": "story_question_session_43c77411f0acc59b",
+      "answer_text": "All myrmidon suits were stored away after the coup failled, for which they were originally intended. They are the main suit of armour used by both the player and the partner character throghout the game and are a central piece of technology.",
+      "reviewer": "human_reviewer",
+      "created_at_utc": "2026-05-19T15:56:35.080629Z",
+      "question_text": "Is the Myrmidon suit technology originally intended for the Krypteia coup, and is its sole in-game appearance limited to a single 'Restraint Level 0' scenario during which RUINR operates a Myrmidon suit against Loss, or are there other canonical uses of these suits (e.g., by other characters, during other scenes), and is the suit RUINR uses in that fight the same Myrmidon suit described as being stored away after the coup failed?",
+      "linked_claim_ids": [
+        "d5dfab53-4928-4147-8324-49779a475b68",
+        "5cb084a8-dcc7-4400-b9a5-1be7de2556fa",
+        "442c793f-b326-4b0d-804e-9cca011c776d",
+        "80159235-2a23-48c2-8633-cef0282d55a4",
+        "a9ae4775-4a6d-4c57-a8c4-5cbfe6ed4082",
+        "3350bfc1-06f4-4f00-9aee-990349b9b2f5",
+        "3aaa99e9-da4d-487b-a45c-2a14eb94c7d1",
+        "e833fe64-fccb-465b-9e46-43d0aaf7f10b"
+      ],
+      "target_entity_ids": [
+        "entity_232851c3072c5297",
+        "entity_53dc6f75968a4cfc"
+      ],
+      "target_entity_names": [
+        "Leonidas",
+        "Myrmidon Suits"
+      ],
+      "claim_decision_ids": [
+        "claim_decision_0aeb78276e3e9d2d"
+      ],
+      "author_claim_ids": [],
+      "application_summary": "The answer clarifies that Myrmidon suits were originally intended for and stored after the failed Krypteia coup, and are used by the player and partner throughout the game. It directly resolves linked claims about the coup and storage, contradicts a claim about limited single appearance, and provides no support for or against other unrelated claims."
+    }
+  ],
   "style_corrections": [],
-  "updated_at_utc": "2026-05-18T02:23:37.106980Z"
+  "updated_at_utc": "2026-05-19T15:57:16.860479Z"
 }

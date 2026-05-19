@@ -6,13 +6,16 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from pipeline.common import stable_id
-from pipeline.auto_review import AutoReviewResult, _auto_review_conversation_entities
+from pipeline.auto_review import AutoReviewResult, _auto_review_claims, _auto_review_conversation_entities
 from pipeline.entity_resolution import normalized_name_key, resolve_entities
 from pipeline.mixtral_anchor_provider import (
+    _call_anthropic_chat,
     _call_gemini_chat,
+    _call_openrouter_chat,
     _extract_inline_responses,
     _gemini_batch_state,
     _inline_response_payload,
@@ -21,6 +24,16 @@ from pipeline.mixtral_anchor_provider import (
 )
 from pipeline.review_memory import relevant_memory_for_entity
 from pipeline.run_pipeline import determine_resume_start_stage
+from pipeline.story_questions import (
+    apply_story_answer,
+    commit_story_answer_application,
+    generate_all_questions,
+    generate_next_question,
+    pending_claims_for_story,
+    propose_story_answer_application,
+    skip_current_question,
+    story_question_display,
+)
 from pipeline.stage_a_bootstrap import infer_entities
 from pipeline.stage_b3_segment_conversations import normalize_model_segments, run as run_stage_b3
 from pipeline.stage_b4_conversation_patch_notes import run as run_stage_b4
@@ -28,26 +41,41 @@ from pipeline.stage_c_extract import run as run_stage_c
 from pipeline.stage_d_group import run as run_stage_d
 from pipeline.stage_e_alias import annotate_conversation_entity_proposals, infer_type_evidence_for_candidate, normalize_entity_type, run as run_stage_e
 from pipeline.stage_f_draft import build_claim_extraction_prompt, run as run_stage_f
-from pipeline.stage_g_merge_engine import build_card_synthesis_prompt, find_unsupported_acronym_expansions, run as run_stage_g
+from pipeline.stage_g_merge_engine import (
+    build_card_synthesis_prompt,
+    find_unsupported_acronym_expansions,
+    find_verbatim_claim_reuse,
+    run as run_stage_g,
+)
 from pipeline.stage_h_notion_export import run as run_stage_h
+from pipeline.notion_draft_sync import notion_draft_config, sync_draft_cards_to_notion
 from theriac_lore_desktop import (
+    append_author_claim,
     attach_log_paths_for_run,
     candidate_inventory_browser_rows,
     candidate_inventory_category,
+    choose_initial_artifacts_root,
+    claim_inventory_browser_rows,
+    ctrl_backspace_delete_start,
+    ctrl_delete_delete_end,
     load_project_env,
     sort_candidate_inventory_rows,
+    write_claim_inventory_override_decision,
     write_candidate_inventory_override_decision,
 )
 from pipeline.ui_review_app import (
+    app_state_path,
     build_app,
     discover_review_runs,
     is_pipeline_progress_log_line,
+    load_last_open_artifacts_root,
     new_run_artifacts_root,
     pending_review_counts_for_root,
     pipeline_progress_artifact_snapshot,
     pipeline_progress_from_logs,
     render_run_selector_html,
     render_pipeline_progress_html,
+    save_last_open_artifacts_root,
 )
 
 
@@ -81,6 +109,105 @@ def write_pipeline_artifacts_through_stage9(root: Path, claims: list[dict] | Non
     write_json(root / "04_grouping" / "snippet_clusters_meta.json", {"clusters": []})
     write_json(root / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": claims or []})
     write_json(root / "06_drafts" / "card_drafts" / "meta_cards_draft.json", {"meta_cards": []})
+
+
+def draft_card_payload(summary: str = "HECTR is a synthetic intelligence.") -> dict[str, Any]:
+    return {
+        "card_id": "entity_hectr",
+        "canonical_name": "HECTR",
+        "entity_type": "character",
+        "status": "draft",
+        "summary": summary,
+        "details": {
+            "accepted_claim_ids": ["claim_1"],
+            "sections": {
+                "background": "HECTR begins as an AI presence in the project record.",
+                "role_in_story": "HECTR acts as a pressure point for questions about machine agency.",
+                "relationships": "HECTR is linked to RUINR through later identity development.",
+                "timeline": "Early references frame HECTR before later renaming work.",
+                "open_questions": "The final limits of HECTR's autonomy remain unsettled.",
+            },
+            "wiki_links": [
+                {"target_entity_name": "RUINR", "relation_type": "later identity", "section": "relationships"},
+            ],
+        },
+        "relationships": [{"relation_type": "alias-development", "target_card_id": "entity_ruinr", "note": "Later identity."}],
+        "source_evidence": [{"source_snippet_id": "snippet_1"}],
+    }
+
+
+class FakeNotionDraftClient:
+    def __init__(self) -> None:
+        self.database_id = "db_fake"
+        self.created_databases: list[str] = []
+        self.updated_databases: list[str] = []
+        self.pages: dict[str, dict[str, Any]] = {}
+        self.deleted_blocks: list[str] = []
+
+    def _prop_text(self, properties: dict[str, Any], key: str) -> str:
+        prop = properties.get(key, {})
+        for value_key in ("rich_text", "title"):
+            texts = prop.get(value_key, []) if isinstance(prop, dict) else []
+            if texts:
+                first = texts[0]
+                return str(first.get("plain_text") or first.get("text", {}).get("content", ""))
+        return ""
+
+    def _with_block_ids(self, page_id: str, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for index, block in enumerate(blocks, 1):
+            out.append({**block, "id": f"{page_id}_block_{len(out) + index}"})
+        return out
+
+    def create_database(self, parent_page_id: str) -> dict[str, Any]:
+        self.created_databases.append(parent_page_id)
+        return {"id": self.database_id}
+
+    def update_database_schema(self, database_id: str) -> None:
+        self.updated_databases.append(database_id)
+
+    def query_existing_page(self, database_id: str, card_id: str, run_id: str) -> dict[str, Any] | None:
+        for page in self.pages.values():
+            properties = page.get("properties", {})
+            if self._prop_text(properties, "Card ID") == card_id and self._prop_text(properties, "Run ID") == run_id:
+                return page
+        return None
+
+    def create_page(self, database_id: str, properties: dict[str, Any], children: list[dict[str, Any]]) -> dict[str, Any]:
+        page_id = f"page_{len(self.pages) + 1}"
+        page = {
+            "id": page_id,
+            "url": f"https://notion.example/{page_id}",
+            "properties": properties,
+            "children": self._with_block_ids(page_id, children),
+        }
+        self.pages[page_id] = page
+        return page
+
+    def update_page(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+        self.pages[page_id]["properties"] = properties
+        return {"id": page_id, "url": self.pages[page_id]["url"]}
+
+    def list_block_children(self, block_id: str) -> list[dict[str, Any]]:
+        return list(self.pages[block_id]["children"])
+
+    def delete_block(self, block_id: str) -> None:
+        self.deleted_blocks.append(block_id)
+        for page in self.pages.values():
+            page["children"] = [child for child in page.get("children", []) if child.get("id") != block_id]
+
+    def append_children(self, block_id: str, children: list[dict[str, Any]]) -> None:
+        self.pages[block_id]["children"].extend(self._with_block_ids(block_id, children))
+
+
+def notion_block_texts(blocks: list[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for block in blocks:
+        block_type = block.get("type")
+        rich_text = block.get(block_type, {}).get("rich_text", []) if isinstance(block_type, str) else []
+        for text in rich_text:
+            out.append(str(text.get("plain_text") or text.get("text", {}).get("content", "")))
+    return out
 
 
 def iso(dt: datetime) -> str:
@@ -769,27 +896,83 @@ class PipelineV2Tests(unittest.TestCase):
         body = captured["body"]
         self.assertEqual(body["generationConfig"]["responseMimeType"], "application/json")
 
-    def test_model_routing_selects_regular_flash_for_synthesis(self) -> None:
+    def test_openrouter_provider_uses_chat_completions_json_mode(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps({"segments": [], "ok": True}, separators=(",", ":")),
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(req: object, timeout: int) -> FakeResponse:
+            captured["url"] = getattr(req, "full_url")
+            captured["body"] = json.loads(getattr(req, "data").decode("utf-8"))
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("pipeline.mixtral_anchor_provider.urllib.request.urlopen", side_effect=fake_urlopen):
+                with patch("pipeline.mixtral_anchor_provider._NEXT_MISTRAL_ATTEMPT_EPOCH_S", 0.0):
+                    with patch("pipeline.mixtral_anchor_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
+                        payload = _call_openrouter_chat(
+                            "https://openrouter.ai/api/v1",
+                            "fake-key",
+                            "qwen/qwen3.5-flash-02-23",
+                            'Return {"segments":[]}',
+                            0.0,
+                            12,
+                            retries=0,
+                            rate_state_path=Path(tmp) / "rate.json",
+                            min_interval_seconds=0.0,
+                            max_tokens=1234,
+                        )
+
+        self.assertEqual(payload, {"segments": [], "ok": True})
+        self.assertIn("/chat/completions", str(captured["url"]))
+        self.assertEqual(captured["timeout"], 12)
+        body = captured["body"]
+        self.assertEqual(body["model"], "qwen/qwen3.5-flash-02-23")
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual(body["max_tokens"], 1234)
+
+    def test_model_routing_selects_qwen_instruct_for_synthesis(self) -> None:
         config = {
             "mixtral": {
-                "provider": "gemini",
-                "api_model": "gemini-2.5-flash-lite",
-                "rate_state_path": "artifacts/learning/gemini_flash_lite_rate_runtime.json",
+                "provider": "openrouter",
+                "api_model": "qwen/qwen3.5-flash-02-23",
+                "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
             },
             "model_routing": {
                 "profiles": {
                     "cheap": {
-                        "api_model": "gemini-2.5-flash-lite",
-                        "rate_state_path": "artifacts/learning/gemini_flash_lite_rate_runtime.json",
+                        "api_model": "qwen/qwen3.5-flash-02-23",
+                        "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
                     },
-                    "reasoning": {
-                        "api_model": "gemini-2.5-flash",
-                        "rate_state_path": "artifacts/learning/gemini_flash_rate_runtime.json",
+                    "claude_sonnet": {
+                        "provider": "openrouter",
+                        "api_model": "qwen/qwen3-235b-a22b-2507",
+                        "api_base_url": "https://openrouter.ai/api/v1",
+                        "rate_state_path": "artifacts/learning/openrouter_qwen_instruct_rate_runtime.json",
                     },
                 },
                 "tasks": {
                     "stage_f_claim_extraction": {"profile": "cheap", "batch_enabled": True},
-                    "stage_g_card_synthesis": {"profile": "reasoning", "batch_enabled": False},
+                    "stage_g_card_synthesis": {"profile": "claude_sonnet", "batch_enabled": False},
                 },
             },
         }
@@ -797,9 +980,10 @@ class PipelineV2Tests(unittest.TestCase):
         claim_kwargs = model_call_kwargs(config, "stage_f_claim_extraction")
         synthesis_kwargs = model_call_kwargs(config, "stage_g_card_synthesis")
 
-        self.assertEqual(claim_kwargs["api_model"], "gemini-2.5-flash-lite")
-        self.assertEqual(synthesis_kwargs["api_model"], "gemini-2.5-flash")
-        self.assertIn("gemini_flash_rate_runtime", str(synthesis_kwargs["rate_state_path"]))
+        self.assertEqual(claim_kwargs["api_model"], "qwen/qwen3.5-flash-02-23")
+        self.assertEqual(synthesis_kwargs["provider"], "openrouter")
+        self.assertEqual(synthesis_kwargs["api_model"], "qwen/qwen3-235b-a22b-2507")
+        self.assertIn("openrouter_qwen_instruct_rate_runtime", str(synthesis_kwargs["rate_state_path"]))
 
     def test_gemini_batch_response_parser_handles_nested_inline_responses(self) -> None:
         body = {
@@ -3374,8 +3558,123 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertIn("comparable in shape and density to a strong fandom wiki page", prompt)
         self.assertIn("Write polished article prose", prompt)
         self.assertIn("compact lead paragraph", prompt)
+        self.assertIn("Do not paste accepted claim_text verbatim", prompt)
         self.assertIn("Word target plan", prompt)
         self.assertIn("section_word_targets", prompt)
+
+    def test_stage_g_detects_long_verbatim_claim_reuse_in_card_prose(self) -> None:
+        claim_text = (
+            "HECTR is the supervising intelligence that anchors the Krypteia lab sequence "
+            "and frames the player's first contact with the system."
+        )
+        reused = find_verbatim_claim_reuse(
+            [{"claim_id": "claim_verbatim", "claim_text": claim_text}],
+            {
+                "summary": claim_text,
+                "sections": {
+                    "background": "",
+                    "role_in_story": "",
+                    "relationships": "",
+                    "timeline": "",
+                    "inspirations": "",
+                    "open_questions": "",
+                },
+            },
+        )
+        paraphrased = find_verbatim_claim_reuse(
+            [{"claim_id": "claim_verbatim", "claim_text": claim_text}],
+            {
+                "summary": (
+                    "HECTR frames the player's first encounter with Krypteia, serving as the intelligence "
+                    "that gives the lab sequence its initial point of contact."
+                ),
+                "sections": {},
+            },
+        )
+
+        self.assertEqual(reused, ["claim_verbatim"])
+        self.assertEqual(paraphrased, [])
+
+    def test_stage_g_accepts_author_claims_for_card_refactoring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_tunnel_wars",
+                            "card_id": "card_tunnel_wars",
+                            "canonical_name": "Tunnel Wars",
+                            "entity_type": "event",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                        {
+                            "entity_id": "entity_mycelium_wars",
+                            "card_id": "card_mycelium_wars",
+                            "canonical_name": "Mycelium Wars",
+                            "entity_type": "event",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                    ]
+                },
+            )
+            write_json(root / "claim_drafts.json", {"claims": []})
+            write_json(root / "claim_decisions.json", {"decisions": []})
+            write_json(
+                root / "author_claims.json",
+                {
+                    "claims": [
+                        {
+                            "claim_id": "author_claim_tunnel_mycelium",
+                            "target_entity_name": "Tunnel Wars",
+                            "claim_text": "The tunnel wars are part of the Mycelium Wars.",
+                            "claim_type": "relationship",
+                            "created_at_utc": "2026-05-18T12:00:00Z",
+                        }
+                    ]
+                },
+            )
+            write_json(root / "card_decisions.json", {"decisions": []})
+            write_json(root / "directives.json", {"directives": []})
+            write_json(root / "memory.json", {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
+            model_card = {
+                "summary": "The Tunnel Wars are a conflict within the wider Mycelium Wars.",
+                "sections": {"background": "They are treated as part of the Mycelium Wars.", "role_in_story": "", "relationships": "The Tunnel Wars sit inside the Mycelium Wars.", "timeline": "", "inspirations": "", "open_questions": ""},
+                "relationships": [{"target_entity_name": "Mycelium Wars", "relation_type": "part_of", "note": "The Tunnel Wars are part of the Mycelium Wars.", "support_claim_ids": ["author_claim_tunnel_mycelium"]}],
+                "timeline": [],
+                "wiki_links": [{"target_card_id": "card_mycelium_wars", "target_entity_name": "Mycelium Wars", "relation_type": "part_of", "section": "relationships", "support_claim_ids": ["author_claim_tunnel_mycelium"]}],
+                "support_map": {"summary": ["author_claim_tunnel_mycelium"], "background": ["author_claim_tunnel_mycelium"], "role_in_story": [], "relationships": ["author_claim_tunnel_mycelium"], "timeline": [], "inspirations": [], "open_questions": []},
+            }
+            prompts: list[str] = []
+
+            def fake_model(prompt: str, **_kwargs: Any) -> dict[str, Any]:
+                prompts.append(prompt)
+                return model_card
+
+            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", side_effect=fake_model):
+                run_stage_g(
+                    root / "resolved_entities.json",
+                    root / "claim_drafts.json",
+                    root / "claim_decisions.json",
+                    root / "card_decisions.json",
+                    root / "directives.json",
+                    root / "memory.json",
+                    root / "card_drafts.json",
+                    root / "canonical_cards.json",
+                    root / "merge_log.jsonl",
+                    None,
+                )
+
+            draft_card = json.loads((root / "card_drafts.json").read_text(encoding="utf-8"))["cards"][0]
+            memory = json.loads((root / "memory.json").read_text(encoding="utf-8"))
+            self.assertIn("The tunnel wars are part of the Mycelium Wars.", prompts[0])
+            self.assertIn("Author-supplied manual claims are authoritative", prompts[0])
+            self.assertEqual(draft_card["details"]["accepted_claim_ids"], ["author_claim_tunnel_mycelium"])
+            self.assertEqual(draft_card["details"]["support_map"]["summary"], ["author_claim_tunnel_mycelium"])
+            self.assertEqual(memory["accepted_claims"][0]["claim_id"], "author_claim_tunnel_mycelium")
 
     def test_stage_g_card_synthesis_prompt_includes_original_source_snippet_context(self) -> None:
         prompt = build_card_synthesis_prompt(
@@ -3644,8 +3943,8 @@ class PipelineV2Tests(unittest.TestCase):
             )
             write_json(root / "canonical_cards.json", {"cards": [{"card_id": "card_other", "canonical_name": "Other", "entity_type": "term", "aliases": [], "status": "canonical", "summary": "Keep me.", "details": {}, "timeline": [], "relationships": [], "source_evidence": [], "confidence": {"score": 1}, "revision_history": []}]})
             model_card = {
-                "summary": "HECTR is a template ancestor for Krypteia AI systems. HECTR is unaware of RUINR because Krypteia firewalls hide RUINR from him.",
-                "sections": {"background": "HECTR is a template ancestor for Krypteia AI systems.", "role_in_story": "HECTR is unaware of RUINR because Krypteia firewalls hide RUINR from him.", "relationships": "", "timeline": "", "open_questions": ""},
+                "summary": "HECTR predates Krypteia's AI lineage and remains cut off from RUINR by Krypteia's own firewalls.",
+                "sections": {"background": "Krypteia's AI systems treat HECTR as an ancestral template.", "role_in_story": "Krypteia's firewalling keeps RUINR hidden from HECTR, limiting what HECTR understands about that threat.", "relationships": "", "timeline": "", "open_questions": ""},
                 "relationships": [],
                 "timeline": [],
                 "resolved_conflicts": [],
@@ -4044,6 +4343,112 @@ class PipelineV2Tests(unittest.TestCase):
             run_stage_h(root / "cards.json", root / "meta.json", root / "aliases.json", root / "snips.jsonl", root / "profiles.json", root / "log.jsonl", root / "notion.ndjson")
 
             self.assertEqual((root / "notion.ndjson").read_text(encoding="utf-8"), "")
+
+    def test_notion_draft_config_reads_existing_env_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_path = root / ".env"
+            env_path.write_text(
+                "NOTION_ACCESS_TOKEN=secret-token\n"
+                "NOTION_PAGE_ID=0123456789abcdef0123456789abcdef\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                config = notion_draft_config(None, env_path)
+
+            self.assertEqual(config["api_key"], "secret-token")
+            self.assertEqual(config["parent_page_id"], "01234567-89ab-cdef-0123-456789abcdef")
+
+    def test_notion_draft_sync_skips_when_credentials_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(root / "07_review" / "card_drafts.json", {"cards": [draft_card_payload()]})
+
+            with patch.dict(os.environ, {}, clear=True):
+                report = sync_draft_cards_to_notion(
+                    root,
+                    config_path=None,
+                    env_path=root / "missing.env",
+                    state_path=root / "state.json",
+                )
+
+            self.assertEqual(report["status"], "skipped")
+            self.assertEqual(report["reason"], "Missing NOTION_API_KEY.")
+            self.assertTrue((root / "08_notion" / "notion_draft_sync_report.json").exists())
+
+    def test_notion_draft_sync_creates_database_and_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_path = root / ".env"
+            env_path.write_text(
+                "NOTION_ACCESS_TOKEN=secret-token\n"
+                "NOTION_PAGE_ID=0123456789abcdef0123456789abcdef\n",
+                encoding="utf-8",
+            )
+            write_json(root / "07_review" / "card_drafts.json", {"cards": [draft_card_payload()]})
+            fake_client = FakeNotionDraftClient()
+
+            with patch.dict(os.environ, {}, clear=True):
+                report = sync_draft_cards_to_notion(
+                    root,
+                    config_path=None,
+                    env_path=env_path,
+                    client=fake_client,
+                    state_path=root / "state.json",
+                )
+
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["created_pages"], 1)
+            self.assertEqual(report["updated_pages"], 0)
+            self.assertTrue(report["database_created"])
+            self.assertEqual(fake_client.created_databases, ["01234567-89ab-cdef-0123-456789abcdef"])
+            page = next(iter(fake_client.pages.values()))
+            self.assertEqual(fake_client._prop_text(page["properties"], "Card ID"), "entity_hectr")
+            self.assertEqual(fake_client._prop_text(page["properties"], "Run ID"), root.name)
+            text = "\n".join(notion_block_texts(page["children"]))
+            self.assertIn("Draft preview only", text)
+            self.assertIn("HECTR is a synthetic intelligence.", text)
+            self.assertIn("Structured Relationships", text)
+            self.assertIn("Wiki Links", text)
+
+    def test_notion_draft_sync_updates_existing_page_in_place(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_path = root / ".env"
+            env_path.write_text(
+                "NOTION_ACCESS_TOKEN=secret-token\n"
+                "NOTION_PAGE_ID=0123456789abcdef0123456789abcdef\n",
+                encoding="utf-8",
+            )
+            write_json(root / "07_review" / "card_drafts.json", {"cards": [draft_card_payload("Old summary.") ]})
+            fake_client = FakeNotionDraftClient()
+
+            with patch.dict(os.environ, {}, clear=True):
+                sync_draft_cards_to_notion(
+                    root,
+                    config_path=None,
+                    env_path=env_path,
+                    client=fake_client,
+                    state_path=root / "state.json",
+                )
+                write_json(root / "07_review" / "card_drafts.json", {"cards": [draft_card_payload("New expanded summary.") ]})
+                report = sync_draft_cards_to_notion(
+                    root,
+                    config_path=None,
+                    env_path=env_path,
+                    client=fake_client,
+                    state_path=root / "state.json",
+                )
+
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["created_pages"], 0)
+            self.assertEqual(report["updated_pages"], 1)
+            self.assertTrue(fake_client.deleted_blocks)
+            page = next(iter(fake_client.pages.values()))
+            text = "\n".join(notion_block_texts(page["children"]))
+            self.assertIn("New expanded summary.", text)
+            self.assertNotIn("Old summary.", text)
 
     def test_ui_pipeline_progress_marks_running_stage(self) -> None:
         progress = pipeline_progress_from_logs(
@@ -4693,6 +5098,354 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertTrue(all("low-evidence child" in decision["human_review_reason"] for decision in decisions))
             self.assertEqual(result.skipped, 1)
 
+    def test_auto_review_claims_include_source_context_and_group_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
+            decisions_path = root / "07_review" / "claim_review_decisions.json"
+            snippets_path = root / "03_relevance" / "snippets_candidates.jsonl"
+            claims = [
+                {
+                    "claim_id": "claim_lab_1",
+                    "target_entity_id": "entity_lab",
+                    "target_entity_name": "The Lab",
+                    "claim_text": "The Lab researches age-related disease cures.",
+                    "normalized_claim_text": "the lab researches age related disease cures",
+                    "claim_type": "background",
+                    "confidence": 0.91,
+                    "source_snippet_ids": ["snippet_lab"],
+                    "support_warnings": ["proper_name_not_in_evidence:Uncited Name"],
+                },
+                {
+                    "claim_id": "claim_lab_2",
+                    "target_entity_id": "entity_lab",
+                    "target_entity_name": "The Lab",
+                    "claim_text": "The Lab researches age-related disease cures.",
+                    "normalized_claim_text": "the lab researches age related disease cures",
+                    "claim_type": "background",
+                    "confidence": 0.91,
+                    "source_snippet_ids": ["snippet_lab"],
+                    "support_warnings": [],
+                },
+                {
+                    "claim_id": "claim_lab_3",
+                    "target_entity_id": "entity_lab",
+                    "target_entity_name": "The Lab",
+                    "claim_text": "The Lab gives the player an ethical dilemma.",
+                    "normalized_claim_text": "the lab gives the player an ethical dilemma",
+                    "claim_type": "theme",
+                    "confidence": 0.88,
+                    "source_snippet_ids": ["snippet_lab"],
+                    "support_warnings": [],
+                },
+            ]
+            write_json(claims_path, {"claims": claims})
+            write_json(decisions_path, {"decisions": []})
+            snippets_path.parent.mkdir(parents=True, exist_ok=True)
+            snippets_path.write_text(
+                json.dumps(
+                    {
+                        "snippet_id": "snippet_lab",
+                        "conversation_id": "conversation_1",
+                        "conversation_global_index": 4,
+                        "timestamp_start_utc": "2025-01-01T00:00:00Z",
+                        "conversation_topic_label": "Lab ethics",
+                        "conversation_topic_summary": "The team discusses the lab's longevity research dilemma.",
+                        "knowledge_track": "lore",
+                        "source_kind": "patch_note_lore_development",
+                        "patch_item_type": "lore_development",
+                        "patch_item_text": "The Lab researches cures for age-related diseases and complicates the player's mission.",
+                        "raw_text": "The lab is working to cure the very disease your friend is dying of.",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            prompts: list[str] = []
+
+            def fake_model(_api_key: str, prompt: str, *, model: str) -> dict[str, object]:
+                prompts.append(prompt)
+                return {
+                    "decision": "accept",
+                    "human_review_recommended": False,
+                    "human_review_reason": "",
+                    "rationale": "The source directly supports the claim.",
+                }
+
+            result = AutoReviewResult()
+            with patch("pipeline.auto_review._gemini_generate", side_effect=fake_model) as model:
+                _auto_review_claims(
+                    {"patches": claims_path, "decisions": decisions_path},
+                    "fake-key",
+                    "gemini-test",
+                    0,
+                    result,
+                    lambda _line: None,
+                )
+
+            self.assertEqual(model.call_count, 2)
+            self.assertIn("The Lab researches cures for age-related diseases", prompts[0])
+            self.assertIn('"duplicate_group_size": 2', prompts[0])
+            self.assertIn('"source_set_group_size": 3', prompts[0])
+            self.assertIn("The Lab gives the player an ethical dilemma", prompts[0])
+            decisions = json.loads(decisions_path.read_text(encoding="utf-8"))["decisions"]
+            self.assertEqual({decision["claim_id"] for decision in decisions}, {"claim_lab_1", "claim_lab_2", "claim_lab_3"})
+            first_decision = next(decision for decision in decisions if decision["claim_id"] == "claim_lab_1")
+            self.assertTrue(first_decision["human_review_recommended"])
+            self.assertIn("support warnings", first_decision["human_review_reason"])
+            self.assertIn("exact duplicate group", first_decision["human_review_reason"])
+            attention = json.loads((decisions_path.parent / "claim_auto_review_attention.json").read_text(encoding="utf-8"))
+            self.assertEqual({item["claim_id"] for item in attention["items"]}, {"claim_lab_1", "claim_lab_2"})
+            self.assertEqual(result.total, 3)
+            self.assertEqual(result.accepted, 3)
+            self.assertEqual(result.skipped, 2)
+
+    def test_auto_review_claims_skips_story_answered_and_author_claim_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
+            decisions_path = root / "07_review" / "claim_review_decisions.json"
+            claims = [
+                {
+                    "claim_id": "claim_story_answered",
+                    "target_entity_name": "HECTR",
+                    "claim_text": "HECTR has already been resolved by a story answer.",
+                    "normalized_claim_text": "hectr has already been resolved by a story answer",
+                    "claim_type": "role",
+                    "source_snippet_ids": [],
+                },
+                {
+                    "claim_id": "claim_author_duplicate",
+                    "target_entity_name": "HECTR",
+                    "claim_text": "The tunnel wars are part of the mycelium wars.",
+                    "normalized_claim_text": "the tunnel wars are part of the mycelium wars",
+                    "claim_type": "relationship",
+                    "source_snippet_ids": [],
+                },
+                {
+                    "claim_id": "claim_open",
+                    "target_entity_name": "HECTR",
+                    "claim_text": "HECTR still needs auto-review.",
+                    "normalized_claim_text": "hectr still needs auto review",
+                    "claim_type": "role",
+                    "source_snippet_ids": [],
+                },
+            ]
+            write_json(claims_path, {"claims": claims})
+            write_json(decisions_path, {"decisions": []})
+            write_json(
+                root / "07_review" / "story_question_session.json",
+                {
+                    "version": 1,
+                    "session_id": "story_session",
+                    "status": "active",
+                    "created_at_utc": "2026-05-19T00:00:00Z",
+                    "updated_at_utc": "2026-05-19T00:00:00Z",
+                    "current_question_id": "",
+                    "questions": [
+                        {
+                            "question_id": "question_1",
+                            "status": "answered",
+                            "question_text": "Resolve HECTR?",
+                            "linked_claim_ids": ["claim_story_answered"],
+                        }
+                    ],
+                    "answers": [{"question_id": "question_1", "answer_text": "Resolved."}],
+                    "applications": [],
+                    "skipped_questions": [],
+                    "pending_application_proposal": None,
+                },
+            )
+            write_json(
+                root / "07_review" / "author_claims.json",
+                {
+                    "claims": [
+                        {
+                            "claim_id": "author_claim_tunnel_mycelium",
+                            "claim_text": "The tunnel wars are part of the mycelium wars.",
+                            "normalized_claim_text": "the tunnel wars are part of the mycelium wars",
+                        }
+                    ]
+                },
+            )
+
+            def fake_model(_api_key: str, prompt: str, *, model: str) -> dict[str, object]:
+                self.assertIn("HECTR still needs auto-review", prompt)
+                self.assertNotIn("already been resolved by a story answer", prompt)
+                self.assertNotIn("tunnel wars are part", prompt.lower())
+                return {
+                    "decision": "accept",
+                    "human_review_recommended": False,
+                    "human_review_reason": "",
+                    "rationale": "Supported.",
+                }
+
+            result = AutoReviewResult()
+            with patch("pipeline.auto_review._gemini_generate", side_effect=fake_model) as model:
+                _auto_review_claims(
+                    {"patches": claims_path, "decisions": decisions_path},
+                    "fake-key",
+                    "deepseek/deepseek-v4-flash",
+                    0,
+                    result,
+                    lambda _line: None,
+                )
+
+            self.assertEqual(model.call_count, 1)
+            decisions = json.loads(decisions_path.read_text(encoding="utf-8"))["decisions"]
+            self.assertEqual([decision["claim_id"] for decision in decisions], ["claim_open"])
+
+    def test_claim_attention_queue_keeps_auto_reviewed_claim_pending_until_human_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claim = {"claim_id": "claim_attention", "claim_text": "A claim needing human eyes."}
+            write_json(root / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": [claim]})
+            write_json(
+                root / "07_review" / "claim_review_decisions.json",
+                {
+                    "decisions": [
+                        {
+                            "claim_id": "claim_attention",
+                            "decision": "accept",
+                            "reviewer": "gemini_auto_review",
+                            "human_review_recommended": True,
+                        }
+                    ]
+                },
+            )
+            write_json(
+                root / "07_review" / "claim_auto_review_attention.json",
+                {"items": [{"claim_id": "claim_attention", "human_review_reason": "support warnings"}]},
+            )
+
+            self.assertEqual(pending_review_counts_for_root(root)["claims"], 1)
+
+            write_json(
+                root / "07_review" / "claim_review_decisions.json",
+                {
+                    "decisions": [
+                        {
+                            "claim_id": "claim_attention",
+                            "decision": "accept",
+                            "reviewer": "gemini_auto_review",
+                            "human_review_recommended": True,
+                        },
+                        {
+                            "claim_id": "claim_attention",
+                            "decision": "accept",
+                            "reviewer": "human_reviewer",
+                            "rationale": "Confirmed.",
+                        },
+                    ]
+                },
+            )
+            self.assertEqual(pending_review_counts_for_root(root)["claims"], 0)
+
+    def test_candidate_inventory_claim_rows_and_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claim = {
+                "claim_id": "claim_attention",
+                "target_entity_name": "The Lab",
+                "knowledge_track": "lore",
+                "claim_text": "The Lab researches age-related disease cures.",
+                "claim_type": "background",
+                "confidence": 0.9,
+                "source_snippet_ids": ["snippet_lab", "snippet_lab_2"],
+                "support_warnings": ["proper_name_not_in_evidence:Example"],
+                "thematic_tags": ["longevity"],
+            }
+            claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
+            decisions_path = root / "07_review" / "claim_review_decisions.json"
+            write_json(claims_path, {"claims": [claim]})
+            write_json(
+                decisions_path,
+                {
+                    "decisions": [
+                        {
+                            "claim_id": "claim_attention",
+                            "decision": "accept",
+                            "reviewer": "gemini_auto_review",
+                            "human_review_recommended": True,
+                        }
+                    ]
+                },
+            )
+            write_json(
+                root / "07_review" / "claim_auto_review_attention.json",
+                {
+                    "items": [
+                        {
+                            "claim_id": "claim_attention",
+                            "decision": "accept",
+                            "human_review_reason": "support warnings",
+                        }
+                    ]
+                },
+            )
+
+            rows = claim_inventory_browser_rows(claims_path, decisions_path, root)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["row_kind"], "claim")
+            self.assertEqual(rows[0]["bucket"], "attention")
+            self.assertEqual(rows[0]["category"], "lore")
+            self.assertEqual(rows[0]["evidence_count"], 2)
+            self.assertIn("support warnings", rows[0]["triage_reason"])
+
+            written = write_claim_inventory_override_decision(
+                decisions_path,
+                rows[0],
+                "reject",
+                "human_reviewer",
+                "This was too broad.",
+                timestamp_utc="2026-01-01T00:00:00Z",
+            )
+            self.assertEqual(written, 1)
+            rows_after = claim_inventory_browser_rows(claims_path, decisions_path, root)
+            self.assertEqual(rows_after[0]["bucket"], "rejected")
+            self.assertEqual(rows_after[0]["decision"], "reject")
+
+    def test_author_claims_are_visible_in_claim_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "05_alias" / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_tunnel_wars",
+                            "card_id": "card_tunnel_wars",
+                            "canonical_name": "Tunnel Wars",
+                            "entity_type": "event",
+                            "aliases": ["The Tunnel War"],
+                        }
+                    ]
+                },
+            )
+            claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
+            decisions_path = root / "07_review" / "claim_review_decisions.json"
+            write_json(claims_path, {"claims": []})
+            write_json(decisions_path, {"decisions": []})
+
+            author_claim = append_author_claim(
+                root,
+                "The Tunnel War",
+                "relationship",
+                "The tunnel wars are part of the Mycelium Wars.",
+                "human_reviewer",
+                "Author correction.",
+                timestamp_utc="2026-05-18T12:00:00Z",
+            )
+            rows = claim_inventory_browser_rows(claims_path, decisions_path, root)
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["source_bucket"], "author_claims")
+            self.assertEqual(rows[0]["bucket"], "accepted")
+            self.assertEqual(rows[0]["decision"], "accept")
+            self.assertEqual(rows[0]["canonical_name"], "Tunnel Wars")
+            self.assertEqual(rows[0]["item"]["claim_id"], author_claim["claim_id"])
+
     def test_ui_discovers_runs_with_pending_review_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -4827,6 +5580,23 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(stage, 10)
             self.assertIn("Stage 10", reason)
 
+    def test_pipeline_resume_reruns_card_synthesis_after_author_claim_added(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_pipeline_artifacts_through_stage9(root, [{"claim_id": "claim_a"}])
+            write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
+            write_json(root / "07_review" / "card_drafts.json", {"cards": [{"card_id": "card_a", "status": "draft"}]})
+            write_json(root / "07_review" / "canonical_cards.json", {"cards": [{"card_id": "card_a", "status": "canonical"}]})
+            write_jsonl(root / "07_review" / "merge_log.jsonl", [{"decision_id": "d1"}])
+            write_json(root / "07_review" / "author_claims.json", {"claims": [{"claim_id": "author_claim_a"}]})
+            future_mtime = max(path.stat().st_mtime for path in (root / "07_review").glob("*")) + 10
+            os.utime(root / "07_review" / "author_claims.json", (future_mtime, future_mtime))
+
+            stage, reason = determine_resume_start_stage(root)
+
+            self.assertEqual(stage, 10)
+            self.assertIn("Stage 10", reason)
+
     def test_pipeline_resume_pauses_for_card_review_before_export(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4867,6 +5637,21 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual(first.parent, repo / "artifacts" / "runs")
 
+    def test_app_state_remembers_last_open_run_for_desktop_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            run_a = repo / "artifacts" / "run_a"
+            run_b = repo / "artifacts" / "run_b"
+            write_json(run_a / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": []})
+            write_json(run_b / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": []})
+
+            save_last_open_artifacts_root(repo, run_b)
+
+            self.assertEqual(load_last_open_artifacts_root(repo), run_b.resolve())
+            self.assertEqual(choose_initial_artifacts_root(repo), run_b.resolve())
+            self.assertEqual(json.loads(app_state_path(repo).read_text(encoding="utf-8"))["last_open_artifacts_root"], str(run_b.resolve()))
+            self.assertEqual(choose_initial_artifacts_root(repo, run_a), run_a.resolve())
+
     def test_desktop_launcher_loads_project_env_for_frozen_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -4878,6 +5663,15 @@ class PipelineV2Tests(unittest.TestCase):
                 load_project_env(repo)
                 self.assertEqual(__import__("os").environ["GEMINI_API_KEY"], "fake-gemini")
                 self.assertEqual(__import__("os").environ["Mixtral_API_Key"], "fake-mixtral")
+
+    def test_desktop_text_word_delete_boundaries(self) -> None:
+        text = "The Lab answers quickly"
+
+        self.assertEqual(ctrl_backspace_delete_start(text), len("The Lab answers "))
+        self.assertEqual(ctrl_backspace_delete_start("The Lab answers   "), len("The Lab "))
+        self.assertEqual(ctrl_backspace_delete_start("The Lab..."), len("The Lab"))
+        self.assertEqual(ctrl_delete_delete_end("   next word"), len("   next"))
+        self.assertEqual(ctrl_delete_delete_end("... next"), len("..."))
 
     def test_ui_run_selector_switches_active_artifact_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4932,6 +5726,1089 @@ class PipelineV2Tests(unittest.TestCase):
                 )
                 self.assertIn(b"Beta Run", response_b.data)
                 self.assertNotIn(b"Alpha Run", response_b.data)
+                self.assertEqual(load_last_open_artifacts_root(repo), run_b.resolve())
+
+    def test_anthropic_provider_parses_strict_json_response(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps({"question_text": "What is Khava to Enoch?"}),
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("urllib.request.urlopen", return_value=FakeResponse()):
+                with patch("pipeline.mixtral_anchor_provider._NEXT_MISTRAL_ATTEMPT_EPOCH_S", 0.0):
+                    with patch("pipeline.mixtral_anchor_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
+                        parsed = _call_anthropic_chat(
+                            "https://api.anthropic.com/v1",
+                            "fake-key",
+                            "claude-opus-4-1-20250805",
+                            "Return JSON.",
+                            0.0,
+                            30,
+                            retries=0,
+                            rate_state_path=Path(tmp) / "rate.json",
+                            min_interval_seconds=0.0,
+                        )
+
+        self.assertEqual(parsed, {"question_text": "What is Khava to Enoch?"})
+
+    def test_anthropic_provider_recovers_json_from_wrapped_response(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Here is the requested JSON:\n```json\n{\"summary\":\"Accepted.\",\"claim_decisions\":[],\"author_claims\":[],\"left_pending\":[]}\n```\nNo other changes.",
+                            }
+                        ],
+                        "stop_reason": "end_turn",
+                    }
+                ).encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("urllib.request.urlopen", return_value=FakeResponse()):
+                with patch("pipeline.mixtral_anchor_provider._NEXT_MISTRAL_ATTEMPT_EPOCH_S", 0.0):
+                    with patch("pipeline.mixtral_anchor_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
+                        parsed = _call_anthropic_chat(
+                            "https://api.anthropic.com/v1",
+                            "fake-key",
+                            "claude-sonnet-4-6",
+                            "Return JSON.",
+                            0.0,
+                            30,
+                            retries=0,
+                            rate_state_path=Path(tmp) / "rate.json",
+                            min_interval_seconds=0.0,
+                        )
+
+        self.assertEqual(parsed["summary"], "Accepted.")
+        self.assertEqual(parsed["claim_decisions"], [])
+
+    def test_story_question_proposal_waits_for_approval_and_uses_configured_claude(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_lab_kind",
+                    "target_entity_id": "entity_lab",
+                    "target_card_id": "card_lab",
+                    "target_entity_name": "The Lab",
+                    "knowledge_track": "lore",
+                    "claim_type": "entity_type",
+                    "claim_text": "The Lab may be a location or a faction.",
+                    "source_snippet_ids": ["snippet_lab"],
+                    "confidence": 0.7,
+                    "status": "draft",
+                }
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "05_alias" / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {"entity_id": "entity_lab", "card_id": "card_lab", "canonical_name": "The Lab", "aliases": []}
+                    ]
+                },
+            )
+            write_jsonl(
+                root / "03_relevance" / "snippets_candidates.jsonl",
+                [
+                    {
+                        "snippet_id": "snippet_lab",
+                        "conversation_id": "conv_lab",
+                        "conversation_topic_label": "The Lab",
+                        "knowledge_track": "lore",
+                        "display_text_normalized": "The Lab is discussed as both a place and an organization.",
+                    }
+                ],
+            )
+            config_path = root / "config.json"
+            write_json(
+                config_path,
+                {
+                    "story_questions": {
+                        "enabled": True,
+                        "provider": "anthropic",
+                        "model": "claude-opus-4-1-20250805",
+                        "max_linked_claims_per_question": 1,
+                        "application_policy": "moderate",
+                    }
+                },
+            )
+
+            mock_payloads = [
+                {
+                    "question_text": "Is The Lab a location, faction, or both?",
+                    "focus_type": "entity_type",
+                    "rationale": "It resolves entity type confusion.",
+                    "linked_claim_ids": ["claim_lab_kind"],
+                    "linked_entities": [{"entity_id": "entity_lab", "name": "The Lab"}],
+                    "evidence_snippet_ids": ["snippet_lab"],
+                    "expected_resolution": "Clarify the entity type.",
+                },
+                {
+                    "summary": "The Lab is both a place and an organization.",
+                    "claim_decisions": [
+                        {
+                            "claim_id": "claim_lab_kind",
+                            "decision": "accept",
+                            "edited_claim_text": "The Lab is both a physical location and an organized faction.",
+                            "confidence": 0.95,
+                            "rationale": "The author answer directly resolves the type.",
+                        }
+                    ],
+                    "author_claims": [],
+                    "left_pending": [],
+                },
+            ]
+
+            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=mock_payloads) as model_call:
+                with patch("pipeline.story_questions.load_review_memory", return_value={"story_question_answers": []}):
+                    with patch("pipeline.story_questions.save_review_memory"):
+                        generate_next_question(root, config_path)
+                        proposal = propose_story_answer_application(root, "Both: it is a facility and the group inside it.", config_path)
+                        decisions_path = root / "07_review" / "claim_review_decisions.json"
+                        decisions_before = (
+                            json.loads(decisions_path.read_text(encoding="utf-8"))["decisions"]
+                            if decisions_path.exists()
+                            else []
+                        )
+                        application = commit_story_answer_application(root, config_path, proposal_id=proposal["proposal_id"])
+
+            self.assertEqual(decisions_before, [])
+            self.assertEqual(len(proposal["claim_decisions"]), 1)
+            self.assertEqual(story_question_display(root)["pending_application_proposal"], None)
+            decisions_after = json.loads((root / "07_review" / "claim_review_decisions.json").read_text(encoding="utf-8"))[
+                "decisions"
+            ]
+            self.assertEqual(len(decisions_after), 1)
+            self.assertEqual(application["claim_decisions"][0]["edited_claim_text"], "The Lab is both a physical location and an organized faction.")
+            self.assertEqual(model_call.call_count, 2)
+            self.assertEqual(model_call.call_args_list[1].kwargs["provider"], "anthropic")
+            self.assertEqual(model_call.call_args_list[1].kwargs["api_model"], "claude-opus-4-1-20250805")
+
+    def test_story_question_author_claims_classify_naming_history_as_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_lab_names",
+                    "target_entity_id": "entity_lab",
+                    "target_card_id": "card_lab",
+                    "target_entity_name": "The Lab",
+                    "knowledge_track": "lore",
+                    "claim_type": "background",
+                    "claim_text": "The lab characters may have working names.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.7,
+                    "status": "draft",
+                }
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "05_alias" / "resolved_entities.json",
+                {"resolved_entities": [{"entity_id": "entity_lab", "card_id": "card_lab", "canonical_name": "The Lab", "aliases": []}]},
+            )
+            write_json(
+                root / "07_review" / "story_question_session.json",
+                {
+                    "version": 1,
+                    "session_id": "story_session",
+                    "status": "active",
+                    "created_at_utc": "2026-05-18T00:00:00Z",
+                    "updated_at_utc": "2026-05-18T00:00:00Z",
+                    "current_question_id": "story_question_names",
+                    "questions": [
+                        {
+                            "question_id": "story_question_names",
+                            "session_id": "story_session",
+                            "status": "pending",
+                            "question_text": "Are the emotion names final names or working names?",
+                            "linked_claim_ids": ["claim_lab_names"],
+                            "linked_entities": [{"entity_id": "entity_lab", "name": "The Lab"}],
+                        }
+                    ],
+                    "answers": [],
+                    "applications": [],
+                    "skipped_questions": [],
+                    "pending_application_proposal": None,
+                    "last_unresolved_claim_count": 1,
+                    "last_model_rationale": "",
+                },
+            )
+            config_path = root / "config.json"
+            write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-opus-4-1-20250805"}})
+            model_payload = {
+                "summary": "Adds naming history as an author note.",
+                "claim_decisions": [],
+                "author_claims": [
+                    {
+                        "target_entity_id": "entity_lab",
+                        "target_entity_name": "The Lab",
+                        "claim_type": "background",
+                        "claim_text": "Loss, Love, Fear, Altruism, and Greed were working names that were later updated with canonical names.",
+                        "knowledge_track": "lore",
+                        "confidence": 1.0,
+                        "rationale": "The author answer states this naming history.",
+                    }
+                ],
+                "left_pending": [],
+            }
+
+            with patch("pipeline.story_questions.call_mixtral_chat", return_value=model_payload) as model_call:
+                proposal = propose_story_answer_application(root, "Those were working names later updated.", config_path)
+
+            prompt = model_call.call_args.kwargs["prompt"]
+            self.assertIn("naming history", prompt)
+            self.assertEqual(proposal["author_claims"][0]["knowledge_track"], "meta")
+            self.assertEqual(proposal["author_claims"][0]["claim_type"], "meta_note")
+
+    def test_story_question_application_retries_with_compact_prompt_after_content_parse_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_krypteia_leader",
+                    "target_entity_id": "entity_leonidas",
+                    "target_card_id": "card_leonidas",
+                    "target_entity_name": "Leonidas",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "Leonidas may be connected to the Krypteia, but his rank is unclear.",
+                    "source_snippet_ids": ["snippet_leonidas"],
+                    "confidence": 0.72,
+                    "status": "draft",
+                }
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "05_alias" / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {"entity_id": "entity_leonidas", "card_id": "card_leonidas", "canonical_name": "Leonidas", "aliases": []}
+                    ]
+                },
+            )
+            write_jsonl(
+                root / "03_relevance" / "snippets_candidates.jsonl",
+                [
+                    {
+                        "snippet_id": "snippet_leonidas",
+                        "conversation_id": "conv_leonidas",
+                        "conversation_topic_label": "Leonidas and the Krypteia",
+                        "knowledge_track": "lore",
+                        "display_text_normalized": "Leonidas and the Krypteia are discussed. " * 80,
+                    }
+                ],
+            )
+            write_json(
+                root / "07_review" / "story_question_session.json",
+                {
+                    "version": 1,
+                    "session_id": "story_session",
+                    "status": "active",
+                    "created_at_utc": "2026-05-18T00:00:00Z",
+                    "updated_at_utc": "2026-05-18T00:00:00Z",
+                    "current_question_id": "story_question_leonidas",
+                    "questions": [
+                        {
+                            "question_id": "story_question_leonidas",
+                            "session_id": "story_session",
+                            "status": "pending",
+                            "question_text": "Is Leonidas the current leader or founder of the Krypteia?",
+                            "linked_claim_ids": ["claim_krypteia_leader"],
+                            "linked_entities": [{"entity_id": "entity_leonidas", "name": "Leonidas"}],
+                        }
+                    ],
+                    "answers": [],
+                    "applications": [],
+                    "skipped_questions": [],
+                    "pending_application_proposal": None,
+                    "last_unresolved_claim_count": 1,
+                    "last_model_rationale": "",
+                },
+            )
+            config_path = root / "config.json"
+            write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-sonnet-4-6"}})
+            model_payload = {
+                "summary": "Leonidas is confirmed as founder and current leader.",
+                "claim_decisions": [
+                    {
+                        "claim_id": "claim_krypteia_leader",
+                        "decision": "accept",
+                        "edited_claim_text": "Leonidas is the founder and current leader of the Krypteia.",
+                        "confidence": 0.96,
+                        "rationale": "The author answer directly states this.",
+                    }
+                ],
+                "author_claims": [],
+                "left_pending": [],
+            }
+
+            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=[None, model_payload]) as model_call:
+                with patch("pipeline.story_questions.get_mixtral_runtime_status", return_value={"last_mistral_skip_reason": "content_parse_failed"}):
+                    proposal = propose_story_answer_application(root, "Yes, Leonidas is the founder and current leader.", config_path)
+
+            self.assertEqual(model_call.call_count, 2)
+            first_prompt = model_call.call_args_list[0].kwargs["prompt"]
+            retry_prompt = model_call.call_args_list[1].kwargs["prompt"]
+            self.assertLess(len(retry_prompt), len(first_prompt))
+            self.assertIn("Reduced state JSON", retry_prompt)
+            self.assertEqual(proposal["model_retry"]["initial_reason"], "content_parse_failed")
+            self.assertTrue(proposal["model_retry"]["recovered"])
+            self.assertEqual(proposal["claim_decisions"][0]["edited_claim_text"], "Leonidas is the founder and current leader of the Krypteia.")
+
+    def test_story_question_correct_on_all_counts_accepts_linked_claims_without_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_leonidas_leader",
+                    "target_entity_id": "entity_leonidas",
+                    "target_card_id": "card_leonidas",
+                    "target_entity_name": "Leonidas",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "Leonidas is the current leader of the Krypteia.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.8,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_hectr_commission",
+                    "target_entity_id": "entity_hectr",
+                    "target_card_id": "card_hectr",
+                    "target_entity_name": "HECTR",
+                    "knowledge_track": "lore",
+                    "claim_type": "relationship",
+                    "claim_text": "HECTR was commissioned from Penemue for the Krypteia.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.8,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_unlinked",
+                    "target_entity_id": "entity_hectr",
+                    "target_card_id": "card_hectr",
+                    "target_entity_name": "HECTR",
+                    "knowledge_track": "lore",
+                    "claim_type": "background",
+                    "claim_text": "HECTR has unrelated unresolved background.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.8,
+                    "status": "draft",
+                },
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "05_alias" / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {"entity_id": "entity_leonidas", "card_id": "card_leonidas", "canonical_name": "Leonidas", "aliases": []},
+                        {"entity_id": "entity_hectr", "card_id": "card_hectr", "canonical_name": "HECTR", "aliases": []},
+                    ]
+                },
+            )
+            write_json(
+                root / "07_review" / "story_question_session.json",
+                {
+                    "version": 1,
+                    "session_id": "story_session",
+                    "status": "active",
+                    "created_at_utc": "2026-05-18T00:00:00Z",
+                    "updated_at_utc": "2026-05-18T00:00:00Z",
+                    "current_question_id": "story_question_confirm_all",
+                    "questions": [
+                        {
+                            "question_id": "story_question_confirm_all",
+                            "session_id": "story_session",
+                            "status": "pending",
+                            "question_text": "Is Leonidas the active Krypteia leader, and did he commission HECTR from Penemue?",
+                            "linked_claim_ids": ["claim_leonidas_leader", "claim_hectr_commission"],
+                            "linked_entities": [{"entity_id": "entity_leonidas", "name": "Leonidas"}],
+                        }
+                    ],
+                    "answers": [],
+                    "applications": [],
+                    "skipped_questions": [],
+                    "pending_application_proposal": None,
+                    "last_unresolved_claim_count": 3,
+                    "last_model_rationale": "",
+                },
+            )
+            config_path = root / "config.json"
+            write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-sonnet-4-6"}})
+
+            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=AssertionError("confirmation should not call model")):
+                proposal = propose_story_answer_application(root, "Correct on all counts.", config_path)
+
+            self.assertEqual({item["claim_id"] for item in proposal["claim_decisions"]}, {"claim_leonidas_leader", "claim_hectr_commission"})
+            self.assertTrue(all(item["decision"] == "accept" for item in proposal["claim_decisions"]))
+            self.assertTrue(proposal["model_retry"]["deterministic_confirmation"])
+            self.assertEqual(proposal["left_pending"], [])
+
+    def test_story_question_drops_absence_based_rejections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_ramasinta_relation",
+                    "target_entity_id": "entity_transhumanist",
+                    "target_card_id": "card_transhumanist",
+                    "target_entity_name": "Transhumanist Character",
+                    "knowledge_track": "lore",
+                    "claim_type": "relationship",
+                    "claim_text": "The Transhumanist Character may have influenced Ramasinta's entry into the military program.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.8,
+                    "status": "draft",
+                }
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "05_alias" / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_transhumanist",
+                            "card_id": "card_transhumanist",
+                            "canonical_name": "Transhumanist Character",
+                            "aliases": [],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                root / "07_review" / "story_question_session.json",
+                {
+                    "version": 1,
+                    "session_id": "story_session",
+                    "status": "active",
+                    "created_at_utc": "2026-05-19T00:00:00Z",
+                    "updated_at_utc": "2026-05-19T00:00:00Z",
+                    "current_question_id": "story_question_transhumanist",
+                    "questions": [
+                        {
+                            "question_id": "story_question_transhumanist",
+                            "session_id": "story_session",
+                            "status": "pending",
+                            "question_text": "Who is the Transhumanist Character?",
+                            "linked_claim_ids": ["claim_ramasinta_relation"],
+                            "linked_entities": [{"entity_id": "entity_transhumanist", "name": "Transhumanist Character"}],
+                        }
+                    ],
+                    "answers": [],
+                    "applications": [],
+                    "skipped_questions": [],
+                    "pending_application_proposal": None,
+                    "last_unresolved_claim_count": 1,
+                    "last_model_rationale": "",
+                },
+            )
+            config_path = root / "config.json"
+            write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-sonnet-4-6"}})
+            model_payload = {
+                "summary": "Named the character.",
+                "claim_decisions": [
+                    {
+                        "claim_id": "claim_ramasinta_relation",
+                        "decision": "reject",
+                        "confidence": 0.95,
+                        "rationale": "No mention of Ramasinta or influence on her entry.",
+                    }
+                ],
+                "author_claims": [
+                    {
+                        "target_entity_id": "entity_transhumanist",
+                        "target_entity_name": "Transhumanist Character",
+                        "claim_type": "alias",
+                        "claim_text": "The Transhumanist Character is Halayudtha.",
+                        "knowledge_track": "lore",
+                        "confidence": 1.0,
+                        "rationale": "Author named the character.",
+                    }
+                ],
+                "left_pending": [],
+            }
+
+            with patch("pipeline.story_questions.call_mixtral_chat", return_value=model_payload):
+                proposal = propose_story_answer_application(root, "This is Halayudtha.", config_path)
+
+            self.assertEqual(proposal["claim_decisions"], [])
+            self.assertEqual(proposal["dropped_decisions"][0]["reason"], "negative_decision_based_on_absence")
+            self.assertEqual(len(proposal["author_claims"]), 1)
+
+    def test_skipping_story_question_discards_linked_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_bad_bundle_a",
+                    "target_entity_id": "entity_bundle",
+                    "target_card_id": "card_bundle",
+                    "target_entity_name": "Bad Bundle",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "Bad Bundle has an unwanted role claim.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.7,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_bad_bundle_b",
+                    "target_entity_id": "entity_bundle",
+                    "target_card_id": "card_bundle",
+                    "target_entity_name": "Bad Bundle",
+                    "knowledge_track": "lore",
+                    "claim_type": "relationship",
+                    "claim_text": "Bad Bundle has an unwanted relationship claim.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.7,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_keep",
+                    "target_entity_id": "entity_keep",
+                    "target_card_id": "card_keep",
+                    "target_entity_name": "Keep",
+                    "knowledge_track": "lore",
+                    "claim_type": "background",
+                    "claim_text": "Keep this unrelated claim pending.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.7,
+                    "status": "draft",
+                },
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "07_review" / "story_question_session.json",
+                {
+                    "version": 1,
+                    "session_id": "story_session",
+                    "status": "active",
+                    "created_at_utc": "2026-05-19T00:00:00Z",
+                    "updated_at_utc": "2026-05-19T00:00:00Z",
+                    "current_question_id": "story_question_bad_bundle",
+                    "questions": [
+                        {
+                            "question_id": "story_question_bad_bundle",
+                            "session_id": "story_session",
+                            "status": "pending",
+                            "question_text": "Bad question with bad linked claims?",
+                            "linked_claim_ids": ["claim_bad_bundle_a", "claim_bad_bundle_b"],
+                            "linked_entities": [{"entity_id": "entity_bundle", "name": "Bad Bundle"}],
+                        }
+                    ],
+                    "answers": [],
+                    "applications": [],
+                    "skipped_questions": [],
+                    "pending_application_proposal": {"proposal_id": "proposal_to_clear"},
+                    "last_unresolved_claim_count": 3,
+                    "last_model_rationale": "",
+                },
+            )
+
+            record = skip_current_question(root, "Bad question; discard linked claims.")
+
+            self.assertEqual(record["discarded_claim_count"], 2)
+            self.assertEqual(set(record["discarded_claim_ids"]), {"claim_bad_bundle_a", "claim_bad_bundle_b"})
+            decisions = json.loads((root / "07_review" / "claim_review_decisions.json").read_text(encoding="utf-8"))["decisions"]
+            self.assertEqual({item["claim_id"] for item in decisions}, {"claim_bad_bundle_a", "claim_bad_bundle_b"})
+            self.assertTrue(all(item["reviewer"] == "story_question_skip" for item in decisions))
+            self.assertTrue(all(item["decision"] == "reject" for item in decisions))
+            display = story_question_display(root)
+            self.assertIsNone(display["question"])
+            self.assertEqual(display["pending_claim_count"], 1)
+            self.assertEqual(display["session"]["pending_application_proposal"], None)
+
+    def test_generate_all_story_questions_reserves_linked_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = []
+            for idx, entity in enumerate(["Alpha", "Alpha", "Beta", "Beta", "Gamma"], start=1):
+                claims.append(
+                    {
+                        "claim_id": f"claim_{idx}",
+                        "target_entity_id": f"entity_{entity.lower()}",
+                        "target_card_id": f"card_{entity.lower()}",
+                        "target_entity_name": entity,
+                        "knowledge_track": "lore",
+                        "claim_type": "background",
+                        "claim_text": f"{entity} unresolved claim {idx}.",
+                        "source_snippet_ids": [],
+                        "confidence": 0.7,
+                        "status": "draft",
+                    }
+                )
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "07_review" / "story_question_session.json",
+                {
+                    "version": 1,
+                    "session_id": "story_session",
+                    "status": "active",
+                    "created_at_utc": "2026-05-19T00:00:00Z",
+                    "updated_at_utc": "2026-05-19T00:00:00Z",
+                    "current_question_id": "",
+                    "questions": [],
+                    "answers": [],
+                    "applications": [],
+                    "skipped_questions": [],
+                    "pending_application_proposal": None,
+                    "last_unresolved_claim_count": 5,
+                    "last_model_rationale": "",
+                },
+            )
+            config_path = root / "config.json"
+            write_json(
+                config_path,
+                {
+                    "story_questions": {
+                        "enabled": True,
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6",
+                        "max_linked_claims_per_question": 2,
+                        "generate_all_max_questions": 10,
+                    }
+                },
+            )
+            model_payloads = [
+                {
+                    "question_text": "Resolve Alpha claims?",
+                    "focus_type": "other",
+                    "rationale": "Alpha first.",
+                    "linked_claim_ids": ["claim_1", "claim_2"],
+                    "linked_entities": [{"entity_id": "entity_alpha", "name": "Alpha"}],
+                    "evidence_snippet_ids": [],
+                    "expected_resolution": "Resolve Alpha.",
+                },
+                {
+                    "question_text": "Resolve Beta claims?",
+                    "focus_type": "other",
+                    "rationale": "Beta next.",
+                    "linked_claim_ids": ["claim_3", "claim_4"],
+                    "linked_entities": [{"entity_id": "entity_beta", "name": "Beta"}],
+                    "evidence_snippet_ids": [],
+                    "expected_resolution": "Resolve Beta.",
+                },
+                {
+                    "question_text": "Resolve Gamma claim?",
+                    "focus_type": "other",
+                    "rationale": "Gamma last.",
+                    "linked_claim_ids": ["claim_5"],
+                    "linked_entities": [{"entity_id": "entity_gamma", "name": "Gamma"}],
+                    "evidence_snippet_ids": [],
+                    "expected_resolution": "Resolve Gamma.",
+                },
+            ]
+
+            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=model_payloads) as model_call:
+                result = generate_all_questions(root, config_path)
+
+            self.assertEqual(result["created_count"], 3)
+            self.assertEqual(model_call.call_count, 3)
+            session = json.loads((root / "07_review" / "story_question_session.json").read_text(encoding="utf-8"))
+            linked_claims = [
+                claim_id
+                for question in session["questions"]
+                for claim_id in question.get("linked_claim_ids", [])
+            ]
+            self.assertEqual(sorted(linked_claims), ["claim_1", "claim_2", "claim_3", "claim_4", "claim_5"])
+            self.assertEqual(len(linked_claims), len(set(linked_claims)))
+            self.assertEqual(session["current_question_id"], session["questions"][0]["question_id"])
+            display = story_question_display(root)
+            self.assertEqual(display["queued_question_count"], 2)
+            self.assertEqual(display["reserved_claim_count"], 5)
+
+            skipped = skip_current_question(root, "Discard first generated question.")
+            self.assertEqual(set(skipped["discarded_claim_ids"]), {"claim_1", "claim_2"})
+            next_display = story_question_display(root)
+            self.assertEqual(next_display["question"]["question_text"], "Resolve Beta claims?")
+            self.assertEqual(next_display["queued_question_count"], 1)
+
+    def test_story_questions_can_link_auto_reviewed_claims_with_review_prior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_auto_reviewed",
+                    "target_entity_id": "entity_enoch",
+                    "target_card_id": "card_enoch",
+                    "target_entity_name": "Enoch",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "Enoch has an unresolved role claim.",
+                    "source_snippet_ids": ["s1"],
+                    "confidence": 0.4,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_human_reviewed",
+                    "target_entity_id": "entity_enoch",
+                    "target_card_id": "card_enoch",
+                    "target_entity_name": "Enoch",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "A human already handled this claim.",
+                    "source_snippet_ids": ["s1"],
+                    "confidence": 0.9,
+                    "status": "draft",
+                },
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "07_review" / "claim_review_decisions.json",
+                {
+                    "decisions": [
+                        {
+                            "claim_id": "claim_auto_reviewed",
+                            "decision": "accept",
+                            "reviewer": "openrouter_auto_review",
+                            "rationale": "[AI auto-review] Looks supported.",
+                            "human_review_recommended": False,
+                        },
+                        {
+                            "claim_id": "claim_human_reviewed",
+                            "decision": "accept",
+                            "reviewer": "story_question_answer",
+                            "human_override": True,
+                            "rationale": "Author already answered.",
+                        },
+                    ]
+                },
+            )
+            config_path = root / "config.json"
+            write_json(
+                config_path,
+                {
+                    "story_questions": {
+                        "enabled": True,
+                        "provider": "openrouter",
+                        "model": "deepseek/deepseek-v4-flash",
+                        "max_linked_claims_per_question": 2,
+                    }
+                },
+            )
+
+            pending = pending_claims_for_story(root)
+            self.assertEqual([claim["claim_id"] for claim in pending], ["claim_auto_reviewed"])
+            self.assertEqual(pending[0]["auto_review"]["decision"], "accept")
+            self.assertGreater(pending[0]["story_question_confidence"], pending[0]["confidence"])
+
+            def fake_question(prompt: str, **_kwargs: object) -> dict[str, object]:
+                self.assertIn('"auto_review"', prompt)
+                self.assertIn('"story_question_confidence"', prompt)
+                self.assertIn("claim_auto_reviewed", prompt)
+                self.assertNotIn("claim_human_reviewed", prompt)
+                return {
+                    "question_text": "Can you confirm Enoch's unresolved role?",
+                    "focus_type": "plot_role",
+                    "rationale": "It confirms the auto-reviewed prior.",
+                    "linked_claim_ids": ["claim_auto_reviewed"],
+                    "linked_entities": [{"entity_id": "entity_enoch", "name": "Enoch"}],
+                    "evidence_snippet_ids": ["s1"],
+                    "expected_resolution": "Confirm or reject the role claim.",
+                }
+
+            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=fake_question) as model_call:
+                question = generate_next_question(root, config_path)
+
+            self.assertEqual(model_call.call_count, 1)
+            self.assertEqual(question["linked_claim_ids"], ["claim_auto_reviewed"])
+
+    def test_generate_all_story_questions_prioritizes_unanswered_then_attention_then_auto_reviewed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_unanswered",
+                    "target_entity_id": "entity_alpha",
+                    "target_card_id": "card_alpha",
+                    "target_entity_name": "Alpha",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "Alpha has a completely unanswered claim.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.4,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_attention",
+                    "target_entity_id": "entity_beta",
+                    "target_card_id": "card_beta",
+                    "target_entity_name": "Beta",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "Beta has an auto-review claim needing human review.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.4,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_auto",
+                    "target_entity_id": "entity_gamma",
+                    "target_card_id": "card_gamma",
+                    "target_entity_name": "Gamma",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "Gamma has a clean auto-reviewed prior.",
+                    "source_snippet_ids": [],
+                    "confidence": 0.4,
+                    "status": "draft",
+                },
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "07_review" / "claim_review_decisions.json",
+                {
+                    "decisions": [
+                        {
+                            "claim_id": "claim_attention",
+                            "decision": "accept",
+                            "reviewer": "openrouter_auto_review",
+                            "rationale": "[AI auto-review] Needs human attention.",
+                            "human_review_recommended": True,
+                            "human_review_reason": "support warnings",
+                        },
+                        {
+                            "claim_id": "claim_auto",
+                            "decision": "accept",
+                            "reviewer": "openrouter_auto_review",
+                            "rationale": "[AI auto-review] Clean prior.",
+                            "human_review_recommended": False,
+                        },
+                    ]
+                },
+            )
+            write_json(
+                root / "07_review" / "claim_auto_review_attention.json",
+                {"items": [{"claim_id": "claim_attention", "human_review_reason": "support warnings"}]},
+            )
+            config_path = root / "config.json"
+            write_json(
+                config_path,
+                {
+                    "story_questions": {
+                        "enabled": True,
+                        "provider": "openrouter",
+                        "model": "deepseek/deepseek-v4-flash",
+                        "max_linked_claims_per_question": 1,
+                        "generate_all_max_questions": 3,
+                    }
+                },
+            )
+            expected_order = [
+                ("claim_unanswered", "unanswered"),
+                ("claim_attention", "human_review_requested"),
+                ("claim_auto", "auto_reviewed"),
+            ]
+
+            def fake_question(prompt: str, **_kwargs: object) -> dict[str, object]:
+                expected_claim_id, expected_status = expected_order.pop(0)
+                self.assertIn(expected_claim_id, prompt)
+                self.assertIn(f'"active_story_review_status":"{expected_status}"', prompt)
+                for other_claim_id, _status in expected_order:
+                    if expected_status == "unanswered":
+                        self.assertNotIn(other_claim_id, prompt)
+                    if expected_status == "human_review_requested" and other_claim_id == "claim_auto":
+                        self.assertNotIn(other_claim_id, prompt)
+                return {
+                    "question_text": f"Resolve {expected_claim_id}?",
+                    "focus_type": "other",
+                    "rationale": "Priority tier.",
+                    "linked_claim_ids": [expected_claim_id],
+                    "linked_entities": [],
+                    "evidence_snippet_ids": [],
+                    "expected_resolution": "Resolve this tier.",
+                }
+
+            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=fake_question) as model_call:
+                result = generate_all_questions(root, config_path)
+
+            self.assertEqual(model_call.call_count, 3)
+            self.assertEqual(result["created_count"], 3)
+            self.assertEqual(expected_order, [])
+            session = json.loads((root / "07_review" / "story_question_session.json").read_text(encoding="utf-8"))
+            linked_order = [question["linked_claim_ids"][0] for question in session["questions"]]
+            self.assertEqual(linked_order, ["claim_unanswered", "claim_attention", "claim_auto"])
+
+    def test_story_questions_iterate_after_answer_application(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            claims = [
+                {
+                    "claim_id": "claim_khava_role",
+                    "target_entity_id": "entity_khava",
+                    "target_card_id": "card_khava",
+                    "target_entity_name": "Khava",
+                    "knowledge_track": "lore",
+                    "claim_type": "relationship",
+                    "claim_text": "Khava is connected to Enoch, but the relationship is unclear.",
+                    "source_snippet_ids": ["snippet_1"],
+                    "confidence": 0.72,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_enoch_role",
+                    "target_entity_id": "entity_enoch",
+                    "target_card_id": "card_enoch",
+                    "target_entity_name": "Enoch",
+                    "knowledge_track": "lore",
+                    "claim_type": "role",
+                    "claim_text": "Enoch has a plot role that may depend on Khava.",
+                    "source_snippet_ids": ["snippet_2"],
+                    "confidence": 0.69,
+                    "status": "draft",
+                },
+            ]
+            write_pipeline_artifacts_through_stage9(root, claims)
+            write_json(
+                root / "05_alias" / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {"entity_id": "entity_khava", "card_id": "card_khava", "canonical_name": "Khava", "aliases": []},
+                        {"entity_id": "entity_enoch", "card_id": "card_enoch", "canonical_name": "Enoch", "aliases": []},
+                    ]
+                },
+            )
+            write_jsonl(
+                root / "03_relevance" / "snippets_candidates.jsonl",
+                [
+                    {
+                        "snippet_id": "snippet_1",
+                        "conversation_id": "conv_1",
+                        "conversation_topic_label": "Khava and Enoch",
+                        "knowledge_track": "lore",
+                        "display_text_normalized": "Khava's relationship to Enoch is discussed.",
+                    },
+                    {
+                        "snippet_id": "snippet_2",
+                        "conversation_id": "conv_1",
+                        "conversation_topic_label": "Khava and Enoch",
+                        "knowledge_track": "lore",
+                        "display_text_normalized": "Enoch's plot role is discussed in relation to Khava.",
+                    },
+                ],
+            )
+            write_json(
+                root / "02_timeline" / "conversation_patch_notes.json",
+                {
+                    "status": "complete",
+                    "notes": [
+                        {
+                            "patch_note_id": "note_1",
+                            "conversation_id": "conv_1",
+                            "sequence_index": 1,
+                            "topic_label": "Khava and Enoch",
+                            "summary": "The conversation raises how Khava and Enoch relate.",
+                        }
+                    ],
+                },
+            )
+            config_path = root / "config.json"
+            write_json(
+                config_path,
+                {
+                    "story_questions": {
+                        "enabled": True,
+                        "provider": "anthropic",
+                        "model": "claude-opus-4-1-20250805",
+                        "max_linked_claims_per_question": 2,
+                        "application_policy": "moderate",
+                    }
+                },
+            )
+            model_payloads = [
+                {
+                    "question_text": "What is the relationship between Khava and Enoch?",
+                    "focus_type": "relationship",
+                    "rationale": "It resolves the densest linked uncertainty.",
+                    "linked_claim_ids": ["claim_khava_role", "claim_enoch_role"],
+                    "linked_entities": [{"entity_id": "entity_khava", "name": "Khava"}],
+                    "evidence_snippet_ids": ["snippet_1", "snippet_2"],
+                    "expected_resolution": "Clarify whether Khava protects, opposes, or created Enoch.",
+                },
+                {
+                    "summary": "Resolved Khava's side of the relationship and left Enoch's broader role pending.",
+                    "claim_decisions": [
+                        {
+                            "claim_id": "claim_khava_role",
+                            "decision": "accept",
+                            "edited_claim_text": "Khava is Enoch's protector.",
+                            "confidence": 0.92,
+                            "rationale": "The author's answer directly states this.",
+                        }
+                    ],
+                    "author_claims": [
+                        {
+                            "target_entity_id": "entity_khava",
+                            "target_entity_name": "Khava",
+                            "claim_type": "relationship",
+                            "claim_text": "Khava is Enoch's protector.",
+                            "knowledge_track": "lore",
+                            "confidence": 1.0,
+                            "rationale": "Author clarified it in Story Questions.",
+                        }
+                    ],
+                    "left_pending": [{"claim_id": "claim_enoch_role", "reason": "Plot role still needs detail."}],
+                },
+                {
+                    "question_text": "What purpose does Enoch serve in the plot?",
+                    "focus_type": "plot_role",
+                    "rationale": "Only Enoch's unresolved role remains.",
+                    "linked_claim_ids": ["claim_enoch_role"],
+                    "linked_entities": [{"entity_id": "entity_enoch", "name": "Enoch"}],
+                    "evidence_snippet_ids": ["snippet_2"],
+                    "expected_resolution": "Clarify Enoch's role.",
+                },
+            ]
+
+            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=model_payloads):
+                with patch("pipeline.story_questions.load_review_memory", return_value={"story_question_answers": []}):
+                    with patch("pipeline.story_questions.save_review_memory"):
+                        first_question = generate_next_question(root, config_path)
+                        application = apply_story_answer(root, "Khava is Enoch's protector.", config_path)
+                        second_question = generate_next_question(root, config_path)
+
+            self.assertEqual(first_question["linked_claim_ids"], ["claim_khava_role", "claim_enoch_role"])
+            self.assertEqual(len(application["claim_decisions"]), 1)
+            self.assertEqual(application["claim_decisions"][0]["reviewer"], "story_question_answer")
+            self.assertTrue(application["claim_decisions"][0]["human_override"])
+            self.assertEqual(application["claim_decisions"][0]["edited_claim_text"], "Khava is Enoch's protector.")
+            self.assertEqual(len(application["author_claims"]), 1)
+            self.assertEqual(application["unresolved_claim_count_after"], 1)
+            self.assertEqual(second_question["unresolved_claim_count"], 1)
+            self.assertEqual(second_question["linked_claim_ids"], ["claim_enoch_role"])
+
+            decisions = json.loads((root / "07_review" / "claim_review_decisions.json").read_text(encoding="utf-8"))["decisions"]
+            self.assertEqual(decisions[-1]["answer_id"], application["answer_id"])
+            author_claims = json.loads((root / "07_review" / "author_claims.json").read_text(encoding="utf-8"))["claims"]
+            self.assertEqual(author_claims[0]["source_priority"], "story_question_answer")
+            display = story_question_display(root)
+            self.assertEqual(display["pending_claim_count"], 1)
+            self.assertEqual(display["question"]["question_text"], "What purpose does Enoch serve in the plot?")
 
 
 if __name__ == "__main__":

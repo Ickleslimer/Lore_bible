@@ -13,7 +13,7 @@ from typing import Any
 from flask import Flask, jsonify, redirect, render_template_string, request
 
 from pipeline.author_directives import parse_author_instruction
-from pipeline.common import now_utc_iso, read_json, safe_uuid, write_json
+from pipeline.common import now_utc_iso, read_json, read_jsonl, safe_uuid, write_json
 
 PIPELINE_STAGES = [
     {"index": 1, "short_label": "01", "name": "Entity Bootstrap"},
@@ -30,6 +30,7 @@ PIPELINE_STAGES = [
 ]
 
 NEW_RUN_SELECTOR_VALUE = "__theriac_new_run__"
+APP_STATE_FILENAME = "theriac_lore_app_state.json"
 
 PIPELINE_PROGRESS_CSS = """
     .run-selector { margin: 10px 0 14px; padding: 12px; border: 1px solid #d8dee4; border-radius: 6px; background: #f6f8fa; }
@@ -55,6 +56,46 @@ PIPELINE_PROGRESS_CSS = """
     .pipeline-stage.done:not(:last-child)::after { background: #238636; }
     .pipeline-stage > * { position: relative; z-index: 1; }
     @media (max-width: 760px) { .pipeline-stages { grid-template-columns: repeat(4, minmax(72px, 1fr)); row-gap: 14px; } .pipeline-stage::after { display: none; } }
+"""
+
+REVIEW_UI_CSS = """
+    :root { color-scheme: light; }
+    body { margin: 0; background: #f6f8fa; color: #24292f; font-family: "Segoe UI", Arial, sans-serif; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 22px; }
+    .page-header { margin: 0 0 14px; }
+    .page-header h2 { margin: 0 0 4px; font-size: 22px; font-weight: 700; }
+    .subtitle { color: #57606a; margin: 0; line-height: 1.4; }
+    .review-panel { border: 1px solid #d8dee4; border-radius: 8px; background: #fff; padding: 18px; box-shadow: 0 1px 2px rgba(31, 35, 40, 0.06); }
+    .panel-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 12px; }
+    .panel-heading h3 { margin: 2px 0 0; font-size: 24px; line-height: 1.2; }
+    .eyebrow { display: block; color: #57606a; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .pill { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border-radius: 999px; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; font-size: 12px; font-weight: 700; }
+    .lead-text { margin: 12px 0; padding: 14px 16px; border-left: 4px solid #0969da; background: #f6f8fa; border-radius: 6px; font-size: 17px; line-height: 1.5; }
+    .summary-text { margin: 12px 0; font-size: 16px; line-height: 1.55; }
+    .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin: 14px 0; }
+    .meta { padding: 9px 10px; border: 1px solid #d8dee4; border-radius: 6px; background: #fff; min-width: 0; }
+    .meta b { display: block; color: #57606a; font-size: 12px; margin-bottom: 3px; }
+    .meta span { overflow-wrap: anywhere; }
+    .notice { margin: 12px 0; padding: 10px 12px; border: 1px solid #f2cc60; border-radius: 6px; background: #fff8c5; color: #3b2300; white-space: pre-wrap; }
+    .section { margin-top: 18px; }
+    .section h4 { margin: 0 0 8px; font-size: 15px; }
+    .section-body { margin: 0; line-height: 1.55; white-space: pre-wrap; }
+    .evidence, .sample, .json-drawer { margin-top: 8px; padding: 11px 12px; border: 1px solid #d8dee4; border-radius: 6px; background: #fff; }
+    .evidence-title, .sample-title { font-weight: 700; margin-bottom: 4px; overflow-wrap: anywhere; }
+    .evidence p, .sample p { margin: 0; line-height: 1.5; white-space: pre-wrap; }
+    details.raw-json { margin-top: 16px; }
+    details.raw-json summary { cursor: pointer; color: #57606a; font-weight: 700; }
+    pre { white-space: pre-wrap; overflow: auto; background: #0b1020; color: #d7e0ff; padding: 10px; border-radius: 6px; line-height: 1.45; }
+    textarea { width: 100%; min-height: 86px; box-sizing: border-box; border: 1px solid #d8dee4; border-radius: 6px; padding: 8px; font-family: inherit; }
+    input, select { border: 1px solid #d8dee4; border-radius: 6px; padding: 6px 8px; font-family: inherit; }
+    label { font-weight: 700; color: #24292f; }
+    button { margin: 8px 8px 0 0; border: 1px solid #0969da; border-radius: 6px; background: #0969da; color: #fff; padding: 7px 11px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .status { margin: 12px 0; padding: 10px; border-radius: 6px; border: 1px solid #d8dee4; background: #fff; white-space: pre-wrap; }
+    .logs { background: #0b1020; color: #d7e0ff; padding: 10px; border-radius: 6px; max-height: 280px; overflow-y: auto; white-space: pre-wrap; }
+    .decision-form { margin-top: 18px; padding-top: 14px; border-top: 1px solid #d8dee4; }
+    .form-row { margin: 10px 0; }
+    .empty { color: #57606a; font-style: italic; }
 """
 
 PIPELINE_PROGRESS_JS = """
@@ -328,24 +369,88 @@ HTML = """
     body { font-family: Arial, sans-serif; margin: 16px; }
     .row { display: flex; gap: 16px; }
     .panel { flex: 1; border: 1px solid #ddd; padding: 12px; border-radius: 6px; }
+    .review-card { max-width: 1080px; }
+    .claim-text { font-size: 18px; line-height: 1.45; padding: 14px; border-left: 4px solid #0969da; background: #f6f8fa; border-radius: 6px; }
+    .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin: 14px 0; }
+    .meta { padding: 8px 10px; border: 1px solid #d8dee4; border-radius: 6px; background: #fff; }
+    .meta b { display: block; font-size: 12px; color: #57606a; margin-bottom: 3px; }
+    .evidence { margin-top: 10px; padding: 10px; border: 1px solid #d8dee4; border-radius: 6px; background: #fff; }
+    .evidence-title { font-weight: 700; color: #24292f; }
+    details { margin-top: 12px; }
+    pre { white-space: pre-wrap; overflow: auto; background: #f6f8fa; padding: 10px; border-radius: 6px; }
     textarea { width: 100%; height: 80px; }
     button { margin-right: 8px; }
     .status { margin: 12px 0; padding: 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; }
     .logs { background: #0b1020; color: #d7e0ff; padding: 10px; border-radius: 6px; max-height: 280px; overflow-y: auto; white-space: pre-wrap; }
+    {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
   </style>
 </head>
 <body>
-  <h2>THERIAC Claim Review UI</h2>
+  <div class="page">
+  <div class="page-header">
+    <h2>THERIAC Claim Review</h2>
+    <p class="subtitle">Review one atomic claim at a time, with source snippets visible before the raw data.</p>
+  </div>
   {{ run_selector_html | safe }}
-  <p>Claim {{ claim.claim_id }} | Entity {{ claim.target_entity_name }} | Confidence {{ claim.confidence }}</p>
   <div class="row">
-    <div class="panel">
-      <h4>Proposed Claim</h4>
-      <pre>{{ claim | tojson(indent=2) }}</pre>
+    <div class="panel review-card review-panel">
+      <div class="panel-heading">
+        <div>
+          <span class="eyebrow">Proposed Claim</span>
+          <h3>{{ claim.target_entity_name }}</h3>
+        </div>
+        <span class="pill">{{ claim.confidence }}</span>
+      </div>
+      <div class="lead-text">{{ claim.claim_text }}</div>
+      <div class="meta-grid">
+        <div class="meta"><b>Claim Type</b><span>{{ claim.claim_type }}</span></div>
+        <div class="meta"><b>Knowledge Track</b><span>{{ claim.knowledge_track }}</span></div>
+        <div class="meta"><b>Status</b><span>{{ claim.status }}</span></div>
+        <div class="meta"><b>Sources</b><span>{{ claim.source_snippet_ids|length }}</span></div>
+        <div class="meta"><b>Claim ID</b><span>{{ claim.claim_id }}</span></div>
+      </div>
+      {% if claim.support_warnings %}
+        <div class="notice"><b>Cautions:</b> {{ claim.support_warnings|join(", ") }}</div>
+      {% endif %}
+      {% if claim.contradiction_notes %}
+        <div class="notice"><b>Contradiction notes:</b> {{ claim.contradiction_notes }}</div>
+      {% endif %}
+      {% if claim.auto_review_attention %}
+        <div class="notice">
+          <b>Auto-review requested human attention:</b>
+          {{ claim.auto_review_attention.human_review_reason or "No reason supplied." }}
+        </div>
+      {% endif %}
+      <div class="section">
+        <h4>Evidence Preview</h4>
+        {% for evidence in claim_evidence %}
+          <div class="evidence">
+            <div class="evidence-title">{{ evidence.snippet_id }}{% if evidence.topic %} | {{ evidence.topic }}{% endif %}</div>
+            <p>{{ evidence.text }}</p>
+          </div>
+        {% else %}
+          <p class="empty">{{ claim.source_snippet_ids|join(", ") }}</p>
+        {% endfor %}
+      </div>
+      {% if claim.proposed_relationship_hints %}
+      <div class="section">
+        <h4>Relationship Hints</h4>
+        {% for hint in claim.proposed_relationship_hints[:3] %}
+          <div class="sample">
+            <div class="sample-title">{{ hint.relation_type }}{% if hint.confidence %} | {{ hint.confidence }}{% endif %}</div>
+            <p>{{ hint.note }}</p>
+          </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <details class="raw-json">
+        <summary>Raw claim JSON</summary>
+        <pre>{{ claim | tojson(indent=2) }}</pre>
+      </details>
     </div>
   </div>
-  <form method="post" action="/decision">
+  <form class="decision-form" method="post" action="/decision">
     <input type="hidden" name="claim_id" value="{{ claim.claim_id }}" />
     <label>Reviewer</label>
     <input type="text" name="reviewer" value="human_reviewer" />
@@ -385,7 +490,7 @@ HTML = """
   <hr />
   <h3>Pipeline Run Logs</h3>
   <form method="post" action="/run_full_pipeline">
-    <button id="run-pipeline-btn" type="submit" {% if pipeline_status == "running" %}disabled{% endif %}>Run Full Pipeline (Stages A-F)</button>
+    <button id="run-pipeline-btn" type="submit" {% if pipeline_status == "running" %}disabled{% endif %}>Run / Resume Full Pipeline</button>
   </form>
   <div class="status" id="pipeline-status">Status: {{ pipeline_status }}{% if pipeline_message %} | {{ pipeline_message }}{% endif %}</div>
   {{ pipeline_progress_html | safe }}
@@ -415,6 +520,7 @@ HTML = """
     setInterval(refreshPipelineStatus, 1500);
     refreshPipelineStatus();
   </script>
+  </div>
 </body>
 </html>
 """
@@ -426,37 +532,73 @@ HTML_CARD = """
   <meta charset="utf-8" />
   <title>THERIAC Card Review</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    .row { display: flex; gap: 16px; }
-    .panel { flex: 1; border: 1px solid #ddd; padding: 12px; border-radius: 6px; }
-    textarea { width: 100%; height: 100px; }
-    button { margin-right: 8px; }
-    .status { margin: 12px 0; padding: 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; }
+    {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
   </style>
 </head>
 <body>
-  <h2>THERIAC Card Review UI</h2>
-  {{ run_selector_html | safe }}
-  <p>Card {{ card.card_id }} | {{ card.canonical_name }} | Status {{ card.status }}</p>
-  {{ pipeline_progress_html | safe }}
-  <div class="row">
-    <div class="panel">
-      <h4>Synthesized Draft Card</h4>
-      <pre>{{ card | tojson(indent=2) }}</pre>
-    </div>
+  <div class="page">
+  <div class="page-header">
+    <h2>THERIAC Card Review</h2>
+    <p class="subtitle">Review the synthesized wiki-style card before promotion to canonical output.</p>
   </div>
-  <form method="post" action="/card_decision">
+  {{ run_selector_html | safe }}
+  {{ pipeline_progress_html | safe }}
+  <div class="review-panel">
+    <div class="panel-heading">
+      <div>
+        <span class="eyebrow">Synthesized Draft Card</span>
+        <h3>{{ card.canonical_name }}</h3>
+      </div>
+      <span class="pill">{{ card.status }}</span>
+    </div>
+    <div class="meta-grid">
+      <div class="meta"><b>Entity Type</b><span>{{ card.entity_type }}</span></div>
+      <div class="meta"><b>Card ID</b><span>{{ card.card_id }}</span></div>
+      <div class="meta"><b>Evidence Items</b><span>{{ card.source_evidence|length }}</span></div>
+      <div class="meta"><b>Sections</b><span>{{ card_sections|length }}</span></div>
+    </div>
+    <div class="section">
+      <h4>Lead Summary</h4>
+      <p class="summary-text">{{ card.summary }}</p>
+    </div>
+    {% for section in card_sections %}
+      <div class="section">
+        <h4>{{ section.title }}</h4>
+        <p class="section-body">{{ section.text }}</p>
+      </div>
+    {% else %}
+      <p class="empty">No expanded sections were included in this draft.</p>
+    {% endfor %}
+    {% if word_counts %}
+      <div class="section">
+        <h4>Section Word Counts</h4>
+        <div class="meta-grid">
+          {% for key, value in word_counts.items() %}
+            <div class="meta"><b>{{ key.replace("_", " ").title() }}</b><span>{{ value }}</span></div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+    <details class="raw-json">
+      <summary>Raw card JSON</summary>
+      <pre>{{ card | tojson(indent=2) }}</pre>
+    </details>
+  </div>
+  <form class="decision-form" method="post" action="/card_decision">
     <input type="hidden" name="card_id" value="{{ card.card_id }}" />
-    <label>Reviewer</label>
-    <input type="text" name="reviewer" value="human_reviewer" />
-    <br /><br />
-    <label>Rationale</label>
-    <textarea name="rationale"></textarea>
-    <br />
-    <label>Edited Summary (optional)</label>
-    <textarea name="edited_summary"></textarea>
-    <br />
+    <div class="form-row">
+      <label>Reviewer</label>
+      <input type="text" name="reviewer" value="human_reviewer" />
+    </div>
+    <div class="form-row">
+      <label>Rationale</label>
+      <textarea name="rationale"></textarea>
+    </div>
+    <div class="form-row">
+      <label>Edited Summary (optional)</label>
+      <textarea name="edited_summary"></textarea>
+    </div>
     <button name="decision" value="approve">Approve Canonical</button>
     <button name="decision" value="reject">Reject</button>
     <button name="decision" value="defer">Defer</button>
@@ -464,6 +606,7 @@ HTML_CARD = """
   </form>
   <hr />
   <p class="status">After card review decisions are saved, rerun Stage 10 to write approved cards to canonical_cards.json and persistent review memory.</p>
+  </div>
 </body>
 </html>
 """
@@ -475,34 +618,57 @@ HTML_IDENTITY_MERGE = """
   <meta charset="utf-8" />
   <title>THERIAC Entity Merge Review</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    .row { display: flex; gap: 16px; }
-    .panel { flex: 1; border: 1px solid #ddd; padding: 12px; border-radius: 6px; }
-    textarea { width: 100%; height: 100px; }
-    button { margin-right: 8px; }
-    .status { margin: 12px 0; padding: 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; }
+    {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
   </style>
 </head>
 <body>
-  <h2>THERIAC Entity Merge Review</h2>
-  {{ run_selector_html | safe }}
-  <p>{{ proposal.source_entity_name }} → {{ proposal.target_entity_name }} | {{ proposal.merge_type }}</p>
-  {{ pipeline_progress_html | safe }}
-  <div class="row">
-    <div class="panel">
-      <h4>Proposed Identity Merge</h4>
-      <pre>{{ proposal | tojson(indent=2) }}</pre>
-    </div>
+  <div class="page">
+  <div class="page-header">
+    <h2>THERIAC Entity Merge Review</h2>
+    <p class="subtitle">Approve only the identity merges that should regroup claims before card synthesis.</p>
   </div>
-  <form method="post" action="/identity_merge_decision">
+  {{ run_selector_html | safe }}
+  {{ pipeline_progress_html | safe }}
+  <div class="review-panel">
+    <div class="panel-heading">
+      <div>
+        <span class="eyebrow">Proposed Identity Merge</span>
+        <h3>{{ proposal.source_entity_name or proposal.source_entity_id }} -> {{ proposal.target_entity_name or proposal.target_entity_id }}</h3>
+      </div>
+      <span class="pill">{{ proposal.confidence }}</span>
+    </div>
+    <div class="meta-grid">
+      <div class="meta"><b>Merge Type</b><span>{{ proposal.merge_type }}</span></div>
+      <div class="meta"><b>Proposal ID</b><span>{{ proposal.proposal_id }}</span></div>
+      <div class="meta"><b>Source Entity ID</b><span>{{ proposal.source_entity_id }}</span></div>
+      <div class="meta"><b>Target Entity ID</b><span>{{ proposal.target_entity_id }}</span></div>
+    </div>
+    <div class="section">
+      <h4>Rationale</h4>
+      <p class="section-body">{{ proposal.rationale or proposal.reason }}</p>
+    </div>
+    {% if proposal.evidence_claim_ids %}
+      <div class="section">
+        <h4>Evidence Claim IDs</h4>
+        <p class="section-body">{{ proposal.evidence_claim_ids|join(", ") }}</p>
+      </div>
+    {% endif %}
+    <details class="raw-json">
+      <summary>Raw merge JSON</summary>
+      <pre>{{ proposal | tojson(indent=2) }}</pre>
+    </details>
+  </div>
+  <form class="decision-form" method="post" action="/identity_merge_decision">
     <input type="hidden" name="proposal_id" value="{{ proposal.proposal_id }}" />
-    <label>Reviewer</label>
-    <input type="text" name="reviewer" value="human_reviewer" />
-    <br /><br />
-    <label>Rationale</label>
-    <textarea name="rationale"></textarea>
-    <br />
+    <div class="form-row">
+      <label>Reviewer</label>
+      <input type="text" name="reviewer" value="human_reviewer" />
+    </div>
+    <div class="form-row">
+      <label>Rationale</label>
+      <textarea name="rationale"></textarea>
+    </div>
     <button name="decision" value="approve">Approve Merge</button>
     <button name="decision" value="reject">Reject</button>
     <button name="decision" value="defer">Defer</button>
@@ -510,6 +676,7 @@ HTML_IDENTITY_MERGE = """
   </form>
   <hr />
   <p class="status">After entity merge decisions are saved, rerun Stage 10 so approved merges can regroup claims before card synthesis.</p>
+  </div>
 </body>
 </html>
 """
@@ -521,46 +688,96 @@ HTML_CONVERSATION_ENTITY = """
   <meta charset="utf-8" />
   <title>THERIAC Conversation Entity Review</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    .row { display: flex; gap: 16px; }
-    .panel { flex: 1; border: 1px solid #ddd; padding: 12px; border-radius: 6px; }
-    textarea { width: 100%; height: 100px; }
     input, select { min-width: 260px; }
-    button { margin-right: 8px; }
-    .status { margin: 12px 0; padding: 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; }
+    {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
   </style>
 </head>
 <body>
-  <h2>THERIAC Conversation Entity Review</h2>
-  {{ run_selector_html | safe }}
-  <p>{{ proposal.candidate_name }} | proposed type {{ proposal.proposed_entity_type }} | evidence {{ proposal.evidence_count }}</p>
-  {{ pipeline_progress_html | safe }}
-  <div class="row">
-    <div class="panel">
-      <h4>Proposed Conversation Entity</h4>
-      <pre>{{ proposal | tojson(indent=2) }}</pre>
-    </div>
+  <div class="page">
+  <div class="page-header">
+    <h2>THERIAC Conversation Entity Review</h2>
+    <p class="subtitle">Decide whether this observed term deserves a canonical entity, a corrected type, or rejection.</p>
   </div>
-  <form method="post" action="/conversation_entity_decision">
+  {{ run_selector_html | safe }}
+  {{ pipeline_progress_html | safe }}
+  <div class="review-panel">
+    <div class="panel-heading">
+      <div>
+        <span class="eyebrow">Candidate Entity</span>
+        <h3>{{ proposal.candidate_name }}</h3>
+      </div>
+      <span class="pill">{{ proposal.review_priority or proposal.triage_status or "pending" }}</span>
+    </div>
+    <div class="meta-grid">
+      <div class="meta"><b>Proposed Type</b><span>{{ proposal.proposed_entity_type }}</span></div>
+      <div class="meta"><b>Suggested Canonical</b><span>{{ proposal.suggested_canonical_name or proposal.candidate_name }}</span></div>
+      <div class="meta"><b>Evidence Count</b><span>{{ proposal.evidence_count }}</span></div>
+      <div class="meta"><b>Recency</b><span>{{ proposal.recency_window }}</span></div>
+      <div class="meta"><b>Tracks</b><span>{{ proposal.knowledge_tracks|join(", ") }}</span></div>
+      <div class="meta"><b>First Seen</b><span>{{ proposal.first_seen_timestamp_utc }}</span></div>
+      <div class="meta"><b>Last Seen</b><span>{{ proposal.last_seen_timestamp_utc }}</span></div>
+    </div>
+    {% if proposal.triage_reason or proposal.type_review_notes %}
+      <div class="notice">
+        {% if proposal.triage_reason %}<b>Triage:</b> {{ proposal.triage_reason }}{% endif %}
+        {% if proposal.type_review_notes %}<br /><b>Type notes:</b> {{ proposal.type_review_notes }}{% endif %}
+      </div>
+    {% endif %}
+    {% if proposal.type_vote_totals %}
+      <div class="section">
+        <h4>Type Evidence</h4>
+        <div class="meta-grid">
+          {% for key, value in proposal.type_vote_totals.items() %}
+            <div class="meta"><b>{{ key }}</b><span>{{ value }}</span></div>
+          {% endfor %}
+        </div>
+      </div>
+    {% endif %}
+    {% if alias_rows %}
+      <div class="section">
+        <h4>Alias Candidates</h4>
+        {% for alias in alias_rows %}
+          <div class="sample"><p>{{ alias }}</p></div>
+        {% endfor %}
+      </div>
+    {% endif %}
+    <div class="section">
+      <h4>Evidence Samples</h4>
+      {% for sample in proposal.sample_texts[:5] %}
+        <div class="sample"><p>{{ sample }}</p></div>
+      {% else %}
+        <p class="empty">No evidence sample text was included.</p>
+      {% endfor %}
+    </div>
+    <details class="raw-json">
+      <summary>Raw candidate JSON</summary>
+      <pre>{{ proposal | tojson(indent=2) }}</pre>
+    </details>
+  </div>
+  <form class="decision-form" method="post" action="/conversation_entity_decision">
     <input type="hidden" name="proposal_id" value="{{ proposal.proposal_id }}" />
     <input type="hidden" name="candidate_name" value="{{ proposal.candidate_name }}" />
-    <label>Canonical Name</label>
-    <input type="text" name="canonical_name" value="{{ proposal.candidate_name }}" />
-    <br /><br />
-    <label>Entity Type</label>
-    <select name="entity_type">
-      {% for entity_type in entity_types %}
-        <option value="{{ entity_type }}" {% if entity_type == proposal.proposed_entity_type %}selected{% endif %}>{{ entity_type }}</option>
-      {% endfor %}
-    </select>
-    <br /><br />
-    <label>Reviewer</label>
-    <input type="text" name="reviewer" value="human_reviewer" />
-    <br /><br />
-    <label>Rationale</label>
-    <textarea name="rationale"></textarea>
-    <br />
+    <div class="form-row">
+      <label>Canonical Name</label>
+      <input type="text" name="canonical_name" value="{{ proposal.suggested_canonical_name or proposal.candidate_name }}" />
+    </div>
+    <div class="form-row">
+      <label>Entity Type</label>
+      <select name="entity_type">
+        {% for entity_type in entity_types %}
+          <option value="{{ entity_type }}" {% if entity_type == proposal.proposed_entity_type %}selected{% endif %}>{{ entity_type }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Reviewer</label>
+      <input type="text" name="reviewer" value="human_reviewer" />
+    </div>
+    <div class="form-row">
+      <label>Rationale</label>
+      <textarea name="rationale"></textarea>
+    </div>
     <button name="decision" value="approve">Approve Entity</button>
     <button name="decision" value="reject">Reject</button>
     <button name="decision" value="defer">Defer</button>
@@ -568,6 +785,7 @@ HTML_CONVERSATION_ENTITY = """
   </form>
   <hr />
   <p class="status">After conversation entity decisions are saved, rerun the pipeline from Stage 07 or rerun the full pipeline so approved entities can be grouped and drafted into claims.</p>
+  </div>
 </body>
 </html>
 """
@@ -579,25 +797,27 @@ HTML_BOOTSTRAP = """
   <meta charset="utf-8" />
   <title>THERIAC Claim Review</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
     .panel { border: 1px solid #ddd; padding: 12px; border-radius: 6px; max-width: 860px; }
-    .status { margin: 12px 0; padding: 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; }
-    .logs { background: #0b1020; color: #d7e0ff; padding: 10px; border-radius: 6px; max-height: 320px; overflow-y: auto; white-space: pre-wrap; }
     code { background: #f6f8fa; padding: 2px 4px; border-radius: 4px; }
+    {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
   </style>
 </head>
 <body>
-  <h2>THERIAC Claim Review UI</h2>
+  <div class="page">
+  <div class="page-header">
+    <h2>THERIAC Review</h2>
+    <p class="subtitle">No pending review item is ready yet for this run.</p>
+  </div>
   {{ run_selector_html | safe }}
-  <div class="panel">
+  <div class="review-panel">
     <p>{{ bootstrap_reason }}</p>
     <p>Expected claim draft path: <code>{{ patches_path }}</code></p>
     <p>Full pipeline target: <code>{{ artifacts_root }}</code></p>
     <p>DOCX: <code>{{ docx_hint }}</code></p>
     <p>Conversations: <code>{{ conversations_root }}</code></p>
     <form method="post" action="/run_full_pipeline">
-      <button id="run-pipeline-btn" type="submit" {% if pipeline_status == "running" %}disabled{% endif %}>Run Full Pipeline (Stages A-F)</button>
+      <button id="run-pipeline-btn" type="submit" {% if pipeline_status == "running" %}disabled{% endif %}>Run / Resume Full Pipeline</button>
     </form>
     <div class="status" id="pipeline-status">Status: {{ pipeline_status }}{% if pipeline_message %} | {{ pipeline_message }}{% endif %}</div>
     {{ pipeline_progress_html | safe }}
@@ -628,6 +848,7 @@ HTML_BOOTSTRAP = """
     setInterval(refreshPipelineStatus, 1500);
     refreshPipelineStatus();
   </script>
+  </div>
 </body>
 </html>
 """
@@ -639,15 +860,18 @@ HTML_MESSAGE = """
   <meta charset="utf-8" />
   <title>THERIAC Review</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 16px; }
-    .status { margin: 12px 0; padding: 10px; border-radius: 6px; background: #f6f8fa; white-space: pre-wrap; }
+    {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
   </style>
 </head>
 <body>
-  <h2>THERIAC Review</h2>
+  <div class="page">
+  <div class="page-header">
+    <h2>THERIAC Review</h2>
+  </div>
   {{ run_selector_html | safe }}
   <div class="status">{{ message }}</div>
+  </div>
 </body>
 </html>
 """
@@ -862,6 +1086,79 @@ def _load_card_drafts_or_reason(card_drafts_path: Path) -> tuple[list[dict[str, 
     return cards, ""
 
 
+def source_snippet_previews_for_claim(root: Path, claim: dict[str, Any], limit: int = 4) -> list[dict[str, str]]:
+    source_ids = [str(item) for item in claim.get("source_snippet_ids", []) or [] if str(item).strip()]
+    if not source_ids:
+        return []
+    source_path = root / "03_relevance" / "snippets_candidates.jsonl"
+    if not source_path.exists():
+        return []
+    wanted = set(source_ids[:limit])
+    previews: list[dict[str, str]] = []
+    for row in read_jsonl(source_path):
+        snippet_id = str(row.get("snippet_id", ""))
+        if snippet_id not in wanted:
+            continue
+        text = str(row.get("patch_item_text") or row.get("display_text_normalized") or row.get("conversation_patch_summary") or "")
+        topic = str(row.get("conversation_topic_label") or row.get("conversation_patch_topic_label") or "")
+        previews.append(
+            {
+                "snippet_id": snippet_id,
+                "topic": topic,
+                "text": re.sub(r"\s+", " ", text).strip()[:1200],
+            }
+        )
+        if len(previews) >= limit:
+            break
+    return previews
+
+
+def card_review_sections(card: dict[str, Any]) -> list[dict[str, str]]:
+    details = card.get("details") if isinstance(card.get("details"), dict) else {}
+    sections = details.get("sections") if isinstance(details.get("sections"), dict) else {}
+    order = [
+        ("background", "Background"),
+        ("role_in_story", "Role In Story"),
+        ("relationships", "Relationships"),
+        ("timeline", "Timeline"),
+        ("inspirations", "Inspirations"),
+        ("open_questions", "Open Questions"),
+    ]
+    blocks: list[dict[str, str]] = []
+    for key, title in order:
+        text = str(sections.get(key, "")).strip()
+        if text:
+            blocks.append({"key": key, "title": title, "text": text})
+    for key, value in sections.items():
+        if key in {item[0] for item in order}:
+            continue
+        text = str(value).strip()
+        if text:
+            blocks.append({"key": str(key), "title": str(key).replace("_", " ").title(), "text": text})
+    return blocks
+
+
+def card_word_counts(card: dict[str, Any]) -> dict[str, Any]:
+    details = card.get("details") if isinstance(card.get("details"), dict) else {}
+    counts = details.get("section_word_counts")
+    return counts if isinstance(counts, dict) else {}
+
+
+def conversation_entity_alias_rows(proposal: dict[str, Any]) -> list[str]:
+    rows: list[str] = []
+    for alias in proposal.get("alias_candidates", []) or []:
+        if isinstance(alias, dict):
+            candidate = alias.get("candidate_name") or alias.get("alias") or alias.get("name")
+            target = alias.get("canonical_name") or alias.get("target_name") or proposal.get("suggested_canonical_name") or proposal.get("candidate_name")
+            confidence = alias.get("confidence")
+            suffix = f" ({confidence})" if confidence is not None else ""
+            if candidate:
+                rows.append(f"{candidate} -> {target}{suffix}")
+        elif str(alias).strip():
+            rows.append(str(alias).strip())
+    return rows[:8]
+
+
 def _read_json_or_default(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
@@ -869,6 +1166,45 @@ def _read_json_or_default(path: Path, default: Any) -> Any:
         return read_json(path)
     except Exception:
         return default
+
+
+def app_state_path(repo_root: Path) -> Path:
+    return repo_root / "artifacts" / APP_STATE_FILENAME
+
+
+def load_last_open_artifacts_root(repo_root: Path) -> Path | None:
+    payload = _read_json_or_default(app_state_path(repo_root), {})
+    if not isinstance(payload, dict):
+        return None
+    raw = str(payload.get("last_open_artifacts_root", "")).strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = repo_root / path
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if not resolved.exists() or not resolved.is_dir():
+        return None
+    return resolved
+
+
+def save_last_open_artifacts_root(repo_root: Path, artifacts_root: Path) -> None:
+    try:
+        resolved = artifacts_root.resolve()
+    except OSError:
+        return
+    if not resolved.exists() or not resolved.is_dir():
+        return
+    path = app_state_path(repo_root)
+    payload = _read_json_or_default(path, {})
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["last_open_artifacts_root"] = str(resolved)
+    payload["updated_at_utc"] = now_utc_iso()
+    write_json(path, payload)
 
 
 def _decision_ids(path: Path, id_fields: list[str]) -> set[str]:
@@ -880,6 +1216,43 @@ def _decision_ids(path: Path, id_fields: list[str]) -> set[str]:
             if value:
                 ids.add(value)
     return ids
+
+
+def _human_decision_ids(path: Path, id_fields: list[str]) -> set[str]:
+    payload = _read_json_or_default(path, {"decisions": []})
+    ids: set[str] = set()
+    for decision in payload.get("decisions", []) if isinstance(payload, dict) else []:
+        if not isinstance(decision, dict):
+            continue
+        reviewer = str(decision.get("reviewer", "")).strip().lower()
+        is_human = bool(decision.get("human_override")) or (
+            bool(reviewer) and "auto_review" not in reviewer and "gemini_auto" not in reviewer
+        )
+        if not is_human:
+            continue
+        for field in id_fields:
+            value = str(decision.get(field, "")).strip()
+            if value:
+                ids.add(value)
+    return ids
+
+
+def _claim_attention_by_id(root: Path) -> dict[str, dict[str, Any]]:
+    payload = _read_json_or_default(root / "07_review" / "claim_auto_review_attention.json", {"items": []})
+    by_id: dict[str, dict[str, Any]] = {}
+    for item in payload.get("items", []) if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        claim_id = str(item.get("claim_id", "")).strip()
+        if claim_id:
+            by_id[claim_id] = item
+    return by_id
+
+
+def _pending_claim_attention_ids(root: Path) -> set[str]:
+    attention_by_id = _claim_attention_by_id(root)
+    human_reviewed = _human_decision_ids(root / "07_review" / "claim_review_decisions.json", ["claim_id"])
+    return {claim_id for claim_id in attention_by_id if claim_id not in human_reviewed}
 
 
 def pending_review_counts_for_root(root: Path) -> dict[str, int]:
@@ -919,10 +1292,15 @@ def pending_review_counts_for_root(root: Path) -> dict[str, int]:
         {"claims": []},
     ).get("claims", [])
     claim_decisions = _decision_ids(root / "07_review" / "claim_review_decisions.json", ["claim_id"])
+    claim_attention_ids = _pending_claim_attention_ids(root)
     pending_claims = [
         claim
         for claim in claims
-        if str(claim.get("claim_id", "")).strip() and str(claim.get("claim_id", "")) not in claim_decisions
+        if str(claim.get("claim_id", "")).strip()
+        and (
+            str(claim.get("claim_id", "")) not in claim_decisions
+            or str(claim.get("claim_id", "")) in claim_attention_ids
+        )
     ]
 
     merge_proposals = _read_json_or_default(
@@ -1239,6 +1617,9 @@ def build_app(
             identity_merge_decisions_path,
             conversation_entity_decisions_path,
         )
+        save_last_open_artifacts_root(repo_root, artifacts_root)
+
+    save_last_open_artifacts_root(repo_root, artifacts_root)
 
     def set_pipeline_state(**kwargs: Any) -> None:
         with state_lock:
@@ -1273,6 +1654,7 @@ def build_app(
         return {
             "run_selector_html": current_run_selector_html(pipeline_snapshot),
             "pipeline_progress_css": PIPELINE_PROGRESS_CSS,
+            "review_ui_css": REVIEW_UI_CSS,
             "pipeline_progress_html": render_pipeline_progress_html(pipeline_snapshot["progress"]),
             "pipeline_progress_js": PIPELINE_PROGRESS_JS,
         }
@@ -1422,6 +1804,7 @@ def build_app(
             return render_template_string(
                 HTML_CONVERSATION_ENTITY,
                 proposal=pending_entities[0],
+                alias_rows=conversation_entity_alias_rows(pending_entities[0]),
                 entity_types=["term", "theme", "quest", "event", "character", "faction", "organization", "location", "timeline_node"],
                 **common_template_vars(pipeline_snapshot),
             )
@@ -1442,7 +1825,13 @@ def build_app(
             )
         decisions_data = read_json(decisions_path) if decisions_path.exists() else {"decisions": []}
         decided = {d["claim_id"] for d in decisions_data.get("decisions", [])}
-        pending = [p for p in patches if p["claim_id"] not in decided]
+        claim_attention = _claim_attention_by_id(artifacts_root)
+        claim_attention_ids = _pending_claim_attention_ids(artifacts_root)
+        pending = [
+            {**p, "auto_review_attention": claim_attention.get(str(p.get("claim_id", "")), {})}
+            for p in patches
+            if p["claim_id"] not in decided or str(p.get("claim_id", "")) in claim_attention_ids
+        ]
         if not pending:
             identity_merge_payload = read_json(identity_merge_proposals_path) if identity_merge_proposals_path.exists() else {"proposals": []}
             identity_merge_decisions_data = read_json(identity_merge_decisions_path) if identity_merge_decisions_path.exists() else {"decisions": []}
@@ -1472,11 +1861,14 @@ def build_app(
             return render_template_string(
                 HTML_CARD,
                 card=pending_cards[0],
+                card_sections=card_review_sections(pending_cards[0]),
+                word_counts=card_word_counts(pending_cards[0]),
                 **common_template_vars(pipeline_snapshot),
             )
         return render_template_string(
             HTML,
             claim=pending[0],
+            claim_evidence=source_snippet_previews_for_claim(artifacts_root, pending[0]),
             pipeline_status=pipeline_snapshot["status"],
             pipeline_message=pipeline_snapshot["message"],
             pipeline_logs=pipeline_snapshot["logs"] or "(no logs yet)",
@@ -1671,6 +2063,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
 
+    repo_root = _project_root()
+    initial_artifacts_root = args.artifacts_root
+    if initial_artifacts_root is None and args.patches is None and args.decisions is None and args.directives is None:
+        initial_artifacts_root = load_last_open_artifacts_root(repo_root)
+
     (
         patches_path,
         decisions_path,
@@ -1686,7 +2083,7 @@ def main() -> None:
         args.patches,
         args.decisions,
         args.directives,
-        args.artifacts_root,
+        initial_artifacts_root,
     )
     app = build_app(
         patches_path,
@@ -1701,6 +2098,7 @@ def main() -> None:
         artifacts_root,
         args.docx,
         args.conversations_root,
+        repo_root,
     )
     app.run(host=args.host, port=args.port, debug=False)
 

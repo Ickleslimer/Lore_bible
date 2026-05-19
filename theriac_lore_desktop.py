@@ -7,22 +7,28 @@ import queue
 import re
 import subprocess
 import sys
+import textwrap
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from tkinter import messagebox, scrolledtext
+from tkinter import messagebox, scrolledtext, simpledialog
 import tkinter as tk
 from tkinter import ttk
 from typing import Any
 
-from pipeline.common import now_utc_iso, read_json, safe_uuid, write_json
+from pipeline.common import now_utc_iso, read_json, safe_uuid, stable_id, write_json
+from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalized_name_key
 from pipeline.ui_review_app import (
     NEW_RUN_SELECTOR_VALUE,
     PIPELINE_STAGES,
     _decision_ids,
     _display_path,
     _ensure_review_files,
+    _claim_attention_by_id,
+    _human_decision_ids,
+    _pending_claim_attention_ids,
     _load_card_drafts_or_reason,
     _load_patches_or_reason,
     _pipeline_worker_command,
@@ -31,15 +37,161 @@ from pipeline.ui_review_app import (
     _resolve_input_paths,
     discover_review_runs,
     is_pipeline_progress_log_line,
+    load_last_open_artifacts_root,
     new_run_artifacts_root,
     pending_review_counts_for_root,
     pending_review_summary,
     pending_review_total,
     pipeline_progress_artifact_snapshot,
     pipeline_progress_from_logs,
+    save_last_open_artifacts_root,
 )
 
 ENTITY_REVIEW_TYPES = ["term", "theme", "quest", "event", "character", "faction", "organization", "location", "timeline_node"]
+AUTHOR_CLAIM_TYPES = [
+    "relationship",
+    "role",
+    "background",
+    "timeline",
+    "inspiration",
+    "open_question",
+    "alias",
+    "lore_fact",
+    "meta_note",
+    "other",
+]
+AUTHOR_CLAIM_TRACKS = ["lore", "meta", "both"]
+
+
+def ctrl_backspace_delete_start(text_before_cursor: str) -> int:
+    """Return the character offset where Ctrl+Backspace deletion should start."""
+    i = len(text_before_cursor)
+    while i > 0 and text_before_cursor[i - 1].isspace():
+        i -= 1
+    if i <= 0:
+        return 0
+    if text_before_cursor[i - 1].isalnum() or text_before_cursor[i - 1] in "_'":
+        while i > 0 and (text_before_cursor[i - 1].isalnum() or text_before_cursor[i - 1] in "_'"):
+            i -= 1
+    else:
+        while i > 0 and not text_before_cursor[i - 1].isspace() and not (
+            text_before_cursor[i - 1].isalnum() or text_before_cursor[i - 1] in "_'"
+        ):
+            i -= 1
+    return i
+
+
+def ctrl_delete_delete_end(text_after_cursor: str) -> int:
+    i = 0
+    length = len(text_after_cursor)
+    while i < length and text_after_cursor[i].isspace():
+        i += 1
+    if i >= length:
+        return length
+    if text_after_cursor[i].isalnum() or text_after_cursor[i] in "_'":
+        while i < length and (text_after_cursor[i].isalnum() or text_after_cursor[i] in "_'"):
+            i += 1
+    else:
+        while i < length and not text_after_cursor[i].isspace() and not (
+            text_after_cursor[i].isalnum() or text_after_cursor[i] in "_'"
+        ):
+            i += 1
+    return i
+
+
+def install_text_editing_bindings(widget: tk.Text | tk.Entry | ttk.Entry) -> None:
+    def delete_previous_word(event: tk.Event) -> str:
+        target = event.widget
+        try:
+            if isinstance(target, tk.Text):
+                if str(target.cget("state")) == tk.DISABLED:
+                    return "break"
+                try:
+                    first, last = target.tag_ranges(tk.SEL)
+                    target.delete(first, last)
+                    return "break"
+                except ValueError:
+                    pass
+                text_before = target.get("1.0", "insert")
+                start_offset = ctrl_backspace_delete_start(text_before)
+                delete_count = len(text_before) - start_offset
+                if delete_count > 0:
+                    target.delete(f"insert - {delete_count} chars", "insert")
+                return "break"
+            try:
+                if str(target.cget("state")) == tk.DISABLED:
+                    return "break"
+            except Exception:
+                pass
+            try:
+                if target.selection_present():
+                    target.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                    return "break"
+            except Exception:
+                pass
+            cursor = int(target.index(tk.INSERT))
+            text_before = target.get()[:cursor]
+            start_offset = ctrl_backspace_delete_start(text_before)
+            if start_offset < cursor:
+                target.delete(start_offset, cursor)
+            return "break"
+        except Exception:
+            return "break"
+
+    def delete_next_word(event: tk.Event) -> str:
+        target = event.widget
+        try:
+            if isinstance(target, tk.Text):
+                if str(target.cget("state")) == tk.DISABLED:
+                    return "break"
+                try:
+                    first, last = target.tag_ranges(tk.SEL)
+                    target.delete(first, last)
+                    return "break"
+                except ValueError:
+                    pass
+                text_after = target.get("insert", tk.END)
+                delete_count = ctrl_delete_delete_end(text_after)
+                if delete_count > 0:
+                    target.delete("insert", f"insert + {delete_count} chars")
+                return "break"
+            try:
+                if str(target.cget("state")) == tk.DISABLED:
+                    return "break"
+            except Exception:
+                pass
+            try:
+                if target.selection_present():
+                    target.delete(tk.SEL_FIRST, tk.SEL_LAST)
+                    return "break"
+            except Exception:
+                pass
+            cursor = int(target.index(tk.INSERT))
+            text_after = target.get()[cursor:]
+            delete_count = ctrl_delete_delete_end(text_after)
+            if delete_count > 0:
+                target.delete(cursor, cursor + delete_count)
+            return "break"
+        except Exception:
+            return "break"
+
+    def select_all(event: tk.Event) -> str:
+        target = event.widget
+        try:
+            if isinstance(target, tk.Text):
+                target.tag_add(tk.SEL, "1.0", tk.END)
+                target.mark_set(tk.INSERT, "1.0")
+            else:
+                target.selection_range(0, tk.END)
+                target.icursor(tk.END)
+        except Exception:
+            pass
+        return "break"
+
+    widget.bind("<Control-BackSpace>", delete_previous_word)
+    widget.bind("<Control-Delete>", delete_next_word)
+    widget.bind("<Control-a>", select_all)
+    widget.bind("<Control-A>", select_all)
 
 
 def looks_like_project_root(path: Path) -> bool:
@@ -339,6 +491,242 @@ def _join_preview(values: list[str], limit: int = 4) -> str:
     return ", ".join(clean[:limit]) + f" +{len(clean) - limit}"
 
 
+def _display_value(value: Any, fallback: str = "(none)") -> str:
+    if value is None:
+        return fallback
+    if isinstance(value, float):
+        return f"{value:.3f}".rstrip("0").rstrip(".")
+    if isinstance(value, (list, tuple, set)):
+        return _join_preview([str(item) for item in value if str(item).strip()], 8) or fallback
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    text = str(value).strip()
+    return text if text else fallback
+
+
+def _wrap_block(text: Any, *, width: int = 110, indent: str = "") -> str:
+    clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not clean:
+        return indent + "(none)"
+    return textwrap.fill(clean, width=width, initial_indent=indent, subsequent_indent=indent)
+
+
+def _section(title: str, body: list[str]) -> list[str]:
+    clean = [line for line in body if str(line).strip()]
+    if not clean:
+        return []
+    return [title, "-" * len(title), *clean, ""]
+
+
+def _kv(label: str, value: Any) -> str:
+    return f"{label}: {_display_value(value)}"
+
+
+def _source_snippet_previews(root: Path, source_ids: list[str], limit: int = 4) -> list[str]:
+    if not source_ids:
+        return []
+    source_path = root / "03_relevance" / "snippets_candidates.jsonl"
+    if not source_path.exists():
+        return []
+    wanted = {str(item) for item in source_ids[:limit]}
+    previews: list[str] = []
+    try:
+        with source_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if len(previews) >= len(wanted):
+                    break
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                snippet_id = str(row.get("snippet_id", ""))
+                if snippet_id not in wanted:
+                    continue
+                text = (
+                    row.get("patch_item_text")
+                    or row.get("display_text_normalized")
+                    or row.get("conversation_patch_summary")
+                    or ""
+                )
+                topic = row.get("conversation_topic_label") or row.get("conversation_patch_topic_label") or ""
+                previews.append(
+                    f"[{snippet_id}] {topic}\n"
+                    + _wrap_block(text, indent="  ")
+                )
+    except Exception:
+        return previews
+    return previews
+
+
+def format_review_item(kind: str, item: dict[str, Any], artifacts_root: Path) -> str:
+    if kind == "claim":
+        source_ids = [str(item_id) for item_id in item.get("source_snippet_ids", []) or [] if str(item_id).strip()]
+        lines: list[str] = []
+        lines.extend(
+            _section(
+                "Claim",
+                [
+                    _wrap_block(item.get("claim_text", "")),
+                ],
+            )
+        )
+        lines.extend(
+            _section(
+                "Review Context",
+                [
+                    _kv("Target", item.get("target_entity_name") or item.get("target_entity_id")),
+                    _kv("Claim type", item.get("claim_type")),
+                    _kv("Confidence", item.get("confidence")),
+                    _kv("Status", item.get("status")),
+                    _kv("Claim ID", item.get("claim_id")),
+                ],
+            )
+        )
+        warnings = [str(w) for w in item.get("support_warnings", []) or [] if str(w).strip()]
+        notes = str(item.get("contradiction_notes", "")).strip()
+        lines.extend(
+            _section(
+                "Cautions",
+                [
+                    _kv("Support warnings", warnings),
+                    _kv("Contradiction notes", notes),
+                ],
+            )
+        )
+        attention = item.get("auto_review_attention", {}) if isinstance(item.get("auto_review_attention"), dict) else {}
+        if attention:
+            lines.extend(
+                _section(
+                    "Auto-Review Attention",
+                    [
+                        _kv("Decision", attention.get("decision")),
+                        _kv("Reason", attention.get("human_review_reason")),
+                        _kv("Duplicate group", attention.get("duplicate_claim_ids", [])),
+                        _kv("Source-set group", attention.get("source_set_claim_ids", [])),
+                    ],
+                )
+            )
+        evidence = _source_snippet_previews(artifacts_root, source_ids)
+        if not evidence:
+            evidence = [_kv("Source snippet IDs", source_ids)]
+        lines.extend(_section("Evidence Preview", evidence))
+        hints = item.get("proposed_relationship_hints", [])
+        if hints:
+            hint_lines: list[str] = []
+            for hint in hints[:4]:
+                if isinstance(hint, dict):
+                    label = _display_value(hint.get("relation_type"), "relationship_hint")
+                    confidence = hint.get("confidence")
+                    suffix = f" (confidence {_display_value(confidence)})" if confidence is not None else ""
+                    note = _wrap_block(hint.get("note", ""), indent="  ")
+                    hint_lines.append(f"{label}{suffix}\n{note}")
+                else:
+                    hint_lines.append(_wrap_block(hint))
+            lines.extend(_section("Relationship Hints", hint_lines))
+        return "\n".join(lines).strip()
+
+    if kind == "conversation_entity":
+        sample_texts = [_wrap_block(text, indent="  ") for text in item.get("sample_texts", []) or []]
+        alias_candidates = []
+        for alias in item.get("alias_candidates", []) or []:
+            if isinstance(alias, dict):
+                alias_candidates.append(
+                    f"- {alias.get('candidate_name', '(unnamed)')} -> {item.get('suggested_canonical_name') or item.get('candidate_name')}"
+                )
+        lines = []
+        lines.extend(
+            _section(
+                "Entity Candidate",
+                [
+                    _kv("Candidate", item.get("candidate_name")),
+                    _kv("Suggested canonical", item.get("suggested_canonical_name") or item.get("candidate_name")),
+                    _kv("Proposed type", item.get("proposed_entity_type")),
+                    _kv("Evidence count", item.get("evidence_count")),
+                    _kv("Priority", item.get("review_priority")),
+                    _kv("Proposal ID", item.get("proposal_id")),
+                ],
+            )
+        )
+        lines.extend(
+            _section(
+                "Why It Is Here",
+                [
+                    _wrap_block(item.get("triage_reason") or item.get("proposal_reason") or ""),
+                    _kv("Topics", item.get("candidate_topics", [])),
+                    _kv("Tracks", item.get("knowledge_tracks", [])),
+                    _kv("Type votes", item.get("type_vote_totals", {})),
+                ],
+            )
+        )
+        lines.extend(_section("Alias Candidates", alias_candidates))
+        lines.extend(_section("Evidence Samples", sample_texts))
+        return "\n".join(lines).strip()
+
+    if kind == "identity_merge":
+        lines = []
+        lines.extend(
+            _section(
+                "Identity Merge",
+                [
+                    f"{_display_value(item.get('source_entity_name') or item.get('source_entity_id'))} -> "
+                    f"{_display_value(item.get('target_entity_name') or item.get('target_entity_id'))}",
+                    _kv("Merge type", item.get("merge_type")),
+                    _kv("Confidence", item.get("confidence")),
+                    _kv("Proposal ID", item.get("proposal_id")),
+                ],
+            )
+        )
+        lines.extend(
+            _section(
+                "Evidence",
+                [
+                    _kv("Evidence claim IDs", item.get("evidence_claim_ids", [])),
+                    _wrap_block(item.get("rationale") or item.get("reason") or ""),
+                ],
+            )
+        )
+        return "\n".join(lines).strip()
+
+    if kind == "card":
+        details = item.get("details", {}) if isinstance(item.get("details", {}), dict) else {}
+        sections = details.get("sections", {}) if isinstance(details.get("sections", {}), dict) else {}
+        lines = []
+        lines.extend(
+            _section(
+                "Card Draft",
+                [
+                    _kv("Name", item.get("canonical_name")),
+                    _kv("Type", item.get("entity_type")),
+                    _kv("Status", item.get("status")),
+                    _kv("Card ID", item.get("card_id")),
+                ],
+            )
+        )
+        lines.extend(_section("Lead Summary", [_wrap_block(item.get("summary", ""))]))
+        for section_name in ["background", "role_in_story", "relationships", "timeline", "inspirations", "open_questions"]:
+            text = str(sections.get(section_name, "")).strip()
+            if text:
+                lines.extend(_section(section_name.replace("_", " ").title(), [_wrap_block(text)]))
+        relationships = item.get("relationships", []) or []
+        timeline = item.get("timeline", []) or []
+        if relationships:
+            lines.extend(_section("Structured Relationships", [_wrap_block(json.dumps(relationships[:8], ensure_ascii=False))]))
+        if timeline:
+            lines.extend(_section("Structured Timeline", [_wrap_block(json.dumps(timeline[:8], ensure_ascii=False))]))
+        lines.extend(
+            _section(
+                "Review Context",
+                [
+                    _kv("Accepted claim IDs", details.get("accepted_claim_ids", [])),
+                    _kv("Source evidence", item.get("source_evidence", [])),
+                    _kv("Word counts", details.get("section_word_counts", {})),
+                ],
+            )
+        )
+        return "\n".join(lines).strip()
+
+    return json.dumps(item, ensure_ascii=False, indent=2)
+
+
 def candidate_inventory_category(item: dict[str, Any]) -> str:
     if item.get("group_kind") == "alias_review_group":
         return "lore"
@@ -627,6 +1015,309 @@ def write_candidate_inventory_override_decision(
     return written
 
 
+def _latest_claim_decisions(decisions_path: Path | None) -> dict[str, dict[str, Any]]:
+    if decisions_path is None:
+        return {}
+    payload = _read_json_or_default(decisions_path, {"decisions": []})
+    latest: dict[str, dict[str, Any]] = {}
+
+    def priority(decision: dict[str, Any]) -> int:
+        reviewer = str(decision.get("reviewer", "")).strip().lower()
+        if bool(decision.get("human_override")):
+            return 2
+        if reviewer and "auto_review" not in reviewer and "gemini_auto" not in reviewer:
+            return 2
+        return 1
+
+    for decision in payload.get("decisions", []) if isinstance(payload, dict) else []:
+        if not isinstance(decision, dict):
+            continue
+        claim_id = str(decision.get("claim_id", "")).strip()
+        if not claim_id:
+            continue
+        existing = latest.get(claim_id)
+        if existing is None or priority(decision) >= priority(existing):
+            latest[claim_id] = decision
+    return latest
+
+
+def author_claims_path_for_root(artifacts_root: Path) -> Path:
+    return artifacts_root / "07_review" / "author_claims.json"
+
+
+def _author_claim_normalized_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _normalize_author_claim_track(value: Any, claim_type: str, claim_text: str) -> str:
+    track = str(value or "").strip().lower()
+    if track not in AUTHOR_CLAIM_TRACKS:
+        track = "lore"
+    lower = str(claim_text or "").lower()
+    meta_markers = [
+        "working name",
+        "canonical name",
+        "later updated",
+        "originally developed",
+        "developed based",
+        "inspired by",
+        "inspiration",
+        "player's",
+        "player-facing",
+        "gameplay",
+        "game mechanic",
+        "generic reference",
+        "likely refer",
+    ]
+    if claim_type in {"meta_note", "open_question", "inspiration"} or any(marker in lower for marker in meta_markers):
+        return "meta"
+    return track
+
+
+def _entity_lookup_options(artifacts_root: Path) -> list[dict[str, Any]]:
+    entities_path = artifacts_root / "05_alias" / "resolved_entities.json"
+    options: list[dict[str, Any]] = []
+    for entity in load_entity_records(entities_path):
+        canonical_name = str(entity.get("canonical_name", "")).strip()
+        if not canonical_name:
+            continue
+        entity_type = str(entity.get("entity_type", "term") or "term")
+        label = f"{canonical_name} ({entity_type})"
+        options.append({"label": label, "entity": entity})
+    return sorted(options, key=lambda row: str(row["label"]).lower())
+
+
+def _resolve_author_claim_entity(artifacts_root: Path, target_text: str) -> dict[str, Any] | None:
+    query = str(target_text or "").strip()
+    if not query:
+        return None
+    entities = load_entity_records(artifacts_root / "05_alias" / "resolved_entities.json")
+    query_key = normalized_name_key(re.sub(r"\s+\([^)]*\)\s*$", "", query).strip())
+    for entity in entities:
+        entity_id = str(entity.get("entity_id", "")).strip()
+        card_id = str(entity.get("card_id", "")).strip()
+        canonical_name = str(entity.get("canonical_name", "")).strip()
+        if query in {entity_id, card_id}:
+            return entity
+        if canonical_name and normalized_name_key(canonical_name) == query_key:
+            return entity
+        for alias in entity.get("aliases", []) or []:
+            alias_text = str(alias).strip()
+            if alias_text and normalized_name_key(alias_text) == query_key:
+                return entity
+    return None
+
+
+def load_author_claims_for_inventory(artifacts_root: Path) -> list[dict[str, Any]]:
+    path = author_claims_path_for_root(artifacts_root)
+    payload = _read_json_or_default(path, {"claims": []})
+    claims: list[dict[str, Any]] = []
+    for raw in payload.get("claims", []) if isinstance(payload, dict) else []:
+        if not isinstance(raw, dict):
+            continue
+        claim_text = str(raw.get("claim_text", "")).strip()
+        if not claim_text:
+            continue
+        target_entity_id = str(raw.get("target_entity_id", "")).strip()
+        claim_type = str(raw.get("claim_type", "lore_fact") or "lore_fact")
+        knowledge_track = _normalize_author_claim_track(raw.get("knowledge_track", ""), claim_type, claim_text)
+        claim_id = str(raw.get("claim_id", "")).strip()
+        if not claim_id:
+            claim_id = stable_id("author_claim", target_entity_id, claim_type, claim_text)
+        claims.append(
+            {
+                **raw,
+                "claim_id": claim_id,
+                "claim_text": claim_text,
+                "claim_type": claim_type,
+                "knowledge_track": knowledge_track,
+                "source_snippet_ids": _as_text_list(raw.get("source_snippet_ids")),
+                "confidence": raw.get("confidence", 1.0),
+                "manual_claim": True,
+                "author_claim": True,
+                "source_priority": "author_claim",
+                "status": str(raw.get("status", "accepted") or "accepted"),
+                "normalized_claim_text": str(raw.get("normalized_claim_text") or _author_claim_normalized_text(claim_text)),
+            }
+        )
+    return claims
+
+
+def append_author_claim(
+    artifacts_root: Path,
+    target_text: str,
+    claim_type: str,
+    claim_text: str,
+    reviewer: str,
+    rationale: str,
+    knowledge_track: str = "lore",
+    timestamp_utc: str | None = None,
+) -> dict[str, Any]:
+    entity = _resolve_author_claim_entity(artifacts_root, target_text)
+    if not entity:
+        raise ValueError(f"Could not resolve target entity: {target_text}")
+    clean_claim = re.sub(r"\s+", " ", str(claim_text or "")).strip()
+    if not clean_claim:
+        raise ValueError("Claim text is required.")
+    clean_type = str(claim_type or "lore_fact").strip() or "lore_fact"
+    clean_track = _normalize_author_claim_track(knowledge_track, clean_type, clean_claim)
+    entity_id = str(entity.get("entity_id", "")).strip()
+    canonical_name = str(entity.get("canonical_name", "")).strip()
+    created_at = timestamp_utc or now_utc_iso()
+    claim_id = stable_id("author_claim", entity_id, clean_type, clean_claim)
+    row = {
+        "claim_id": claim_id,
+        "target_entity_id": entity_id,
+        "target_card_id": str(entity.get("card_id") or card_id_for_entity(canonical_name)),
+        "target_entity_name": canonical_name,
+        "knowledge_track": clean_track,
+        "claim_text": clean_claim,
+        "claim_type": clean_type,
+        "source_snippet_ids": [],
+        "confidence": 1.0,
+        "status": "accepted",
+        "contradiction_notes": "",
+        "created_at_utc": created_at,
+        "reviewer": reviewer or "author",
+        "review_rationale": rationale,
+        "manual_claim": True,
+        "author_claim": True,
+        "source_priority": "author_claim",
+        "normalized_claim_text": _author_claim_normalized_text(clean_claim),
+    }
+    path = author_claims_path_for_root(artifacts_root)
+    payload = _read_json_or_default(path, {"claims": []})
+    claims = payload.setdefault("claims", [])
+    if not isinstance(claims, list):
+        claims = []
+        payload["claims"] = claims
+    replaced = False
+    for index, existing in enumerate(claims):
+        if isinstance(existing, dict) and str(existing.get("claim_id", "")) == claim_id:
+            claims[index] = row
+            replaced = True
+            break
+    if not replaced:
+        claims.append(row)
+    payload["updated_at_utc"] = created_at
+    write_json(path, payload)
+    return row
+
+
+def claim_inventory_bucket(claim: dict[str, Any], decision: dict[str, Any], attention: dict[str, Any], human_reviewed: bool) -> str:
+    if attention and not human_reviewed:
+        return "attention"
+    label = str(decision.get("decision", "")).strip().lower()
+    if not label and bool(claim.get("manual_claim") or claim.get("author_claim")):
+        return "accepted"
+    return {
+        "accept": "accepted",
+        "approve": "accepted",
+        "accepted": "accepted",
+        "reject": "rejected",
+        "rejected": "rejected",
+        "defer": "deferred",
+        "needs_more_context": "needs context",
+    }.get(label, "pending")
+
+
+def claim_inventory_category(claim: dict[str, Any]) -> str:
+    track = str(claim.get("knowledge_track", "")).strip().lower()
+    if track in {"lore", "meta"}:
+        return track
+    if track == "both":
+        return "mixed"
+    claim_type = str(claim.get("claim_type", "")).strip().lower()
+    if claim_type in {"inspiration", "open_question"}:
+        return "meta"
+    return "unknown"
+
+
+def claim_inventory_browser_rows(claims_path: Path, decisions_path: Path, artifacts_root: Path) -> list[dict[str, Any]]:
+    claims, _reason = _load_patches_or_reason(claims_path)
+    if claims is None:
+        claims = []
+    author_claims = load_author_claims_for_inventory(artifacts_root)
+    all_claims = list(claims) + author_claims
+    decisions_by_id = _latest_claim_decisions(decisions_path)
+    attention_by_id = _claim_attention_by_id(artifacts_root)
+    human_decision_ids = _human_decision_ids(decisions_path, ["claim_id"])
+    rows: list[dict[str, Any]] = []
+    for index, claim in enumerate(all_claims):
+        if not isinstance(claim, dict):
+            continue
+        claim_id = str(claim.get("claim_id", "")).strip()
+        decision = decisions_by_id.get(claim_id, {})
+        if not decision and bool(claim.get("manual_claim") or claim.get("author_claim")):
+            decision = {"decision": "accept", "reviewer": claim.get("reviewer") or "author", "rationale": "Author-supplied claim."}
+        attention = attention_by_id.get(claim_id, {})
+        warnings = _as_text_list(claim.get("support_warnings"))
+        notes = str(claim.get("contradiction_notes", "")).strip()
+        attention_reason = str(attention.get("human_review_reason", "")).strip()
+        reason = attention_reason or "; ".join(warnings) or notes
+        if bool(claim.get("manual_claim") or claim.get("author_claim")) and not reason:
+            reason = "Author-supplied claim for Stage 10 card refactoring."
+        target = str(claim.get("target_entity_name") or claim.get("target_entity_id") or "(unknown entity)").strip()
+        claim_text = str(claim.get("claim_text", "")).strip()
+        display_text = claim_text[:120] + ("..." if len(claim_text) > 120 else "")
+        rows.append(
+            {
+                "row_id": f"claim:{claim_id or index}",
+                "row_kind": "claim",
+                "bucket": claim_inventory_bucket(claim, decision, attention, claim_id in human_decision_ids),
+                "source_bucket": "author_claims" if bool(claim.get("manual_claim") or claim.get("author_claim")) else "claims",
+                "category": claim_inventory_category(claim),
+                "candidate_name": display_text or claim_id or "(claim)",
+                "raw_candidate_name": claim_text,
+                "canonical_name": target,
+                "proposed_entity_type": str(claim.get("claim_type", "lore_fact") or "lore_fact"),
+                "evidence_count": len(_as_text_list(claim.get("source_snippet_ids"))),
+                "topics": _as_text_list(claim.get("thematic_tags")),
+                "tracks": _as_text_list([claim.get("knowledge_track", "")]),
+                "triage_reason": reason,
+                "review_priority": "human attention" if attention and claim_id not in human_decision_ids else "",
+                "decision": str(decision.get("decision", "") or ""),
+                "item": {**claim, "latest_decision": decision, "auto_review_attention": attention},
+                "latest_decision": decision,
+            }
+        )
+    rows.sort(key=lambda row: (row["bucket"], row["category"], str(row["candidate_name"]).lower()))
+    return rows
+
+
+def write_claim_inventory_override_decision(
+    decisions_path: Path,
+    row: dict[str, Any],
+    decision: str,
+    reviewer: str,
+    rationale: str,
+    timestamp_utc: str | None = None,
+) -> int:
+    item = row.get("item", {}) if isinstance(row.get("item"), dict) else {}
+    claim_id = str(item.get("claim_id", "")).strip()
+    if not claim_id:
+        return 0
+    normalized_decision = "accept" if decision == "approve" else decision
+    data = _read_json_or_default(decisions_path, {"decisions": []})
+    decisions = data.setdefault("decisions", [])
+    if not isinstance(decisions, list):
+        decisions = []
+        data["decisions"] = decisions
+    decisions.append(
+        {
+            "claim_id": claim_id,
+            "decision": normalized_decision,
+            "reviewer": reviewer,
+            "rationale": rationale,
+            "timestamp_utc": timestamp_utc or now_utc_iso(),
+            "human_override": True,
+            "override_source": "candidate_inventory_claims_tab",
+        }
+    )
+    write_json(decisions_path, data)
+    return 1
+
+
 def candidate_inventory_sort_value(row: dict[str, Any], sort_key: str) -> Any:
     if sort_key == "evidence":
         return int(row.get("evidence_count", 0) or 0)
@@ -657,6 +1348,9 @@ def sort_candidate_inventory_rows(rows: list[dict[str, Any]], sort_key: str, des
 def choose_initial_artifacts_root(repo_root: Path, explicit_root: Path | None = None) -> Path:
     if explicit_root is not None:
         return explicit_root.resolve()
+    last_open = load_last_open_artifacts_root(repo_root)
+    if last_open is not None:
+        return last_open.resolve()
     runs = discover_review_runs(repo_root, repo_root / "artifacts")
     pending_runs = [run for run in runs if run["pending_total"] > 0]
     if pending_runs:
@@ -733,6 +1427,7 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.rows: list[dict[str, Any]] = []
         self.filtered_rows: list[dict[str, Any]] = []
         self.row_by_iid: dict[str, dict[str, Any]] = {}
+        self.tab_var = tk.StringVar(value="entities")
         self.sort_key = "evidence"
         self.sort_descending = True
         self.sort_column_keys = {
@@ -761,10 +1456,20 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.close)
 
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(2, weight=1)
 
-        filters = ttk.Frame(self, padding=(10, 10, 10, 4))
-        filters.grid(row=0, column=0, sticky="ew")
+        tab_bar = ttk.Frame(self, padding=(10, 10, 10, 0))
+        tab_bar.grid(row=0, column=0, sticky="ew")
+        self.tabs = ttk.Notebook(tab_bar)
+        self.tabs.pack(fill=tk.X)
+        self.entity_tab = ttk.Frame(self.tabs)
+        self.claims_tab = ttk.Frame(self.tabs)
+        self.tabs.add(self.entity_tab, text="Entities")
+        self.tabs.add(self.claims_tab, text="Claims")
+        self.tabs.bind("<<NotebookTabChanged>>", lambda _event: self.switch_tab())
+
+        filters = ttk.Frame(self, padding=(10, 8, 10, 4))
+        filters.grid(row=1, column=0, sticky="ew")
         filters.columnconfigure(7, weight=1)
         ttk.Label(filters, text="Bucket").grid(row=0, column=0, sticky="w")
         self.bucket_var = tk.StringVar(value="All")
@@ -794,12 +1499,13 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.search_var = tk.StringVar()
         search_entry = ttk.Entry(filters, textvariable=self.search_var)
         search_entry.grid(row=0, column=7, sticky="ew", padx=(6, 8))
+        install_text_editing_bindings(search_entry)
         ttk.Button(filters, text="Refresh", command=self.reload).grid(row=0, column=8, sticky="e")
         self.summary_var = tk.StringVar()
         ttk.Label(filters, textvariable=self.summary_var, foreground="#57606a").grid(row=1, column=0, columnspan=9, sticky="w", pady=(8, 0))
 
         body = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        body.grid(row=1, column=0, sticky="nsew", padx=10, pady=(4, 10))
+        body.grid(row=2, column=0, sticky="nsew", padx=10, pady=(4, 10))
 
         list_frame = ttk.Frame(body)
         list_frame.columnconfigure(0, weight=1)
@@ -816,9 +1522,11 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.tree.column("topics", width=180, stretch=True)
         self.tree.column("reason", width=280, stretch=True)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        hscrollbar = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=scrollbar.set, xscrollcommand=hscrollbar.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
+        hscrollbar.grid(row=1, column=0, sticky="ew")
         body.add(list_frame, weight=3)
 
         detail_frame = ttk.Frame(body)
@@ -827,6 +1535,7 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.detail_text = scrolledtext.ScrolledText(detail_frame, wrap=tk.WORD, font=("Consolas", 9))
         self.detail_text.grid(row=0, column=0, sticky="nsew")
         self.detail_text.configure(state="disabled")
+        install_text_editing_bindings(self.detail_text)
         override_frame = ttk.LabelFrame(detail_frame, text="Manual Override", padding=(8, 8, 8, 8))
         override_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         override_frame.columnconfigure(1, weight=1)
@@ -835,6 +1544,7 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.override_canonical_var = tk.StringVar()
         self.override_canonical_entry = ttk.Entry(override_frame, textvariable=self.override_canonical_var)
         self.override_canonical_entry.grid(row=0, column=1, sticky="ew", padx=(6, 12))
+        install_text_editing_bindings(self.override_canonical_entry)
         ttk.Label(override_frame, text="Type").grid(row=0, column=2, sticky="w")
         self.override_type_var = tk.StringVar(value="term")
         self.override_type_combo = ttk.Combobox(override_frame, textvariable=self.override_type_var, values=ENTITY_REVIEW_TYPES, state="readonly", width=16)
@@ -842,6 +1552,7 @@ class CandidateInventoryWindow(tk.Toplevel):
         ttk.Label(override_frame, text="Rationale").grid(row=1, column=0, sticky="nw", pady=(8, 0))
         self.override_rationale_text = tk.Text(override_frame, height=3, wrap=tk.WORD)
         self.override_rationale_text.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=(8, 0))
+        install_text_editing_bindings(self.override_rationale_text)
         button_row = ttk.Frame(override_frame)
         button_row.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         self.override_buttons = [
@@ -867,11 +1578,46 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.app.candidate_browser = None
         self.destroy()
 
+    def current_tab(self) -> str:
+        try:
+            selected = self.tabs.select()
+            if selected == str(self.claims_tab):
+                return "claims"
+        except tk.TclError:
+            pass
+        return "entities"
+
+    def switch_tab(self) -> None:
+        self.sort_key = "evidence"
+        self.sort_descending = True
+        self.reload()
+
+    def configure_filter_values(self) -> None:
+        if self.current_tab() == "claims":
+            bucket_values = ["All", "attention", "pending", "accepted", "rejected", "deferred", "needs context"]
+        else:
+            bucket_values = ["All", "attention", "promoted", "demoted", "suppressed"]
+        self.bucket_combo.configure(values=bucket_values)
+        if self.bucket_var.get() not in bucket_values:
+            self.bucket_var.set("All")
+        category_values = ["All", "lore", "meta", "mixed", "unknown"]
+        self.category_combo.configure(values=category_values)
+        if self.category_var.get() not in category_values:
+            self.category_var.set("All")
+
     def reload(self) -> None:
-        self.rows = candidate_inventory_browser_rows(
-            self.app.paths["conversation_entity_proposals"],
-            self.app.paths["conversation_entity_decisions"],
-        )
+        self.configure_filter_values()
+        if self.current_tab() == "claims":
+            self.rows = claim_inventory_browser_rows(
+                self.app.paths["patches"],
+                self.app.paths["decisions"],
+                self.app.artifacts_root,
+            )
+        else:
+            self.rows = candidate_inventory_browser_rows(
+                self.app.paths["conversation_entity_proposals"],
+                self.app.paths["conversation_entity_decisions"],
+            )
         topic_values = ["All"] + sorted({topic for row in self.rows for topic in row.get("topics", [])}, key=str.lower)
         self.topic_combo.configure(values=topic_values)
         if self.topic_var.get() not in topic_values:
@@ -894,6 +1640,8 @@ class CandidateInventoryWindow(tk.Toplevel):
             haystack = "\n".join(
                 [
                     str(row.get("candidate_name", "")),
+                    str(row.get("canonical_name", "")),
+                    str(row.get("raw_candidate_name", "")),
                     str(row.get("proposed_entity_type", "")),
                     str(row.get("category", "")),
                     str(row.get("bucket", "")),
@@ -910,13 +1658,23 @@ class CandidateInventoryWindow(tk.Toplevel):
 
     def configure_tree_headings(self) -> None:
         for column, label in self.heading_labels.items():
+            display_label = label
+            if self.current_tab() == "claims":
+                if column == "#0":
+                    display_label = "Claim"
+                elif column == "bucket":
+                    display_label = "Status"
+                elif column == "type":
+                    display_label = "Claim Type"
+                elif column == "reason":
+                    display_label = "Warnings / Attention"
             sort_key = self.sort_column_keys[column]
             suffix = ""
             if self.sort_key == sort_key:
                 suffix = " (desc)" if self.sort_descending else " (asc)"
             self.tree.heading(
                 column,
-                text=label + suffix,
+                text=display_label + suffix,
                 command=lambda tree_column=column: self.set_sort_column(tree_column),
             )
 
@@ -957,15 +1715,27 @@ class CandidateInventoryWindow(tk.Toplevel):
             "promoted": sum(1 for row in self.rows if row["bucket"] == "promoted"),
             "demoted": sum(1 for row in self.rows if row["bucket"] == "demoted"),
             "suppressed": sum(1 for row in self.rows if row["bucket"] == "suppressed"),
+            "pending": sum(1 for row in self.rows if row["bucket"] == "pending"),
+            "accepted": sum(1 for row in self.rows if row["bucket"] == "accepted"),
+            "rejected": sum(1 for row in self.rows if row["bucket"] == "rejected"),
         }
         categories = {name: sum(1 for row in self.rows if row["category"] == name) for name in ["lore", "meta", "mixed", "unknown"]}
-        self.summary_var.set(
-            f"Showing {len(self.filtered_rows)} of {len(self.rows)} candidates. "
-            f"Attention: {totals['attention']}. "
-            f"Buckets: {totals['promoted']} promoted, {totals['demoted']} demoted, {totals['suppressed']} suppressed. "
-            f"Categories: {categories['lore']} lore, {categories['meta']} meta, {categories['mixed']} mixed, {categories['unknown']} unknown. "
-            f"Sorted by {self.sort_key} {'descending' if self.sort_descending else 'ascending'}."
-        )
+        if self.current_tab() == "claims":
+            self.summary_var.set(
+                f"Showing {len(self.filtered_rows)} of {len(self.rows)} claims. "
+                f"Attention: {totals['attention']}. "
+                f"Statuses: {totals['pending']} pending, {totals['accepted']} accepted, {totals['rejected']} rejected. "
+                f"Categories: {categories['lore']} lore, {categories['meta']} meta, {categories['mixed']} mixed, {categories['unknown']} unknown. "
+                f"Sorted by {self.sort_key} {'descending' if self.sort_descending else 'ascending'}."
+            )
+        else:
+            self.summary_var.set(
+                f"Showing {len(self.filtered_rows)} of {len(self.rows)} candidates. "
+                f"Attention: {totals['attention']}. "
+                f"Buckets: {totals['promoted']} promoted, {totals['demoted']} demoted, {totals['suppressed']} suppressed. "
+                f"Categories: {categories['lore']} lore, {categories['meta']} meta, {categories['mixed']} mixed, {categories['unknown']} unknown. "
+                f"Sorted by {self.sort_key} {'descending' if self.sort_descending else 'ascending'}."
+            )
         if self.filtered_rows:
             first = self.tree.get_children()[0]
             self.tree.selection_set(first)
@@ -990,6 +1760,9 @@ class CandidateInventoryWindow(tk.Toplevel):
             return
         row = self.row_by_iid.get(selected[0])
         if not row:
+            return
+        if row.get("row_kind") == "claim":
+            self.show_claim_detail(row)
             return
         item = row["item"]
         parts = [f"Name: {row['candidate_name']}"]
@@ -1056,6 +1829,51 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.set_detail_text("\n".join(parts))
         self.populate_override_controls(row)
 
+    def show_claim_detail(self, row: dict[str, Any]) -> None:
+        item = row["item"]
+        attention = item.get("auto_review_attention", {}) if isinstance(item.get("auto_review_attention"), dict) else {}
+        decision = item.get("latest_decision", {}) if isinstance(item.get("latest_decision"), dict) else {}
+        source_ids = _as_text_list(item.get("source_snippet_ids"))
+        parts = [
+            f"Claim: {item.get('claim_text', '(empty)')}",
+            f"Target: {row.get('canonical_name') or item.get('target_entity_name') or '(none)'}",
+            f"Status: {row['bucket']}",
+            f"Category: {row['category']}",
+            f"Claim type: {row['proposed_entity_type']}",
+            f"Decision: {row.get('decision') or '(none)'}",
+            f"Evidence count: {row['evidence_count']}",
+            f"Confidence: {_display_value(item.get('confidence'))}",
+            f"Topics: {_join_preview(row['topics'], 12) or '(none)'}",
+            f"Support warnings: {_join_preview(_as_text_list(item.get('support_warnings')), 12) or '(none)'}",
+            f"Contradiction notes: {item.get('contradiction_notes') or '(none)'}",
+        ]
+        if attention:
+            parts.extend(
+                [
+                    "",
+                    "Auto-Review Attention:",
+                    f"Best guess: {attention.get('decision', '(none)')}",
+                    f"Reason: {attention.get('human_review_reason', '(none)') or '(none)'}",
+                    f"Rationale: {attention.get('rationale', '(none)') or '(none)'}",
+                    f"Duplicate claim IDs: {_join_preview(_as_text_list(attention.get('duplicate_claim_ids')), 20) or '(none)'}",
+                    f"Source-set claim IDs: {_join_preview(_as_text_list(attention.get('source_set_claim_ids')), 20) or '(none)'}",
+                ]
+            )
+        if decision:
+            parts.extend(
+                [
+                    "",
+                    "Latest Decision:",
+                    json.dumps(decision, ensure_ascii=False, indent=2),
+                ]
+            )
+        evidence = _source_snippet_previews(self.app.artifacts_root, source_ids, limit=8)
+        parts.extend(["", "Source Preview:"])
+        parts.extend(evidence or [_join_preview(source_ids, 20) or "(none)"])
+        parts.extend(["", "Raw Claim:", json.dumps(item, ensure_ascii=False, indent=2)])
+        self.set_detail_text("\n".join(parts))
+        self.populate_override_controls(row)
+
     def set_detail_text(self, text: str) -> None:
         self.detail_text.configure(state="normal")
         self.detail_text.delete("1.0", tk.END)
@@ -1069,6 +1887,27 @@ class CandidateInventoryWindow(tk.Toplevel):
         return self.row_by_iid.get(selected[0])
 
     def populate_override_controls(self, row: dict[str, Any]) -> None:
+        if row.get("row_kind") == "claim":
+            target = str(row.get("canonical_name") or "").strip()
+            self.override_canonical_var.set(target)
+            claim_type = str(row.get("proposed_entity_type", "other") or "other")
+            self.override_type_var.set(claim_type)
+            self.override_canonical_entry.configure(state=tk.DISABLED)
+            self.override_type_combo.configure(state=tk.DISABLED)
+            self.override_rationale_text.configure(state=tk.NORMAL)
+            button_specs = [
+                ("Accept", "accept"),
+                ("Reject", "reject"),
+                ("Defer", "defer"),
+                ("Needs More Context", "needs_more_context"),
+            ]
+            for button, (label, action) in zip(self.override_buttons, button_specs):
+                button.configure(text=label, command=lambda value=action: self.save_override_decision(value), state=tk.NORMAL)
+            self.override_status_var.set(
+                f"Override writes a human claim decision for {target or 'this claim'} ({claim_type})."
+            )
+            return
+
         canonical = str(row.get("canonical_name") or row.get("raw_candidate_name") or row.get("candidate_name") or "").strip()
         if not canonical:
             canonical = str(row.get("candidate_name", "")).split(" (alias:", 1)[0].strip()
@@ -1083,6 +1922,14 @@ class CandidateInventoryWindow(tk.Toplevel):
         self.override_rationale_text.configure(state=state)
         for button in self.override_buttons:
             button.configure(state=state)
+        button_specs = [
+            ("Approve", "approve"),
+            ("Reject", "reject"),
+            ("Defer", "defer"),
+            ("Needs More Context", "needs_more_context"),
+        ]
+        for button, (label, action) in zip(self.override_buttons, button_specs):
+            button.configure(text=label, command=lambda value=action: self.save_override_decision(value))
         if can_override:
             self.override_status_var.set("Override writes a human decision; Stage 07 will prefer it over AI auto-review.")
         else:
@@ -1093,9 +1940,25 @@ class CandidateInventoryWindow(tk.Toplevel):
         if row is None:
             return
         reviewer = self.app.reviewer_var.get().strip() or "human_reviewer"
+        rationale = self.override_rationale_text.get("1.0", tk.END).strip()
+        if row.get("row_kind") == "claim":
+            written = write_claim_inventory_override_decision(
+                self.app.paths["decisions"],
+                row,
+                decision,
+                reviewer,
+                rationale,
+            )
+            if not written:
+                self.override_status_var.set("No claim decision was written for this row.")
+                return
+            self.override_status_var.set(f"Saved {decision} override for 1 claim.")
+            self.reload()
+            self.app.refresh_review_item()
+            return
+
         canonical_name = self.override_canonical_var.get().strip() or str(row.get("raw_candidate_name") or row.get("candidate_name") or "").strip()
         entity_type = self.override_type_var.get().strip() or "term"
-        rationale = self.override_rationale_text.get("1.0", tk.END).strip()
         written = write_candidate_inventory_override_decision(
             self.app.paths["conversation_entity_decisions"],
             row,
@@ -1153,6 +2016,7 @@ class TheriacDesktopApp:
         self.root.minsize(940, 680)
 
         self.resolve_paths(artifacts_root)
+        save_last_open_artifacts_root(self.repo_root, self.artifacts_root)
         self.build_ui()
         self.refresh_runs()
         self.refresh_review_item()
@@ -1182,6 +2046,7 @@ class TheriacDesktopApp:
             "patches": patches_path,
             "decisions": decisions_path,
             "directives": directives_path,
+            "author_claims": author_claims_path_for_root(resolved_artifacts_root.resolve()),
             "card_drafts": card_drafts_path,
             "card_decisions": card_decisions_path,
             "identity_merge_proposals": identity_merge_proposals_path,
@@ -1232,8 +2097,9 @@ class TheriacDesktopApp:
         middle.columnconfigure(1, weight=1)
         middle.rowconfigure(0, weight=1)
 
-        self.item_text = scrolledtext.ScrolledText(middle, wrap=tk.WORD, font=("Consolas", 9), height=14)
+        self.item_text = scrolledtext.ScrolledText(middle, wrap=tk.WORD, font=("Segoe UI", 10), height=14)
         self.item_text.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        install_text_editing_bindings(self.item_text)
 
         controls = ttk.Frame(middle)
         controls.grid(row=0, column=1, sticky="nsew")
@@ -1249,6 +2115,7 @@ class TheriacDesktopApp:
         ttk.Label(controls, text="Rationale").grid(row=3, column=0, sticky="w")
         self.rationale_text = tk.Text(controls, height=7, wrap=tk.WORD)
         self.rationale_text.grid(row=4, column=0, sticky="ew", pady=(2, 10))
+        install_text_editing_bindings(self.rationale_text)
 
         self.button_frame = ttk.Frame(controls)
         self.button_frame.grid(row=5, column=0, sticky="ew")
@@ -1265,7 +2132,7 @@ class TheriacDesktopApp:
 
         pipeline = ttk.Frame(self.root, padding=(12, 4, 12, 6))
         pipeline.grid(row=4, column=0, sticky="ew")
-        pipeline.columnconfigure(4, weight=1)
+        pipeline.columnconfigure(7, weight=1)
         self.run_button = ttk.Button(pipeline, text="Run Full Pipeline", command=self.run_full_pipeline)
         self.run_button.grid(row=0, column=0, sticky="w")
         self.cancel_button = ttk.Button(pipeline, text="Cancel Run", command=self.cancel_current_run)
@@ -1274,13 +2141,20 @@ class TheriacDesktopApp:
         self.attach_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
         self.auto_review_button = ttk.Button(pipeline, text="\u2728 AI Auto-Review", command=self.run_auto_review)
         self.auto_review_button.grid(row=0, column=3, sticky="w", padx=(8, 0))
+        self.author_claim_button = ttk.Button(pipeline, text="Add Author Claim", command=self.open_author_claim_dialog)
+        self.author_claim_button.grid(row=0, column=4, sticky="w", padx=(8, 0))
+        self.story_questions_button = ttk.Button(pipeline, text="Story Questions", command=self.open_story_questions_dialog)
+        self.story_questions_button.grid(row=0, column=5, sticky="w", padx=(8, 0))
+        self.notion_draft_sync_button = ttk.Button(pipeline, text="Sync Drafts to Notion", command=self.sync_draft_cards_to_notion)
+        self.notion_draft_sync_button.grid(row=0, column=6, sticky="w", padx=(8, 0))
         self.pipeline_status_var = tk.StringVar(value="Status: idle")
-        ttk.Label(pipeline, textvariable=self.pipeline_status_var, foreground="#57606a").grid(row=0, column=4, sticky="w", padx=(10, 0))
+        ttk.Label(pipeline, textvariable=self.pipeline_status_var, foreground="#57606a").grid(row=0, column=7, sticky="w", padx=(10, 0))
 
         self.logs_text = scrolledtext.ScrolledText(self.root, wrap=tk.WORD, font=("Consolas", 9), height=9)
         self.logs_text.grid(row=5, column=0, sticky="nsew", padx=12, pady=(0, 12))
         self.logs_text.insert("1.0", "(no logs yet)")
         self.logs_text.configure(state="disabled")
+        install_text_editing_bindings(self.logs_text)
 
     def refresh_all(self) -> None:
         self.refresh_runs()
@@ -1334,6 +2208,7 @@ class TheriacDesktopApp:
             return
         self.new_run_selected = False
         self.resolve_paths(target)
+        save_last_open_artifacts_root(self.repo_root, self.artifacts_root)
         self.pipeline_status = "idle"
         self.pipeline_message = f"Selected run: {_display_path(self.artifacts_root, self.repo_root)}"
         self.pipeline_logs = []
@@ -1374,10 +2249,16 @@ class TheriacDesktopApp:
         if claims is None:
             return None, reason
         decisions = _decision_ids(self.paths["decisions"], ["claim_id"])
+        attention = _claim_attention_by_id(self.artifacts_root)
+        attention_ids = _pending_claim_attention_ids(self.artifacts_root)
         return [
-            claim
+            {**claim, "auto_review_attention": attention.get(str(claim.get("claim_id", "")), {})}
             for claim in claims
-            if str(claim.get("claim_id", "")).strip() and str(claim.get("claim_id", "")) not in decisions
+            if str(claim.get("claim_id", "")).strip()
+            and (
+                str(claim.get("claim_id", "")) not in decisions
+                or str(claim.get("claim_id", "")) in attention_ids
+            )
         ], ""
 
     def pending_identity_merges(self) -> list[dict[str, Any]]:
@@ -1435,7 +2316,7 @@ class TheriacDesktopApp:
         if self.current_item is None:
             self.item_text.insert("1.0", title)
         else:
-            self.item_text.insert("1.0", json.dumps(self.current_item, ensure_ascii=False, indent=2))
+            self.item_text.insert("1.0", format_review_item(self.current_kind, self.current_item, self.artifacts_root))
         self.item_text.configure(state="disabled")
         self.rationale_text.delete("1.0", tk.END)
         self.configure_decision_controls()
@@ -1467,6 +2348,7 @@ class TheriacDesktopApp:
             ttk.Label(self.extra_frame, text="Edited Summary (optional)").grid(row=0, column=0, sticky="w")
             self.edited_summary_text = tk.Text(self.extra_frame, height=5, wrap=tk.WORD)
             self.edited_summary_text.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+            install_text_editing_bindings(self.edited_summary_text)
         else:
             self.primary_button.configure(text="Accept", command=lambda: self.save_decision("accept"))
 
@@ -1580,6 +2462,681 @@ class TheriacDesktopApp:
             return
         self.candidate_browser = CandidateInventoryWindow(self)
 
+    def open_author_claim_dialog(self) -> None:
+        if self.new_run_selected:
+            messagebox.showinfo("No Active Run", "Select an existing run before adding an author claim.")
+            return
+        options = _entity_lookup_options(self.artifacts_root)
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Author Claim")
+        dialog.geometry("680x440")
+        dialog.minsize(560, 360)
+        dialog.transient(self.root)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(4, weight=1)
+
+        form = ttk.Frame(dialog, padding=(12, 12, 12, 8))
+        form.grid(row=0, column=0, sticky="ew")
+        form.columnconfigure(1, weight=1)
+        ttk.Label(form, text="Target Entity").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        target_var = tk.StringVar()
+        target_combo = ttk.Combobox(
+            form,
+            textvariable=target_var,
+            values=[str(option["label"]) for option in options],
+            state="normal",
+        )
+        target_combo.grid(row=0, column=1, sticky="ew")
+        ttk.Label(form, text="Claim Type").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        claim_type_var = tk.StringVar(value="relationship")
+        ttk.Combobox(
+            form,
+            textvariable=claim_type_var,
+            values=AUTHOR_CLAIM_TYPES,
+            state="readonly",
+        ).grid(row=1, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(form, text="Track").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        claim_track_var = tk.StringVar(value="lore")
+        ttk.Combobox(
+            form,
+            textvariable=claim_track_var,
+            values=AUTHOR_CLAIM_TRACKS,
+            state="readonly",
+        ).grid(row=2, column=1, sticky="w", pady=(8, 0))
+
+        ttk.Label(dialog, text="Claim", font=("Segoe UI", 9, "bold")).grid(row=1, column=0, sticky="w", padx=12)
+        claim_text = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, font=("Segoe UI", 10), height=8)
+        claim_text.grid(row=2, column=0, sticky="nsew", padx=12, pady=(4, 8))
+        install_text_editing_bindings(claim_text)
+
+        ttk.Label(dialog, text="Rationale / Note (optional)").grid(row=3, column=0, sticky="w", padx=12)
+        rationale_text = tk.Text(dialog, height=4, wrap=tk.WORD)
+        rationale_text.grid(row=4, column=0, sticky="nsew", padx=12, pady=(4, 8))
+        install_text_editing_bindings(rationale_text)
+
+        status_var = tk.StringVar()
+        bottom = ttk.Frame(dialog, padding=(12, 0, 12, 12))
+        bottom.grid(row=5, column=0, sticky="ew")
+        bottom.columnconfigure(0, weight=1)
+        ttk.Label(bottom, textvariable=status_var, foreground="#57606a").grid(row=0, column=0, sticky="w")
+
+        def save() -> None:
+            reviewer = self.reviewer_var.get().strip() or "author"
+            try:
+                row = append_author_claim(
+                    self.artifacts_root,
+                    target_var.get(),
+                    claim_type_var.get(),
+                    claim_text.get("1.0", tk.END),
+                    reviewer,
+                    rationale_text.get("1.0", tk.END).strip(),
+                    claim_track_var.get(),
+                )
+            except ValueError as exc:
+                status_var.set(str(exc))
+                return
+            self.pipeline_message = (
+                f"Author claim saved for {row.get('target_entity_name')}. Resume Pipeline to rerun Stage 10 card synthesis."
+            )
+            self.append_pipeline_log(f"Author claim saved: {row.get('claim_id')} -> {row.get('target_entity_name')}")
+            self.refresh_all()
+            if self.candidate_browser is not None and self.candidate_browser.winfo_exists():
+                self.candidate_browser.reload()
+            dialog.destroy()
+
+        ttk.Button(bottom, text="Save Claim", command=save).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        ttk.Button(bottom, text="Cancel", command=dialog.destroy).grid(row=0, column=2, sticky="e", padx=(8, 0))
+        if options:
+            target_var.set(str(options[0]["label"]))
+        claim_text.focus_set()
+
+    def open_story_questions_dialog(self) -> None:
+        if self.new_run_selected:
+            messagebox.showinfo("No Active Run", "Select an existing run with pending claims before using Story Questions.")
+            return
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Story Questions")
+        dialog.geometry("920x720")
+        dialog.minsize(760, 560)
+        dialog.transient(self.root)
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+        dialog.rowconfigure(3, weight=1)
+
+        header = ttk.Frame(dialog, padding=(12, 12, 12, 6))
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        status_var = tk.StringVar(value="Loading Story Questions...")
+        model_status_var = tk.StringVar(value="Model: idle")
+        ttk.Label(header, text="Story Questions", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(header, textvariable=status_var, foreground="#57606a").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(header, textvariable=model_status_var, foreground="#8250df").grid(row=2, column=0, sticky="w", pady=(2, 0))
+
+        question_text = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, font=("Segoe UI", 11), height=8)
+        question_text.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        question_text.configure(state="disabled")
+        install_text_editing_bindings(question_text)
+
+        answer_frame = ttk.LabelFrame(dialog, text="Answer", padding=(8, 8, 8, 8))
+        answer_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+        answer_frame.columnconfigure(0, weight=1)
+        answer_text = tk.Text(answer_frame, height=5, wrap=tk.WORD)
+        answer_text.grid(row=0, column=0, sticky="ew")
+        install_text_editing_bindings(answer_text)
+
+        detail_tabs = ttk.Notebook(dialog)
+        detail_tabs.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 8))
+
+        proposal_tab = ttk.Frame(detail_tabs, padding=(8, 8, 8, 8))
+        claims_tab = ttk.Frame(detail_tabs, padding=(8, 8, 8, 8))
+        evidence_tab = ttk.Frame(detail_tabs, padding=(8, 8, 8, 8))
+        raw_tab = ttk.Frame(detail_tabs, padding=(8, 8, 8, 8))
+        for tab in (proposal_tab, claims_tab, evidence_tab, raw_tab):
+            tab.columnconfigure(0, weight=1)
+            tab.rowconfigure(1, weight=1)
+        detail_tabs.add(proposal_tab, text="Proposal")
+        detail_tabs.add(claims_tab, text="Linked Claims")
+        detail_tabs.add(evidence_tab, text="Evidence")
+        detail_tabs.add(raw_tab, text="Raw")
+
+        proposal_summary_var = tk.StringVar(value="No pending proposal.")
+        ttk.Label(proposal_tab, textvariable=proposal_summary_var, wraplength=860, foreground="#24292f").grid(
+            row=0, column=0, sticky="ew", pady=(0, 6)
+        )
+        proposal_tree = ttk.Treeview(
+            proposal_tab,
+            columns=("decision", "entity", "claim", "confidence", "rationale"),
+            show="headings",
+            height=6,
+        )
+        proposal_tree.heading("decision", text="Decision")
+        proposal_tree.heading("entity", text="Entity")
+        proposal_tree.heading("claim", text="Claim")
+        proposal_tree.heading("confidence", text="Conf.")
+        proposal_tree.heading("rationale", text="Rationale")
+        proposal_tree.column("decision", width=86, stretch=False)
+        proposal_tree.column("entity", width=140, stretch=False)
+        proposal_tree.column("claim", width=300, stretch=True)
+        proposal_tree.column("confidence", width=62, stretch=False)
+        proposal_tree.column("rationale", width=320, stretch=True)
+        proposal_tree.grid(row=1, column=0, sticky="nsew")
+        proposal_scroll = ttk.Scrollbar(proposal_tab, orient=tk.VERTICAL, command=proposal_tree.yview)
+        proposal_scroll.grid(row=1, column=1, sticky="ns")
+        proposal_tree.configure(yscrollcommand=proposal_scroll.set)
+
+        author_claim_tree = ttk.Treeview(
+            proposal_tab,
+            columns=("entity", "type", "track", "claim"),
+            show="headings",
+            height=4,
+        )
+        for key, label, width in [
+            ("entity", "Author Claim Entity", 160),
+            ("type", "Type", 110),
+            ("track", "Track", 70),
+            ("claim", "Claim", 520),
+        ]:
+            author_claim_tree.heading(key, text=label)
+            author_claim_tree.column(key, width=width, stretch=key == "claim")
+        author_claim_tree.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+
+        linked_claim_tree = ttk.Treeview(
+            claims_tab,
+            columns=("review", "entity", "type", "claim"),
+            show="headings",
+            height=9,
+        )
+        linked_claim_tree.heading("review", text="Review")
+        linked_claim_tree.heading("entity", text="Entity")
+        linked_claim_tree.heading("type", text="Type")
+        linked_claim_tree.heading("claim", text="Claim")
+        linked_claim_tree.column("review", width=150, stretch=False)
+        linked_claim_tree.column("entity", width=160, stretch=False)
+        linked_claim_tree.column("type", width=110, stretch=False)
+        linked_claim_tree.column("claim", width=440, stretch=True)
+        linked_claim_tree.grid(row=1, column=0, sticky="nsew")
+        linked_scroll = ttk.Scrollbar(claims_tab, orient=tk.VERTICAL, command=linked_claim_tree.yview)
+        linked_scroll.grid(row=1, column=1, sticky="ns")
+        linked_claim_tree.configure(yscrollcommand=linked_scroll.set)
+
+        evidence_tree = ttk.Treeview(
+            evidence_tab,
+            columns=("snippet", "topic", "text"),
+            show="headings",
+            height=9,
+        )
+        evidence_tree.heading("snippet", text="Snippet")
+        evidence_tree.heading("topic", text="Topic")
+        evidence_tree.heading("text", text="Excerpt")
+        evidence_tree.column("snippet", width=150, stretch=False)
+        evidence_tree.column("topic", width=190, stretch=False)
+        evidence_tree.column("text", width=520, stretch=True)
+        evidence_tree.grid(row=1, column=0, sticky="nsew")
+        evidence_scroll = ttk.Scrollbar(evidence_tab, orient=tk.VERTICAL, command=evidence_tree.yview)
+        evidence_scroll.grid(row=1, column=1, sticky="ns")
+        evidence_tree.configure(yscrollcommand=evidence_scroll.set)
+
+        detail_text = scrolledtext.ScrolledText(raw_tab, wrap=tk.WORD, font=("Consolas", 9), height=10)
+        detail_text.grid(row=1, column=0, sticky="nsew")
+        detail_text.configure(state="disabled")
+        install_text_editing_bindings(detail_text)
+
+        buttons = ttk.Frame(dialog, padding=(12, 0, 12, 12))
+        buttons.grid(row=4, column=0, sticky="ew")
+        buttons.columnconfigure(10, weight=1)
+
+        def set_widget_text(widget: tk.Text, text: str) -> None:
+            widget.configure(state="normal")
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", text)
+            widget.configure(state="disabled")
+
+        def clear_tree(tree: ttk.Treeview) -> None:
+            for item_id in tree.get_children():
+                tree.delete(item_id)
+
+        def compact(value: Any, limit: int = 150) -> str:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+            if len(text) <= limit:
+                return text
+            return text[: max(0, limit - 3)].rstrip() + "..."
+
+        def format_confidence(value: Any) -> str:
+            try:
+                return f"{float(value):.2f}"
+            except (TypeError, ValueError):
+                return ""
+
+        def story_count_summary(display: dict[str, Any]) -> str:
+            total = int(display.get("pending_claim_count", 0) or 0)
+            unanswered = int(display.get("unanswered_claim_count", 0) or 0)
+            human_requested = int(display.get("human_review_requested_claim_count", 0) or 0)
+            auto_reviewed = int(display.get("auto_reviewed_claim_count", 0) or 0)
+            return (
+                f"Review queue: {unanswered + human_requested}. "
+                f"Story candidates: {total} "
+                f"({unanswered} unanswered, {human_requested} human-review requested, {auto_reviewed} auto-reviewed priors)."
+            )
+
+        def populate_compact_details(display: dict[str, Any]) -> None:
+            proposal = display.get("pending_application_proposal") or {}
+            clear_tree(proposal_tree)
+            clear_tree(author_claim_tree)
+            clear_tree(linked_claim_tree)
+            clear_tree(evidence_tree)
+            if proposal:
+                proposal_summary_var.set(
+                    f"{proposal.get('provider', 'model')} / {proposal.get('model', '')}: "
+                    f"{proposal.get('summary', '(no summary)') or '(no summary)'}"
+                )
+                for decision in proposal.get("claim_decisions", []) or []:
+                    proposal_tree.insert(
+                        "",
+                        tk.END,
+                        values=(
+                            decision.get("decision", ""),
+                            compact(decision.get("target_entity_name", ""), 36),
+                            compact(decision.get("edited_claim_text") or decision.get("candidate_claim_text", ""), 90),
+                            format_confidence(decision.get("confidence", decision.get("application_confidence", ""))),
+                            compact(decision.get("rationale", ""), 120),
+                        ),
+                    )
+                for author_claim in proposal.get("author_claims", []) or []:
+                    author_claim_tree.insert(
+                        "",
+                        tk.END,
+                        values=(
+                            compact(author_claim.get("target_entity_name", ""), 36),
+                            compact(author_claim.get("claim_type", ""), 24),
+                            compact(author_claim.get("knowledge_track", ""), 12),
+                            compact(author_claim.get("claim_text", ""), 140),
+                        ),
+                    )
+            else:
+                proposal_summary_var.set("No pending proposal. Write an answer, then choose Propose Updates.")
+            for claim in display.get("linked_claims", []) or []:
+                linked_claim_tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        compact(claim.get("story_review_label", claim.get("story_review_status", "unanswered")), 32),
+                        compact(claim.get("target_entity_name", ""), 36),
+                        compact(claim.get("claim_type", ""), 24),
+                        compact(claim.get("claim_text", ""), 170),
+                    ),
+                )
+            for snippet in display.get("evidence_snippets", []) or []:
+                evidence_tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        compact(snippet.get("snippet_id", ""), 34),
+                        compact(snippet.get("topic", ""), 42),
+                        compact(snippet.get("text", ""), 170),
+                    ),
+                )
+
+        def detail_lines(display: dict[str, Any]) -> str:
+            question = display.get("question") or {}
+            lines = [
+                story_count_summary(display),
+                f"Focus: {question.get('focus_type', '(none)')}",
+                f"Expected resolution: {question.get('expected_resolution', '(none)') or '(none)'}",
+                "",
+                "Model rationale:",
+                str(question.get("rationale", "(none)") or "(none)"),
+                "",
+                "Linked claims:",
+            ]
+            for claim in display.get("linked_claims", []) or []:
+                auto_review = claim.get("auto_review", {}) if isinstance(claim.get("auto_review"), dict) else {}
+                lines.extend(
+                    [
+                        (
+                            f"- {claim.get('claim_id', '')} | {claim.get('story_review_label', '')} | "
+                            f"{claim.get('target_entity_name', '')} | {claim.get('claim_type', '')}"
+                        ),
+                        textwrap.fill(str(claim.get("claim_text", "")), width=110, subsequent_indent="  "),
+                    ]
+                )
+                if auto_review:
+                    lines.append(
+                        "  Auto-review: "
+                        + textwrap.fill(
+                            f"{auto_review.get('decision', '')}; weight={auto_review.get('weight', '')}; "
+                            f"{auto_review.get('rationale', '')}",
+                            width=94,
+                            subsequent_indent="               ",
+                        )
+                    )
+            if not display.get("linked_claims"):
+                lines.append("(none)")
+            lines.extend(["", "Evidence snippets:"])
+            for snippet in display.get("evidence_snippets", []) or []:
+                lines.extend(
+                    [
+                        f"- {snippet.get('snippet_id', '')} | {snippet.get('topic', '')}",
+                        textwrap.fill(str(snippet.get("text", "")), width=110, subsequent_indent="  "),
+                    ]
+                )
+            if not display.get("evidence_snippets"):
+                lines.append("(none)")
+            proposal = display.get("pending_application_proposal") or {}
+            lines.extend(["", "Pending proposal:"])
+            if proposal:
+                lines.extend(
+                    [
+                        f"Model: {proposal.get('provider', '')} / {proposal.get('model', '')}",
+                        f"Summary: {proposal.get('summary', '(none)') or '(none)'}",
+                        f"Claim decisions proposed: {len(proposal.get('claim_decisions', []) or [])}",
+                    ]
+                )
+                for decision in proposal.get("claim_decisions", []) or []:
+                    lines.extend(
+                        [
+                            (
+                                f"- {decision.get('claim_id', '')} | {decision.get('target_entity_name', '')} | "
+                                f"{decision.get('decision', '')} | conf={decision.get('confidence', decision.get('application_confidence', ''))}"
+                            ),
+                            "  Existing: "
+                            + textwrap.fill(str(decision.get("candidate_claim_text", "")), width=96, subsequent_indent="            "),
+                        ]
+                    )
+                    if decision.get("edited_claim_text"):
+                        lines.append(
+                            "  Edited:   "
+                            + textwrap.fill(str(decision.get("edited_claim_text", "")), width=96, subsequent_indent="            ")
+                        )
+                    if decision.get("rationale"):
+                        lines.append(
+                            "  Why:      "
+                            + textwrap.fill(str(decision.get("rationale", "")), width=96, subsequent_indent="            ")
+                        )
+                lines.append(f"Author claims proposed: {len(proposal.get('author_claims', []) or [])}")
+                for author_claim in proposal.get("author_claims", []) or []:
+                    lines.extend(
+                        [
+                            (
+                                f"- {author_claim.get('target_entity_name', '')} | {author_claim.get('claim_type', '')} | "
+                                f"{author_claim.get('knowledge_track', '')}"
+                            ),
+                            textwrap.fill(str(author_claim.get("claim_text", "")), width=110, subsequent_indent="  "),
+                        ]
+                    )
+                dropped = proposal.get("dropped_decisions", []) or []
+                if dropped:
+                    lines.append(f"Dropped low-confidence/invalid proposals: {len(dropped)}")
+                left_pending = proposal.get("left_pending", []) or []
+                if left_pending:
+                    lines.append(f"Left pending: {len(left_pending)}")
+            else:
+                lines.append("(none)")
+            return "\n".join(lines)
+
+        def refresh_story_display(message: str = "") -> None:
+            try:
+                from pipeline.story_questions import story_question_display
+
+                display = story_question_display(self.artifacts_root)
+            except Exception as exc:
+                status_var.set(f"Story Questions unavailable: {exc}")
+                return
+            question = display.get("question")
+            if question:
+                set_widget_text(question_text, str(question.get("question_text", "")))
+                status = (
+                    f"Active question. {story_count_summary(display)} "
+                    f"Queued: {display.get('queued_question_count', 0)}. Reserved: {display.get('reserved_claim_count', 0)}."
+                )
+            else:
+                set_widget_text(question_text, "No active story question. Generate the next question to begin or continue.")
+                status = (
+                    f"No active question. {story_count_summary(display)} "
+                    f"Queued: {display.get('queued_question_count', 0)}. Reserved: {display.get('reserved_claim_count', 0)}."
+                )
+            if message:
+                status += f" {message}"
+            status_var.set(status)
+            populate_compact_details(display)
+            set_widget_text(detail_text, detail_lines(display))
+
+        action_buttons: list[ttk.Button] = []
+        busy_state: dict[str, Any] = {"after_id": None, "started": 0.0, "label": "", "model": ""}
+
+        def model_status_for_label(label: str) -> str:
+            if label.startswith("Generating story question") or label.startswith("Generating all story questions") or label.startswith("Proposing story answer updates"):
+                return "DeepSeek"
+            if label.startswith("Approving"):
+                return "No model call"
+            if label.startswith(("Discarding", "Skipping", "Ending")):
+                return "No model call"
+            return "Model"
+
+        def stop_model_status(message: str = "Model: idle") -> None:
+            after_id = busy_state.get("after_id")
+            if after_id is not None:
+                try:
+                    dialog.after_cancel(after_id)
+                except Exception:
+                    pass
+            busy_state["after_id"] = None
+            busy_state["started"] = 0.0
+            busy_state["label"] = ""
+            busy_state["model"] = ""
+            model_status_var.set(message)
+
+        def start_model_status(label: str) -> None:
+            busy_state["started"] = time.time()
+            busy_state["label"] = label
+            busy_state["model"] = model_status_for_label(label)
+
+            def tick() -> None:
+                if not busy_state.get("started"):
+                    return
+                elapsed = int(time.time() - float(busy_state["started"]))
+                model = str(busy_state.get("model") or "Model")
+                if model == "No model call":
+                    model_status_var.set(f"No model call: {label} ({elapsed}s)")
+                else:
+                    model_status_var.set(f"{model}: {label} in progress ({elapsed}s)")
+                busy_state["after_id"] = dialog.after(1000, tick)
+
+            tick()
+
+        def set_busy(is_busy: bool, message: str) -> None:
+            status_var.set(message)
+            if not is_busy:
+                stop_model_status("Model: idle")
+            for button in action_buttons:
+                button.configure(state=tk.DISABLED if is_busy else tk.NORMAL)
+
+        def run_background(label: str, fn, on_success) -> None:
+            set_busy(True, f"{label}...")
+            start_model_status(label)
+
+            def worker() -> None:
+                try:
+                    result = fn()
+                except Exception as exc:
+                    self.root.after(
+                        0,
+                        lambda error=str(exc): (
+                            set_busy(False, f"{label} failed: {error}"),
+                            self.append_pipeline_log(f"[story-questions] {label} failed: {error}"),
+                        ),
+                    )
+                    return
+                self.root.after(0, lambda: on_success(result))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def generate(force: bool = False) -> None:
+            from pipeline.story_questions import generate_next_question
+
+            run_background(
+                "Generating story question",
+                lambda: generate_next_question(self.artifacts_root, Path("config/pipeline_config.json"), force_regenerate=force),
+                lambda _result: (
+                    set_busy(False, "Story question ready."),
+                    refresh_story_display("Story question ready."),
+                    self.refresh_all(),
+                ),
+            )
+
+        def generate_all() -> None:
+            from pipeline.story_questions import generate_all_questions
+
+            def on_success(result: dict[str, Any]) -> None:
+                created = int(result.get("created_count", 0) or 0)
+                remaining = int(result.get("remaining_unreserved_claim_count", 0) or 0)
+                queued = int(result.get("queue_count", 0) or 0)
+                stopped = str(result.get("stopped_reason", "") or "")
+                message = f"Generated {created} question(s). Queued: {queued}. Unreserved claims left: {remaining}. Stop: {stopped}."
+                set_busy(False, message)
+                refresh_story_display(message)
+                self.append_pipeline_log(f"[story-questions] {message}")
+                self.refresh_all()
+
+            run_background(
+                "Generating all story questions",
+                lambda: generate_all_questions(self.artifacts_root, Path("config/pipeline_config.json")),
+                on_success,
+            )
+
+        def propose_answer(critique: str = "") -> None:
+            answer_value = answer_text.get("1.0", tk.END).strip()
+            if not answer_value:
+                try:
+                    from pipeline.story_questions import story_question_display
+
+                    display = story_question_display(self.artifacts_root)
+                    proposal = display.get("pending_application_proposal") or {}
+                    answer_value = str(proposal.get("answer_text", "") or "")
+                except Exception:
+                    answer_value = ""
+            if not answer_value:
+                status_var.set("Answer text is required before proposing updates.")
+                return
+            reviewer = self.reviewer_var.get().strip() or "human_reviewer"
+            from pipeline.story_questions import propose_story_answer_application
+
+            def on_success(result: dict[str, Any]) -> None:
+                claim_count = len(result.get("claim_decisions", []) or [])
+                author_count = len(result.get("author_claims", []) or [])
+                set_busy(False, f"Proposal ready: {claim_count} claim decision(s), {author_count} author claim(s).")
+                refresh_story_display(f"Proposal ready: {claim_count} claim decision(s), {author_count} author claim(s).")
+                self.append_pipeline_log(
+                    f"[story-questions] Proposal ready: {claim_count} claim decision(s), {author_count} author claim(s)."
+                )
+                self.refresh_all()
+
+            run_background(
+                "Proposing story answer updates",
+                lambda: propose_story_answer_application(
+                    self.artifacts_root,
+                    answer_value,
+                    Path("config/pipeline_config.json"),
+                    reviewer=reviewer,
+                    reviewer_critique=critique,
+                ),
+                on_success,
+            )
+
+        def approve_proposal() -> None:
+            from pipeline.story_questions import commit_story_answer_application
+
+            def on_success(result: dict[str, Any]) -> None:
+                claim_count = len(result.get("claim_decisions", []) or [])
+                author_count = len(result.get("author_claims", []) or [])
+                answer_text.delete("1.0", tk.END)
+                set_busy(False, f"Approved proposal: {claim_count} claim decision(s), {author_count} author claim(s).")
+                refresh_story_display(f"Approved proposal: {claim_count} claim decision(s), {author_count} author claim(s).")
+                self.append_pipeline_log(
+                    f"[story-questions] Approved proposal: {claim_count} claim decision(s), {author_count} author claim(s)."
+                )
+                self.refresh_all()
+                if self.candidate_browser is not None and self.candidate_browser.winfo_exists():
+                    self.candidate_browser.reload()
+
+            run_background(
+                "Approving story answer proposal",
+                lambda: commit_story_answer_application(self.artifacts_root, Path("config/pipeline_config.json")),
+                on_success,
+            )
+
+        def discard_proposal() -> None:
+            from pipeline.story_questions import discard_story_answer_application
+
+            run_background(
+                "Discarding story answer proposal",
+                lambda: discard_story_answer_application(self.artifacts_root, "Discarded in desktop GUI."),
+                lambda _result: (
+                    set_busy(False, "Proposal discarded."),
+                    refresh_story_display("Proposal discarded."),
+                    self.refresh_all(),
+                ),
+            )
+
+        def critique_proposal() -> None:
+            critique = simpledialog.askstring(
+                "Critique Proposal",
+                "What should the story model change about the proposed claim updates?",
+                parent=dialog,
+            )
+            if critique is None:
+                return
+            critique = critique.strip()
+            if not critique:
+                status_var.set("Critique text is required to regenerate the proposal.")
+                return
+            propose_answer(critique)
+
+        def skip_question() -> None:
+            from pipeline.story_questions import skip_current_question
+
+            run_background(
+                "Skipping story question",
+                lambda: skip_current_question(self.artifacts_root, "Skipped in desktop GUI."),
+                lambda _result: (
+                    set_busy(False, "Question skipped."),
+                    refresh_story_display("Question skipped."),
+                    self.refresh_all(),
+                ),
+            )
+
+        def end_session() -> None:
+            from pipeline.story_questions import end_story_session
+
+            run_background(
+                "Ending story review",
+                lambda: end_story_session(self.artifacts_root),
+                lambda _result: (
+                    set_busy(False, "Story review session ended."),
+                    refresh_story_display("Story review session ended."),
+                    self.refresh_all(),
+                ),
+            )
+
+        action_buttons.extend(
+            [
+                ttk.Button(buttons, text="Generate Next", command=lambda: generate(False)),
+                ttk.Button(buttons, text="Generate All", command=generate_all),
+                ttk.Button(buttons, text="Propose Updates", command=lambda: propose_answer("")),
+                ttk.Button(buttons, text="Approve Proposal", command=approve_proposal),
+                ttk.Button(buttons, text="Discard Proposal", command=discard_proposal),
+                ttk.Button(buttons, text="Critique", command=critique_proposal),
+                ttk.Button(buttons, text="Skip", command=skip_question),
+                ttk.Button(buttons, text="Regenerate", command=lambda: generate(True)),
+                ttk.Button(buttons, text="Open Linked Claims", command=self.open_candidate_inventory_browser),
+                ttk.Button(buttons, text="End Story Review", command=end_session),
+                ttk.Button(buttons, text="Close", command=dialog.destroy),
+            ]
+        )
+        for index, button in enumerate(action_buttons):
+            button.grid(row=0, column=index, sticky="w", padx=(0 if index == 0 else 8, 0))
+        refresh_story_display()
+        answer_text.focus_set()
+
     def set_log_text(self) -> None:
         self.logs_text.configure(state="normal")
         self.logs_text.delete("1.0", tk.END)
@@ -1615,6 +3172,9 @@ class TheriacDesktopApp:
         self.run_button.configure(state=tk.DISABLED if active else tk.NORMAL)
         self.cancel_button.configure(state=tk.NORMAL if active else tk.DISABLED)
         self.attach_button.configure(state=tk.DISABLED if active else tk.NORMAL)
+        self.author_claim_button.configure(state=tk.DISABLED if active or self.new_run_selected else tk.NORMAL)
+        self.story_questions_button.configure(state=tk.DISABLED if active or self.new_run_selected else tk.NORMAL)
+        self.notion_draft_sync_button.configure(state=tk.DISABLED if active or self.new_run_selected else tk.NORMAL)
 
     def progress_line_for_log(self, line: str) -> str:
         if self.attached_process_kind != "run_from_b4":
@@ -1670,6 +3230,7 @@ class TheriacDesktopApp:
         if target_root != self.artifacts_root.resolve():
             self.new_run_selected = False
             self.resolve_paths(target_root)
+            save_last_open_artifacts_root(self.repo_root, self.artifacts_root)
             self.refresh_runs()
             self.refresh_review_item()
 
@@ -1809,6 +3370,46 @@ class TheriacDesktopApp:
         threading.Thread(target=cancel_remote_batches, daemon=True).start()
         self.refresh_progress()
 
+    def sync_draft_cards_to_notion(self) -> None:
+        if self.pipeline_active():
+            messagebox.showinfo("Pipeline Running", "Finish or cancel the active pipeline run before syncing draft cards.")
+            return
+        if self.new_run_selected:
+            messagebox.showinfo("No Run Selected", "Select an existing run with card drafts before syncing to Notion.")
+            return
+        if not self.paths["card_drafts"].exists():
+            messagebox.showinfo("No Card Drafts", "Run or resume Stage 10 before syncing draft cards to Notion.")
+            return
+
+        self.pipeline_status = "running"
+        self.pipeline_message = "Syncing draft cards to Notion..."
+        self.pipeline_logs = ["[notion-drafts] Starting draft card sync..."]
+        self.progress_logs = []
+        self.last_exit_code = None
+        self.cancel_requested = False
+        self.set_log_text()
+        self.refresh_progress()
+
+        def worker() -> None:
+            from pipeline.notion_draft_sync import sync_draft_cards_to_notion as _sync_draft_cards_to_notion
+
+            def progress_cb(message: str) -> None:
+                self.log_queue.put(("log", f"[notion-drafts] {message}"))
+
+            try:
+                report = _sync_draft_cards_to_notion(
+                    self.artifacts_root,
+                    self.repo_root / "config" / "pipeline_config.json",
+                    self.repo_root / ".env",
+                    state_path=self.repo_root / "artifacts" / "learning" / "notion_draft_cards_state.json",
+                    progress_callback=progress_cb,
+                )
+                self.log_queue.put(("notion_draft_sync_done", report))
+            except Exception as exc:
+                self.log_queue.put(("error", f"Notion draft sync failed: {exc}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def run_auto_review(self) -> None:
         """Launch AI auto-review of all pending items in a background thread."""
         if self.pipeline_active():
@@ -1824,12 +3425,12 @@ class TheriacDesktopApp:
             return
         if not messagebox.askyesno(
             "AI Auto-Review",
-            f"This will use the Gemini API to automatically review {total} pending item(s):\n\n"
+            f"This will use OpenRouter/DeepSeek to automatically review {total} pending item(s):\n\n"
             f"  • {counts.get('conversation_entities', 0)} conversation entities\n"
             f"  • {counts.get('claims', 0)} claims\n"
             f"  • {counts.get('identity_merges', 0)} identity merges\n"
             f"  • {counts.get('cards', 0)} cards\n\n"
-            "Decisions will be saved with reviewer='gemini_auto_review'.\n"
+            "Decisions will be saved with reviewer='openrouter_auto_review'.\n"
             "You can still override any AI decision manually afterwards.\n\n"
             "Continue?",
         ):
@@ -1876,6 +3477,7 @@ class TheriacDesktopApp:
         if self.new_run_selected:
             fresh_root = new_run_artifacts_root(self.repo_root)
             self.resolve_paths(fresh_root)
+            save_last_open_artifacts_root(self.repo_root, self.artifacts_root)
             self.new_run_selected = False
             self.refresh_runs()
 
@@ -1939,6 +3541,20 @@ class TheriacDesktopApp:
                     self.refresh_progress()
                     if self.candidate_browser is not None and self.candidate_browser.winfo_exists():
                         self.candidate_browser.reload()
+                elif event == "notion_draft_sync_done":
+                    report = payload if isinstance(payload, dict) else {}
+                    status = str(report.get("status", "unknown"))
+                    failed_count = len(report.get("failed_pages", []) or [])
+                    self.pipeline_status = "failed" if status == "failed" else "succeeded"
+                    self.pipeline_message = (
+                        f"Notion draft sync {status}: created={int(report.get('created_pages', 0) or 0)}, "
+                        f"updated={int(report.get('updated_pages', 0) or 0)}, failed={failed_count}. "
+                        f"Report: {self.artifacts_root / '08_notion' / 'notion_draft_sync_report.json'}"
+                    )
+                    if report.get("reason"):
+                        self.pipeline_message += f" Reason: {report.get('reason')}"
+                    self.append_pipeline_log(f"[desktop] {self.pipeline_message}")
+                    self.refresh_progress()
                 elif event == "done":
                     self.last_exit_code = int(payload)
                     self.process = None
@@ -1981,7 +3597,16 @@ def run_smoke_test(repo_root: Path, artifacts_root: Path | None) -> int:
                 "artifacts_root": str(selected_root),
                 "pending": counts,
                 "pending_total": pending_review_total(counts),
-                "has_gemini_key": bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
+                "has_openrouter_key": bool(
+                    os.environ.get("OPENROUTER_API_KEY")
+                    or os.environ.get("OPENROUTER_KEY")
+                    or os.environ.get("OPEN_ROUTER_API_KEY")
+                ),
+                "has_notion_key": bool(
+                    os.environ.get("NOTION_API_KEY")
+                    or os.environ.get("NOTION_ACCESS_TOKEN")
+                    or os.environ.get("NOTION_TOKEN")
+                ),
             },
             indent=2,
         )

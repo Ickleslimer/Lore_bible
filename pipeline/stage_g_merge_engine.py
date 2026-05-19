@@ -64,6 +64,25 @@ GUARDED_SPECULATIVE_PHRASES = {
     "ecosystem",
 }
 PACING_SKIP_REASONS = {"provider_locked", "adaptive_pacing", "rate_limit_cooldown"}
+AUTHOR_CLAIMS_FILENAME = "author_claims.json"
+AUTHOR_CLAIM_TRACKS = {"lore", "meta", "both"}
+AUTHOR_CLAIM_META_MARKERS = (
+    "working name",
+    "canonical name",
+    "later updated",
+    "originally developed",
+    "developed based",
+    "inspired by",
+    "inspiration",
+    "player's",
+    "player-facing",
+    "gameplay",
+    "game mechanic",
+    "generic reference",
+    "likely refer",
+)
+VERBATIM_CLAIM_REUSE_MIN_WORDS = 10
+VERBATIM_CLAIM_REUSE_MIN_CHARS = 70
 
 
 def provider_wait_seconds(reason: str, status: dict[str, Any], fallback_seconds: float) -> float:
@@ -113,6 +132,163 @@ def _latest_decision_by_claim(decisions: list[dict[str, Any]]) -> dict[str, dict
     return out
 
 
+def default_author_claims_path(in_claim_decisions_json: Path) -> Path:
+    return in_claim_decisions_json.with_name(AUTHOR_CLAIMS_FILENAME)
+
+
+def _entity_lookup_indexes(entities: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    by_card_id: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, dict[str, Any]] = {}
+    for entity in entities:
+        entity_id = str(entity.get("entity_id", "")).strip()
+        card_id = str(entity.get("card_id", "")).strip()
+        canonical_name = str(entity.get("canonical_name", "")).strip()
+        if entity_id:
+            by_id[entity_id] = entity
+        if card_id:
+            by_card_id[card_id] = entity
+        if canonical_name:
+            by_name[normalized_name_key(canonical_name)] = entity
+        for alias in entity.get("aliases", []) or []:
+            alias_text = str(alias).strip()
+            if alias_text:
+                by_name[normalized_name_key(alias_text)] = entity
+    return by_id, by_card_id, by_name
+
+
+def _normalize_claim_text_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _normalize_author_claim_track(raw_track: Any, claim_type: str, claim_text: str) -> str:
+    track = str(raw_track or "").strip().lower()
+    if track not in AUTHOR_CLAIM_TRACKS:
+        track = "lore"
+    lower = str(claim_text or "").lower()
+    if claim_type in {"meta_note", "open_question", "inspiration"}:
+        return "meta"
+    if any(marker in lower for marker in AUTHOR_CLAIM_META_MARKERS):
+        return "meta"
+    return track
+
+
+def _resolve_author_claim_target(raw_claim: dict[str, Any], entities: list[dict[str, Any]]) -> dict[str, Any] | None:
+    by_id, by_card_id, by_name = _entity_lookup_indexes(entities)
+    target_entity_id = str(raw_claim.get("target_entity_id", "")).strip()
+    target_card_id = str(raw_claim.get("target_card_id", "")).strip()
+    target_name = str(raw_claim.get("target_entity_name") or raw_claim.get("canonical_name") or "").strip()
+    if target_entity_id and target_entity_id in by_id:
+        return by_id[target_entity_id]
+    if target_card_id and target_card_id in by_card_id:
+        return by_card_id[target_card_id]
+    if target_name:
+        return by_name.get(normalized_name_key(target_name))
+
+    mentions = _entity_mentions(str(raw_claim.get("claim_text", "")), entities)
+    unique_entities: dict[str, dict[str, Any]] = {}
+    for mention in mentions:
+        entity = mention.get("entity", {})
+        entity_id = str(entity.get("entity_id", "")).strip()
+        if entity_id:
+            unique_entities[entity_id] = entity
+    if len(unique_entities) == 1:
+        return next(iter(unique_entities.values()))
+    return None
+
+
+def load_author_claims(
+    path: Path,
+    entities: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not path.exists():
+        return [], []
+    payload = read_json(path)
+    rows = payload.get("claims", []) if isinstance(payload, dict) else []
+    author_claims: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    seen_claim_ids: set[str] = set()
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, dict):
+            continue
+        claim_text = str(raw.get("claim_text", "")).strip()
+        if not claim_text:
+            failures.append({"index": index, "reason": "missing_claim_text", "claim": raw})
+            continue
+        entity = _resolve_author_claim_target(raw, entities)
+        if not entity:
+            failures.append(
+                {
+                    "index": index,
+                    "reason": "unresolved_target_entity",
+                    "target_entity_id": raw.get("target_entity_id", ""),
+                    "target_card_id": raw.get("target_card_id", ""),
+                    "target_entity_name": raw.get("target_entity_name") or raw.get("canonical_name") or "",
+                    "claim_text": claim_text,
+                }
+            )
+            continue
+        target_entity_id = str(entity.get("entity_id", "")).strip()
+        target_name = str(entity.get("canonical_name", "")).strip()
+        claim_type = str(raw.get("claim_type", "lore_fact") or "lore_fact").strip() or "lore_fact"
+        knowledge_track = _normalize_author_claim_track(raw.get("knowledge_track", ""), claim_type, claim_text)
+        try:
+            confidence = float(raw.get("confidence", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            confidence = 1.0
+        claim_id = str(raw.get("claim_id", "")).strip()
+        if not claim_id:
+            claim_id = stable_id("author_claim", target_entity_id, claim_type, claim_text)
+        if claim_id in seen_claim_ids:
+            continue
+        seen_claim_ids.add(claim_id)
+        author_claims.append(
+            {
+                **raw,
+                "claim_id": claim_id,
+                "target_entity_id": target_entity_id,
+                "target_card_id": str(entity.get("card_id") or card_id_for_entity(target_name)),
+                "target_entity_name": target_name,
+                "knowledge_track": knowledge_track,
+                "claim_text": claim_text,
+                "claim_type": claim_type,
+                "source_snippet_ids": [str(item).strip() for item in raw.get("source_snippet_ids", []) or [] if str(item).strip()],
+                "confidence": confidence,
+                "status": str(raw.get("status", "accepted") or "accepted"),
+                "contradiction_notes": str(raw.get("contradiction_notes", "") or ""),
+                "created_at_utc": str(raw.get("created_at_utc") or now_utc_iso()),
+                "manual_claim": True,
+                "author_claim": True,
+                "source_priority": "author_claim",
+                "normalized_claim_text": str(raw.get("normalized_claim_text") or _normalize_claim_text_key(claim_text)),
+            }
+        )
+    return author_claims, failures
+
+
+def default_author_claim_decisions(
+    author_claims: list[dict[str, Any]],
+    existing_decisions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    decided_claim_ids = {str(decision.get("claim_id", "")).strip() for decision in existing_decisions if isinstance(decision, dict)}
+    decisions: list[dict[str, Any]] = []
+    for claim in author_claims:
+        claim_id = str(claim.get("claim_id", "")).strip()
+        if not claim_id or claim_id in decided_claim_ids:
+            continue
+        decisions.append(
+            {
+                "claim_id": claim_id,
+                "decision": "accept",
+                "reviewer": claim.get("reviewer") or "author",
+                "rationale": claim.get("review_rationale") or claim.get("rationale") or "Author-supplied claim.",
+                "timestamp_utc": claim.get("created_at_utc") or now_utc_iso(),
+                "author_claim_default_accept": True,
+            }
+        )
+    return decisions
+
+
 def _latest_decision_by_card(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for decision in decisions:
@@ -146,8 +322,10 @@ def apply_claim_decisions(
         action = str(decision.get("decision", "defer"))
         if action not in VALID_CLAIM_DECISIONS:
             action = "defer"
+        edited_claim_text = re.sub(r"\s+", " ", str(decision.get("edited_claim_text", "")).strip())
         reviewed_claim = {
             **claim,
+            **({"claim_text": edited_claim_text, "review_edited_claim_text": True} if edited_claim_text and action == "accept" else {}),
             "status": "accepted" if action == "accept" else action,
             "reviewer": decision.get("reviewer", "reviewer"),
             "review_rationale": decision.get("rationale", ""),
@@ -166,8 +344,8 @@ def apply_claim_decisions(
                 "rationale": decision.get("rationale", ""),
                 "timestamp_utc": decision.get("timestamp_utc", now_utc_iso()),
                 "source_snippet_ids": claim.get("source_snippet_ids", []),
-                "source_priority": "discord_claim_draft",
-                "claim_payload": claim,
+                "source_priority": claim.get("source_priority", "discord_claim_draft"),
+                "claim_payload": reviewed_claim,
             }
         )
     return accepted, merge_log
@@ -828,6 +1006,10 @@ def build_card_synthesis_prompt(
             "claim_text": claim.get("claim_text"),
             "claim_type": claim.get("claim_type"),
             "alias_text": claim.get("alias_text", ""),
+            "target_entity_name": claim.get("target_entity_name", ""),
+            "knowledge_track": claim.get("knowledge_track", ""),
+            "manual_claim": bool(claim.get("manual_claim") or claim.get("author_claim")),
+            "source_priority": claim.get("source_priority", ""),
             "source_snippet_ids": claim.get("source_snippet_ids", []),
         }
         for claim in claims
@@ -839,7 +1021,10 @@ def build_card_synthesis_prompt(
 Return strict JSON only. Scale the entry using the word target plan below rather than forcing every entity to the same length.
 Write polished article prose, not a bullet list, glossary stub, changelog, or terse database note. The summary should be a compact lead paragraph that identifies what the entity is and why it matters. The sections should then expand the entity's background, story function, relationships, chronology, inspirations, and open questions with concrete connective context from the accepted claims.
 Use the accepted claims as the authority for what may be stated. Use the source snippet evidence below as texture and disambiguating context for those accepted claims, especially when expanding the card into a proper wiki entry. Do not introduce a fact from a snippet unless it is tied to an accepted claim and cited through that claim's support_map entry.
+Author-supplied manual claims are authoritative accepted claims even when they have no source_snippet_ids. Treat them as reviewer corrections/additions and cite their claim IDs in support_map like any other accepted claim.
+Respect each claim's knowledge_track. Lore claims describe in-world THERIAC facts; meta claims describe authorial/design/gameplay/naming/inspiration context. Meta claims may belong in inspirations or careful out-of-world notes, but do not restate them as diegetic facts.
 Do not merely summarize summaries. Prefer concrete names, relationships, story functions, chronology, and wording grounded in the accepted claims and their source snippets. Do not use bootstrap lore-bible text as evidence. Do not paste raw chat.
+Do not paste accepted claim_text verbatim into the summary or sections. Treat claims as evidence notes to synthesize from. Paraphrase, combine, and organize them into fresh article prose while preserving their meaning. Proper nouns, quest titles, aliases, and short fixed terms may be reused exactly.
 Do not invent acronym expansions, technical mechanisms, creators, dates, motives, or background facts unless an accepted claim explicitly states them.
 Every non-empty summary/section must list the accepted claim IDs that support it in support_map. If a detail has no accepted claim support, omit it.
 Domain rule: THERIAC quest titles may be named after songs. Do not treat song-title quest names as weak, merely thematic, or non-diegetic when accepted claims link them to a path, ending, mission, or quest progression.
@@ -983,6 +1168,13 @@ def validate_synthesis_support(
         raise RuntimeError(
             "Stage 10 synthesis rejected: unsupported speculative phrase(s): "
             + ", ".join(sorted(unsupported_speculation))
+        )
+    verbatim_claim_ids = find_verbatim_claim_reuse(claims, synthesis)
+    if verbatim_claim_ids:
+        raise RuntimeError(
+            "Stage 10 synthesis rejected: card prose copied accepted claim_text verbatim for claim(s): "
+            + ", ".join(verbatim_claim_ids)
+            + ". Synthesize and paraphrase accepted claims instead."
         )
     generated_word_count = synthesis_word_count(synthesis)
     word_targets = section_word_targets_for_claims(claims)
@@ -1151,6 +1343,24 @@ def find_unsupported_speculation(
         if phrase in generated_text and phrase not in supported_text:
             unsupported.add(phrase)
     return unsupported
+
+
+def find_verbatim_claim_reuse(claims: list[dict[str, Any]], synthesis: dict[str, Any]) -> list[str]:
+    generated = _normalize_claim_text_key(synthesis_prose_blob(synthesis))
+    if not generated:
+        return []
+    reused: list[str] = []
+    for claim in claims:
+        claim_text = re.sub(r"\s+", " ", str(claim.get("claim_text", "") or "")).strip()
+        if len(claim_text) < VERBATIM_CLAIM_REUSE_MIN_CHARS:
+            continue
+        if text_word_count(claim_text) < VERBATIM_CLAIM_REUSE_MIN_WORDS:
+            continue
+        normalized = _normalize_claim_text_key(claim_text)
+        if normalized and normalized in generated:
+            claim_id = str(claim.get("claim_id", "")).strip()
+            reused.append(claim_id or claim_text[:60])
+    return reused
 
 
 def strip_unsupported_speculative_sentences(text: str, supported_text: str) -> str:
@@ -1487,6 +1697,20 @@ def run(
     claims_payload = read_json(in_claim_drafts_json) if in_claim_drafts_json.exists() else {"claims": []}
     claims = [c for c in claims_payload.get("claims", []) if isinstance(c, dict)]
     claim_decisions = _load_decisions(in_claim_decisions_json)
+    author_claims_path = default_author_claims_path(in_claim_decisions_json)
+    author_claims, author_claim_failures = load_author_claims(author_claims_path, entities)
+    write_json(
+        out_card_drafts_json.with_name("author_claim_failures.json"),
+        {"generated_at_utc": now_utc_iso(), "failures": author_claim_failures},
+    )
+    if author_claim_failures:
+        raise RuntimeError(
+            f"Stage 10 found {len(author_claim_failures)} author claim(s) requiring review because their target "
+            f"entities could not be resolved; fix {author_claims_path} and rerun Stage 10."
+        )
+    author_claim_decisions = default_author_claim_decisions(author_claims, claim_decisions)
+    all_claims = claims + author_claims
+    all_claim_decisions = claim_decisions + author_claim_decisions
     card_decisions = _load_decisions(in_card_review_decisions_json)
     directives = _load_directives(in_author_directives_json)
     memory = load_review_memory(in_review_memory_json)
@@ -1497,15 +1721,17 @@ def run(
     source_snippets_by_id = load_source_snippets_by_id(source_snippets_path)
 
     logger.info(
-        "Stage 10: claims=%d claim_decisions=%d card_decisions=%d directives=%d source_snippets=%d",
+        "Stage 10: claims=%d author_claims=%d claim_decisions=%d synthetic_author_decisions=%d card_decisions=%d directives=%d source_snippets=%d",
         len(claims),
-        len(claim_decisions),
+        len(author_claims),
+        len(all_claim_decisions),
+        len(author_claim_decisions),
         len(card_decisions),
         len(directives),
         len(source_snippets_by_id),
     )
-    accepted_claims, merge_log = apply_claim_decisions(claims, claim_decisions)
-    remember_claim_decisions(memory, claims, claim_decisions)
+    accepted_claims, merge_log = apply_claim_decisions(all_claims, all_claim_decisions)
+    remember_claim_decisions(memory, all_claims, all_claim_decisions)
     remember_author_directives(memory, directives)
     identity_merge_decisions = _load_identity_merge_decisions(identity_merge_decisions_path)
     identity_merge_proposals = detect_identity_merge_proposals(accepted_claims, entities)

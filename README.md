@@ -30,13 +30,14 @@ V2 contract:
    - Approved proposals in `05_alias/conversation_entity_decisions.json` become `conversation_candidate_approved` entities on rerun; approved/rejected decisions are persisted to `canon/review_memory.json` for future runs.
 8. Stage 08 Snippet Grouping: group snippets against resolved and approved conversation-born entities.
 9. Stage 09 Claim Drafting: run model-required claim extraction to `06_drafts/card_drafts/claim_drafts.json`.
-10. Review pass 1: accept/reject/edit conversation entity proposals and atomic claims in the UI.
+10. Review pass 1: accept/reject/edit conversation entity proposals and atomic claims in the UI. Optionally use Story Questions in the desktop app to ask one high-value author question at a time, ask the configured story model to propose claim decisions and author claims from the answer, approve/discard/critique that proposal, then generate the next question from the reduced unresolved claim list.
 11. Stage 10 Identity Merge Preflight: propose identity merges from accepted claims such as "ACHILLES renames itself to RUINR" in `07_review/identity_merge_proposals.json`.
 12. Review identity merge proposals in `07_review/identity_merge_decisions.json`; approved merges are persisted to `canon/review_memory.json`.
 13. Stage 10 Card Synthesis: synthesize draft wiki-card revisions from all accepted claims for each touched entity, regrouping claims under approved entity merges.
-14. Review pass 2: approve/edit synthesized card drafts.
-15. Stage 10 Canon Merge: write approved revisions to `07_review/canonical_cards.json`, carrying forward unchanged canonical cards.
-16. Stage 11 Notion Export: export approved canonical cards and supporting records to Notion NDJSON.
+14. Stage 10 Draft Notion Sync: live-sync synthesized draft cards to a Notion database for comfortable reading while keeping desktop decisions as the source of truth.
+15. Review pass 2: approve/edit synthesized card drafts.
+16. Stage 10 Canon Merge: write approved revisions to `07_review/canonical_cards.json`, carrying forward unchanged canonical cards.
+17. Stage 11 Notion Export: export approved canonical cards and supporting records to Notion NDJSON.
 
 ## Install
 
@@ -70,7 +71,15 @@ Start the native Windows app:
 dist\TheriacLoreDesktop.exe
 ```
 
-The desktop app opens as a normal Windows window, includes the run selector for previous CLI-generated batches, and draws the pipeline progress tracker directly on a canvas. Select `New Run` before pressing `Run Full Pipeline` to create a fresh timestamped artifact folder under `artifacts/runs/`.
+The desktop app opens as a normal Windows window, includes the run selector for previous CLI-generated batches, and draws the pipeline progress tracker directly on a canvas. Select `New Run` before pressing `Run Full Pipeline` to create a fresh timestamped artifact folder under `artifacts/runs/`. During claim review, use `Story Questions` for the optional guided review session. `Propose Updates` calls the configured story model; `Approve Proposal` only commits the already proposed decisions and does not make another model call.
+
+For Stage 10 draft-card reading in Notion, add these to `.env`:
+
+- `NOTION_ACCESS_TOKEN` or `NOTION_API_KEY`: Notion integration token.
+- `NOTION_PAGE_ID` or `NOTION_DRAFT_PARENT_PAGE_ID`: parent page where the pipeline can create the draft-card database.
+- Optional `NOTION_DRAFT_CARDS_DATABASE_ID`: reuse a specific existing database instead of creating one.
+
+The Notion integration must be shared with the parent page or existing database. Stage 10 automatically writes `08_notion/notion_draft_sync_report.json`; the desktop app also has a `Sync Drafts to Notion` button for rerunning the live sync without rerunning synthesis. Existing pages are updated in place by card ID and run ID.
 
 Build or rebuild it with:
 
@@ -115,18 +124,21 @@ Configure providers in `config/pipeline_config.json`:
 - `anchor_provider`: `heuristic|mixtral|hybrid` for legacy Stage 06 relevance routing when Stage 04 metadata is unavailable.
 - `stage_c_anchor_provider`: defaults to `conversation_metadata`, which trusts Stage 04's model-approved conversation segments and avoids per-message model calls.
 - `stage_a_anchor_provider`: `heuristic|mixtral|hybrid` for ontology seed extraction.
-- `mixtral.provider`: `gemini|auto|mistral_api|ollama`. The setting name is historical; `gemini` dispatches to Google AI Studio / Gemini API using `mixtral.api_model`.
-- `mixtral.api_model`: defaults here to `gemini-2.5-flash-lite` for low-cost/high-quota batch work.
-- `mixtral.adaptive_min_interval_seconds`: currently `0.5`; Gemini Tier 1 limits are much higher than the old free-tier cap, and the runtime file will increase this automatically if rate limits appear.
-- `model_routing.profiles.flash_lite`: routes cheap/high-volume work to `gemini-2.5-flash-lite`.
-- `model_routing.profiles.flash_regular`: routes reasoning-sensitive work to `gemini-2.5-flash`.
+- `mixtral.provider`: `openrouter|gemini|anthropic|auto|mistral_api|ollama`. The setting name is historical; `openrouter` dispatches through OpenRouter's OpenAI-compatible chat API using `mixtral.api_model`.
+- `mixtral.api_model`: defaults here to `qwen/qwen3.5-flash-02-23` for low-cost/high-volume batch work.
+- `mixtral.adaptive_min_interval_seconds`: currently `0.5`; the runtime file will increase this automatically if rate limits appear.
+- `model_routing.profiles.flash_lite`: routes cheap/high-volume work to `qwen/qwen3.5-flash-02-23`.
+- `model_routing.profiles.flash_regular`: routes reasoning-sensitive Gemini-replacement work to `qwen/qwen3.5-flash-02-23`.
+- `model_routing.profiles.claude_opus`: routes low-volume Claude-replacement work to `qwen/qwen3-235b-a22b-2507`.
 - `model_routing.tasks.stage_b3_segmentation`: currently uses synchronous Flash-Lite so segmentation progress remains visible.
 - `model_routing.tasks.stage_b4_patch_notes`: currently uses synchronous Flash-Lite for chronological conversation development notes.
 - `model_routing.tasks.stage_f_claim_extraction`: currently uses synchronous Flash-Lite.
-- `model_routing.tasks.stage_g_card_synthesis`: currently uses synchronous regular Flash so reviewed claims, merge decisions, and synthesis validation stay stateful.
+- `model_routing.tasks.stage_g_card_synthesis`: currently uses synchronous Qwen Instruct for final card drafting, with validation retries to keep synthesis stateful and evidence-bound.
+- `model_routing.tasks.stage_09q_story_questions`: currently uses Qwen Instruct for iterative question generation and answer-application proposals.
+- `story_questions`: controls the optional guided claim-review flow and writes `07_review/story_question_session.json`, `story_questions.jsonl`, `story_question_answers.jsonl`, `story_question_application_proposals.jsonl`, `story_question_applications.jsonl`, and `story_question_failures.json`.
 - `conversation_segmentation.max_gap_hours`: coarse DM window boundary before model topic segmentation; defaults to `12`.
 - `conversation_segmentation.self_user_id`: optional account override for 1:1 DM pair detection.
-- API keys are read from `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `MIXTRAL_API_KEY`, `MISTRAL_API_KEY`, or `.env`.
+- API keys are read from `OPENROUTER_API_KEY`, `OPENROUTER_KEY`, `OPEN_ROUTER_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `CLAUDE_API_KEY`, `MIXTRAL_API_KEY`, `MISTRAL_API_KEY`, or `.env`.
 
 ## Review Memory
 
@@ -136,6 +148,7 @@ Configure providers in `config/pipeline_config.json`:
 - approved aliases and entity merges
 - approved card prose
 - author directives
+- story-question answers
 - style corrections
 
 Rejected claims suppress repeated bad suggestions in future Stage 09 runs. Accepted claims and approved cards are included in Stage 10 synthesis prompts.

@@ -21,6 +21,7 @@ def empty_review_memory() -> dict[str, Any]:
         "rejected_conversation_entities": [],
         "approved_cards": [],
         "author_directives": [],
+        "story_question_answers": [],
         "style_corrections": [],
         "updated_at_utc": now_utc_iso(),
     }
@@ -43,6 +44,7 @@ def load_review_memory(path: Path | None) -> dict[str, Any]:
         "rejected_conversation_entities",
         "approved_cards",
         "author_directives",
+        "story_question_answers",
         "style_corrections",
     ]:
         if not isinstance(memory.get(key), list):
@@ -125,6 +127,16 @@ def relevant_memory_for_entity(memory: dict[str, Any], entity_id: str, canonical
         ],
         "approved_cards": [x for x in memory.get("approved_cards", []) if isinstance(x, dict) and matches(x)],
         "author_directives": global_author_directives + entity_author_directives,
+        "story_question_answers": [
+            x
+            for x in memory.get("story_question_answers", [])[-50:]
+            if isinstance(x, dict)
+            and (
+                str(x.get("target_entity_id", "")) in names
+                or str(x.get("target_entity_name", "")).lower() in names
+                or str(x.get("canonical_name", "")).lower() in names
+            )
+        ],
         "style_corrections": memory.get("style_corrections", [])[-10:],
     }
 
@@ -337,3 +349,17 @@ def remember_approved_cards(
                     "approved_at_utc": now_utc_iso(),
                 }
             )
+
+
+def remember_story_question_answer(memory: dict[str, Any], answer_record: dict[str, Any]) -> None:
+    if not isinstance(answer_record, dict):
+        return
+    answer_id = str(answer_record.get("answer_id", "")).strip()
+    existing = {
+        str(item.get("answer_id", "")).strip()
+        for item in memory.get("story_question_answers", [])
+        if isinstance(item, dict)
+    }
+    if answer_id and answer_id in existing:
+        return
+    memory.setdefault("story_question_answers", []).append(answer_record)

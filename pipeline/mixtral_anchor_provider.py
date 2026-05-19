@@ -26,6 +26,10 @@ _CACHED_API_KEY: str | None = None
 _HAS_CACHED_API_KEY = False
 _CACHED_GEMINI_API_KEY: str | None = None
 _HAS_CACHED_GEMINI_API_KEY = False
+_CACHED_ANTHROPIC_API_KEY: str | None = None
+_HAS_CACHED_ANTHROPIC_API_KEY = False
+_CACHED_OPENROUTER_API_KEY: str | None = None
+_HAS_CACHED_OPENROUTER_API_KEY = False
 _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S = 0.0
 _LAST_MISTRAL_SKIP_REASON = ""
 
@@ -150,6 +154,7 @@ def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) ->
         "success_decay": float(cfg.get("adaptive_success_decay", 0.9)),
         "rate_limit_growth": float(cfg.get("adaptive_rate_limit_growth", 1.8)),
         "ollama_unavailable_cooldown_seconds": int(cfg.get("ollama_unavailable_cooldown_seconds", 120)),
+        "max_tokens": int(cfg.get("max_tokens", 4096)),
     }
 
 
@@ -297,32 +302,154 @@ def _resolve_gemini_api_key() -> str | None:
     return _CACHED_GEMINI_API_KEY
 
 
-def _parse_json_content(content: str, logger) -> dict[str, Any] | None:
-    normalized = content.strip()
-    if normalized.startswith("```"):
-        fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", normalized, flags=re.DOTALL | re.IGNORECASE)
-        if fenced:
-            normalized = fenced.group(1).strip()
-            # region agent log
+def _resolve_anthropic_api_key() -> str | None:
+    global _CACHED_ANTHROPIC_API_KEY, _HAS_CACHED_ANTHROPIC_API_KEY
+    if _HAS_CACHED_ANTHROPIC_API_KEY:
+        return _CACHED_ANTHROPIC_API_KEY
+
+    env_candidates = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"]
+    for key_name in env_candidates:
+        value = os.environ.get(key_name)
+        if value and value.strip():
+            _CACHED_ANTHROPIC_API_KEY = value.strip().strip('"').strip("'")
+            _HAS_CACHED_ANTHROPIC_API_KEY = True
             _debug_log(
                 "mixtral-debug",
-                "H8",
-                "mixtral_anchor_provider.py:_parse_json_content",
-                "Stripped fenced code block from model content",
-                {"had_fence": True, "preview": normalized[:120]},
+                "H12",
+                "mixtral_anchor_provider.py:_resolve_anthropic_api_key",
+                "Resolved Anthropic API key from process env",
+                {"key_name": key_name, "source": "process_env"},
             )
-            # endregion
-    try:
-        parsed_content = json.loads(normalized)
-    except json.JSONDecodeError:
-        logger.warning("Model message content was not valid JSON. content_preview=%s", normalized[:300].replace("\n", "\\n"))
-        return None
+            return _CACHED_ANTHROPIC_API_KEY
+
+    repo_root = Path(__file__).resolve().parents[1]
+    file_value = _read_env_value_from_file(repo_root, env_candidates)
+    _CACHED_ANTHROPIC_API_KEY = file_value
+    _HAS_CACHED_ANTHROPIC_API_KEY = True
+    _debug_log(
+        "mixtral-debug",
+        "H12",
+        "mixtral_anchor_provider.py:_resolve_anthropic_api_key",
+        "Resolved Anthropic API key from .env probe",
+        {"found": bool(file_value), "source": ".env", "repo_root": str(repo_root)},
+    )
+    return _CACHED_ANTHROPIC_API_KEY
+
+
+def _resolve_openrouter_api_key() -> str | None:
+    global _CACHED_OPENROUTER_API_KEY, _HAS_CACHED_OPENROUTER_API_KEY
+    if _HAS_CACHED_OPENROUTER_API_KEY:
+        return _CACHED_OPENROUTER_API_KEY
+
+    env_candidates = ["OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY"]
+    for key_name in env_candidates:
+        value = os.environ.get(key_name)
+        if value and value.strip():
+            _CACHED_OPENROUTER_API_KEY = value.strip().strip('"').strip("'")
+            _HAS_CACHED_OPENROUTER_API_KEY = True
+            _debug_log(
+                "mixtral-debug",
+                "H13",
+                "mixtral_anchor_provider.py:_resolve_openrouter_api_key",
+                "Resolved OpenRouter API key from process env",
+                {"key_name": key_name, "source": "process_env"},
+            )
+            return _CACHED_OPENROUTER_API_KEY
+
+    repo_root = Path(__file__).resolve().parents[1]
+    file_value = _read_env_value_from_file(repo_root, env_candidates)
+    _CACHED_OPENROUTER_API_KEY = file_value
+    _HAS_CACHED_OPENROUTER_API_KEY = True
+    _debug_log(
+        "mixtral-debug",
+        "H13",
+        "mixtral_anchor_provider.py:_resolve_openrouter_api_key",
+        "Resolved OpenRouter API key from .env probe",
+        {"found": bool(file_value), "source": ".env", "repo_root": str(repo_root)},
+    )
+    return _CACHED_OPENROUTER_API_KEY
+
+
+def _coerce_json_root(parsed_content: Any, logger) -> dict[str, Any] | None:
     if isinstance(parsed_content, list):
         return {"_json_root": parsed_content, "_json_root_type": "list"}
     if not isinstance(parsed_content, dict):
         logger.warning("Model message JSON root was %s (expected object).", type(parsed_content).__name__)
         return None
     return parsed_content
+
+
+def _balanced_json_object_candidates(content: str) -> list[str]:
+    candidates: list[str] = []
+    start: int | None = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx, char in enumerate(content):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+            continue
+        if char == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                candidates.append(content[start : idx + 1])
+                start = None
+    return candidates
+
+
+def _parse_json_content(content: str, logger) -> dict[str, Any] | None:
+    normalized = content.strip()
+    attempts: list[tuple[str, str]] = [("raw", normalized)]
+    fenced_matches = re.findall(r"```(?:json)?\s*(.*?)\s*```", normalized, flags=re.DOTALL | re.IGNORECASE)
+    for fenced in fenced_matches:
+        attempts.append(("fenced", fenced.strip()))
+    if normalized.startswith("```") and len(fenced_matches) == 1:
+        _debug_log(
+            "mixtral-debug",
+            "H8",
+            "mixtral_anchor_provider.py:_parse_json_content",
+            "Stripped fenced code block from model content",
+            {"had_fence": True, "preview": fenced_matches[0].strip()[:120]},
+        )
+    for candidate in _balanced_json_object_candidates(normalized):
+        attempts.append(("balanced_object", candidate.strip()))
+
+    seen: set[str] = set()
+    for source, candidate in attempts:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            parsed_content = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        coerced = _coerce_json_root(parsed_content, logger)
+        if coerced is not None:
+            if source != "raw":
+                _debug_log(
+                    "mixtral-debug",
+                    "H8",
+                    "mixtral_anchor_provider.py:_parse_json_content",
+                    "Recovered JSON object from wrapped model content",
+                    {"source": source, "content_preview": normalized[:180]},
+                )
+            return coerced
+
+    logger.warning("Model message content was not valid JSON. content_preview=%s", normalized[:300].replace("\n", "\\n"))
+    return None
 
 
 def _call_ollama_chat(
@@ -462,6 +589,11 @@ def _call_mistral_chat(
     max_interval_seconds: float = 120.0,
     success_decay: float = 0.9,
     rate_limit_growth: float = 1.8,
+    max_tokens: int | None = None,
+    response_format_json: bool = False,
+    json_schema: dict[str, Any] | None = None,
+    extra_headers: dict[str, str] | None = None,
+    provider_label: str = "Mistral API",
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
     global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MISTRAL_ATTEMPT_EPOCH_S, _LAST_PACING_LOG_EPOCH_S, _LAST_COOLDOWN_LOG_EPOCH_S, _LAST_MISTRAL_SKIP_REASON
@@ -489,7 +621,7 @@ def _call_mistral_chat(
                 "mixtral-debug",
                 "H10",
                 "mixtral_anchor_provider.py:_call_mistral_chat",
-                "Skipping Mistral API due to adaptive min-interval pacing",
+                f"Skipping {provider_label} due to adaptive min-interval pacing",
                 {
                     "remaining_seconds": remaining,
                     "adaptive_interval_seconds": adaptive_interval,
@@ -510,7 +642,7 @@ def _call_mistral_chat(
                 "mixtral-debug",
                 "H9",
                 "mixtral_anchor_provider.py:_call_mistral_chat",
-                "Skipping Mistral API due to active rate-limit cooldown",
+                f"Skipping {provider_label} due to active rate-limit cooldown",
                 {"cooldown_remaining_seconds": remaining},
             )
             # endregion
@@ -518,7 +650,8 @@ def _call_mistral_chat(
 
     endpoint = f"{api_base_url.rstrip('/')}/chat/completions"
     logger.debug(
-        "Calling Mistral API endpoint=%s model=%s timeout=%ss temperature=%.2f prompt_chars=%d",
+        "Calling %s endpoint=%s model=%s timeout=%ss temperature=%.2f prompt_chars=%d",
+        provider_label,
         endpoint,
         model,
         timeout_seconds,
@@ -530,7 +663,7 @@ def _call_mistral_chat(
         "mixtral-debug",
         "H2",
         "mixtral_anchor_provider.py:_call_mistral_chat",
-        "Attempting Mistral API request",
+        f"Attempting {provider_label} request",
         {"endpoint": endpoint, "model": model, "timeout_seconds": timeout_seconds},
     )
     # endregion
@@ -542,13 +675,29 @@ def _call_mistral_chat(
         ],
         "temperature": temperature,
     }
+    if max_tokens is not None:
+        payload["max_tokens"] = max(256, int(max_tokens))
+    if json_schema:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "structured_output",
+                "strict": True,
+                "schema": json_schema
+            }
+        }
+    elif response_format_json:
+        payload["response_format"] = {"type": "json_object"}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    if extra_headers:
+        headers.update({str(key): str(value) for key, value in extra_headers.items() if str(value).strip()})
     req = urllib.request.Request(
         url=endpoint,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
+        headers=headers,
         method="POST",
     )
     raw_body: str | None = None
@@ -563,7 +712,7 @@ def _call_mistral_chat(
             "mixtral-debug",
             "H7",
             "mixtral_anchor_provider.py:_call_mistral_chat",
-            "Mistral API attempt started",
+            f"{provider_label} attempt started",
             {"attempt": attempt_idx, "attempts": attempts, "timeout_seconds": timeout_seconds},
         )
         # endregion
@@ -578,7 +727,8 @@ def _call_mistral_chat(
             except Exception:
                 err_body = "(unable to read HTTP error body)"
             logger.warning(
-                "Mistral API HTTP error status=%s reason=%s endpoint=%s body_preview=%s",
+                "%s HTTP error status=%s reason=%s endpoint=%s body_preview=%s",
+                provider_label,
                 exc.code,
                 exc.reason,
                 endpoint,
@@ -589,7 +739,7 @@ def _call_mistral_chat(
                 "mixtral-debug",
                 "H2",
                 "mixtral_anchor_provider.py:_call_mistral_chat",
-                "Mistral API HTTP error",
+                f"{provider_label} HTTP error",
                 {"status": int(exc.code), "reason": str(exc.reason), "body_preview": err_body[:120], "attempt": attempt_idx},
             )
             # endregion
@@ -609,7 +759,7 @@ def _call_mistral_chat(
                     "mixtral-debug",
                     "H9",
                     "mixtral_anchor_provider.py:_call_mistral_chat",
-                    "Activated rate-limit cooldown after 429",
+                    f"Activated rate-limit cooldown after {provider_label} 429",
                     {
                         "cooldown_seconds": int(rate_limit_cooldown_seconds),
                         "rate_limited_until_epoch_s": _RATE_LIMITED_UNTIL_EPOCH_S,
@@ -624,13 +774,13 @@ def _call_mistral_chat(
         except (urllib.error.URLError, TimeoutError) as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             _LAST_MISTRAL_SKIP_REASON = "connection_error"
-            logger.warning("Mistral API connection failure endpoint=%s error=%s", endpoint, exc)
+            logger.warning("%s connection failure endpoint=%s error=%s", provider_label, endpoint, exc)
             # region agent log
             _debug_log(
                 "mixtral-debug",
                 "H2",
                 "mixtral_anchor_provider.py:_call_mistral_chat",
-                "Mistral API connection failure",
+                f"{provider_label} connection failure",
                 {"error_type": type(exc).__name__, "error": str(exc), "attempt": attempt_idx},
             )
             # endregion
@@ -641,14 +791,14 @@ def _call_mistral_chat(
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             _LAST_MISTRAL_SKIP_REASON = "unexpected_error"
-            logger.warning("Mistral API request failed unexpectedly endpoint=%s error=%s", endpoint, exc)
+            logger.warning("%s request failed unexpectedly endpoint=%s error=%s", provider_label, endpoint, exc)
     if raw_body is None:
         # region agent log
         _debug_log(
             "mixtral-debug",
             "H7",
             "mixtral_anchor_provider.py:_call_mistral_chat",
-            "Mistral API attempts exhausted",
+            f"{provider_label} attempts exhausted",
             {"attempts": attempts, "last_error": last_error or "unknown"},
         )
         # endregion
@@ -660,23 +810,23 @@ def _call_mistral_chat(
         body = json.loads(raw_body)
     except json.JSONDecodeError:
         _LAST_MISTRAL_SKIP_REASON = "invalid_json"
-        logger.warning("Mistral API response was not valid JSON. response_preview=%s", raw_body[:300].replace("\n", "\\n"))
+        logger.warning("%s response was not valid JSON. response_preview=%s", provider_label, raw_body[:300].replace("\n", "\\n"))
         return None
     if not isinstance(body, dict):
         _LAST_MISTRAL_SKIP_REASON = "invalid_envelope"
-        logger.warning("Mistral API response root was %s (expected object).", type(body).__name__)
+        logger.warning("%s response root was %s (expected object).", provider_label, type(body).__name__)
         return None
     choices = body.get("choices", [])
     if not isinstance(choices, list) or not choices:
         _LAST_MISTRAL_SKIP_REASON = "missing_choices"
-        logger.warning("Mistral API response missing choices.")
+        logger.warning("%s response missing choices.", provider_label)
         return None
     first = choices[0] if isinstance(choices[0], dict) else {}
     message = first.get("message", {}) if isinstance(first, dict) else {}
     content = str(message.get("content", "")).strip()
     if not content:
         _LAST_MISTRAL_SKIP_REASON = "empty_content"
-        logger.warning("Mistral API response contained no assistant message content.")
+        logger.warning("%s response contained no assistant message content.", provider_label)
         return None
     parsed_content = _parse_json_content(content, logger)
     if parsed_content is None:
@@ -686,7 +836,7 @@ def _call_mistral_chat(
             "mixtral-debug",
             "H4",
             "mixtral_anchor_provider.py:_call_mistral_chat",
-            "Mistral API content parse failed",
+            f"{provider_label} content parse failed",
             {"content_preview": content[:120]},
         )
         # endregion
@@ -702,7 +852,7 @@ def _call_mistral_chat(
         "mixtral-debug",
         "H10",
         "mixtral_anchor_provider.py:_call_mistral_chat",
-        "Mistral API success updated adaptive pacing state",
+        f"{provider_label} success updated adaptive pacing state",
         {
             "success_count": state.get("success_count"),
             "adaptive_min_interval_seconds": state.get("adaptive_min_interval_seconds"),
@@ -713,6 +863,48 @@ def _call_mistral_chat(
     _LAST_MISTRAL_SKIP_REASON = ""
     logger.debug("Parsed Mistral API content keys=%s", sorted(parsed_content.keys()))
     return parsed_content
+
+
+def _call_openrouter_chat(
+    api_base_url: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    temperature: float,
+    timeout_seconds: int,
+    retries: int = 2,
+    rate_limit_cooldown_seconds: int = 90,
+    rate_state_path: Path | None = None,
+    min_interval_seconds: float = 0.5,
+    max_interval_seconds: float = 120.0,
+    success_decay: float = 0.9,
+    rate_limit_growth: float = 1.8,
+    max_tokens: int = 4096,
+    json_schema: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    return _call_mistral_chat(
+        api_base_url,
+        api_key,
+        model,
+        prompt,
+        temperature,
+        timeout_seconds,
+        retries=retries,
+        rate_limit_cooldown_seconds=rate_limit_cooldown_seconds,
+        rate_state_path=rate_state_path,
+        min_interval_seconds=min_interval_seconds,
+        max_interval_seconds=max_interval_seconds,
+        success_decay=success_decay,
+        rate_limit_growth=rate_limit_growth,
+        max_tokens=max_tokens,
+        response_format_json=True,
+        json_schema=json_schema,
+        extra_headers={
+            "HTTP-Referer": "https://github.com/theriac/lore-bible",
+            "X-Title": "THERIAC Lore Bible",
+        },
+        provider_label="OpenRouter API",
+    )
 
 
 def _extract_gemini_text(body: dict[str, Any]) -> str:
@@ -1102,6 +1294,7 @@ def _call_gemini_chat(
     max_interval_seconds: float = 120.0,
     success_decay: float = 0.95,
     rate_limit_growth: float = 1.8,
+    max_tokens: int = 4096,
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
     global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MISTRAL_ATTEMPT_EPOCH_S, _LAST_PACING_LOG_EPOCH_S, _LAST_MISTRAL_SKIP_REASON
@@ -1257,6 +1450,222 @@ def _call_gemini_chat(
     return parsed_content
 
 
+def _extract_anthropic_text(body: dict[str, Any]) -> str:
+    blocks = body.get("content", [])
+    if not isinstance(blocks, list):
+        return ""
+    text_parts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if str(block.get("type", "")).strip() == "text" and str(block.get("text", "")).strip():
+            text_parts.append(str(block.get("text", "")))
+    return "\n".join(text_parts).strip()
+
+
+def _call_anthropic_chat(
+    api_base_url: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    temperature: float,
+    timeout_seconds: int,
+    retries: int = 2,
+    rate_limit_cooldown_seconds: int = 90,
+    rate_state_path: Path | None = None,
+    min_interval_seconds: float = 0.5,
+    max_interval_seconds: float = 120.0,
+    success_decay: float = 0.9,
+    rate_limit_growth: float = 1.8,
+    max_tokens: int = 4096,
+) -> dict[str, Any] | None:
+    logger = get_logger(__name__)
+    global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MISTRAL_ATTEMPT_EPOCH_S, _LAST_PACING_LOG_EPOCH_S, _LAST_MISTRAL_SKIP_REASON
+    _LAST_MISTRAL_SKIP_REASON = ""
+    now_s = time.time()
+    if _NEXT_MISTRAL_ATTEMPT_EPOCH_S > now_s:
+        _LAST_MISTRAL_SKIP_REASON = "provider_locked"
+        return None
+
+    state = _load_rate_state(rate_state_path)
+    adaptive_interval = float(state.get("adaptive_min_interval_seconds", min_interval_seconds))
+    adaptive_interval = max(float(min_interval_seconds), min(float(max_interval_seconds), adaptive_interval))
+    last_request = float(state.get("last_request_epoch_s", 0.0))
+    elapsed_since_last = now_s - last_request if last_request > 0 else 10**9
+    if elapsed_since_last < adaptive_interval:
+        remaining = round(adaptive_interval - elapsed_since_last, 2)
+        _NEXT_MISTRAL_ATTEMPT_EPOCH_S = max(_NEXT_MISTRAL_ATTEMPT_EPOCH_S, last_request + adaptive_interval)
+        _LAST_MISTRAL_SKIP_REASON = "adaptive_pacing"
+        if now_s - _LAST_PACING_LOG_EPOCH_S >= 1.0:
+            _LAST_PACING_LOG_EPOCH_S = now_s
+            _debug_log(
+                "mixtral-debug",
+                "H12",
+                "mixtral_anchor_provider.py:_call_anthropic_chat",
+                "Skipping Anthropic API due to adaptive min-interval pacing",
+                {
+                    "remaining_seconds": remaining,
+                    "adaptive_interval_seconds": adaptive_interval,
+                    "last_request_epoch_s": last_request,
+                },
+            )
+        return None
+    if _RATE_LIMITED_UNTIL_EPOCH_S > now_s:
+        _NEXT_MISTRAL_ATTEMPT_EPOCH_S = max(_NEXT_MISTRAL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
+        _LAST_MISTRAL_SKIP_REASON = "rate_limit_cooldown"
+        return None
+
+    endpoint = f"{api_base_url.rstrip('/')}/messages"
+    clean_model = model.strip() or "claude-opus-4-1-20250805"
+    logger.debug(
+        "Calling Anthropic API endpoint=%s model=%s timeout=%ss temperature=%.2f prompt_chars=%d",
+        endpoint,
+        clean_model,
+        timeout_seconds,
+        temperature,
+        len(prompt),
+    )
+    _debug_log(
+        "mixtral-debug",
+        "H12",
+        "mixtral_anchor_provider.py:_call_anthropic_chat",
+        "Attempting Anthropic API request",
+        {"model": clean_model, "timeout_seconds": timeout_seconds},
+    )
+
+    payload = {
+        "model": clean_model,
+        "max_tokens": max(256, int(max_tokens)),
+        "temperature": temperature,
+        "system": "You are a precise JSON reasoning assistant. Return strict JSON only with no markdown.",
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    data = json.dumps(payload).encode("utf-8")
+    attempts = max(1, int(retries) + 1)
+    raw_body: str | None = None
+    last_error: str | None = None
+    for attempt_idx in range(1, attempts + 1):
+        req = urllib.request.Request(
+            url=endpoint,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+        state["last_request_epoch_s"] = time.time()
+        state["updated_at_epoch_s"] = state["last_request_epoch_s"]
+        _write_rate_state(rate_state_path, state)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                raw_body = resp.read().decode("utf-8")
+                break
+        except urllib.error.HTTPError as exc:
+            err_body = ""
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                err_body = "(unable to read HTTP error body)"
+            logger.warning(
+                "Anthropic API HTTP error status=%s reason=%s model=%s body_preview=%s",
+                exc.code,
+                exc.reason,
+                clean_model,
+                err_body[:300].replace("\n", "\\n"),
+            )
+            if int(exc.code) == 429:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                try:
+                    cooldown = int(float(retry_after)) if retry_after else int(rate_limit_cooldown_seconds)
+                except (TypeError, ValueError):
+                    cooldown = int(rate_limit_cooldown_seconds)
+                _RATE_LIMITED_UNTIL_EPOCH_S = time.time() + max(1, cooldown)
+                _NEXT_MISTRAL_ATTEMPT_EPOCH_S = max(_NEXT_MISTRAL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
+                state["rate_limited_count"] = int(state.get("rate_limited_count", 0)) + 1
+                grown = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(rate_limit_growth)
+                state["adaptive_min_interval_seconds"] = max(
+                    float(min_interval_seconds),
+                    min(float(max_interval_seconds), grown),
+                )
+                state["updated_at_epoch_s"] = time.time()
+                _write_rate_state(rate_state_path, state)
+                _LAST_MISTRAL_SKIP_REASON = "rate_limited_429"
+            else:
+                body_reason = re.sub(r"\s+", " ", err_body).strip()
+                _LAST_MISTRAL_SKIP_REASON = f"http_error_{int(exc.code)}"
+                if body_reason:
+                    _LAST_MISTRAL_SKIP_REASON += f": {body_reason[:240]}"
+            return None
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            _LAST_MISTRAL_SKIP_REASON = "connection_error"
+            logger.warning("Anthropic API connection failure model=%s error=%s", clean_model, exc)
+            if attempt_idx < attempts:
+                time.sleep(min(8.0, 0.5 * (2 ** (attempt_idx - 1))))
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            _LAST_MISTRAL_SKIP_REASON = "unexpected_error"
+            logger.warning("Anthropic API request failed unexpectedly model=%s error=%s", clean_model, exc)
+
+    if raw_body is None:
+        if not _LAST_MISTRAL_SKIP_REASON:
+            _LAST_MISTRAL_SKIP_REASON = "attempts_exhausted"
+        _debug_log(
+            "mixtral-debug",
+            "H12",
+            "mixtral_anchor_provider.py:_call_anthropic_chat",
+            "Anthropic API attempts exhausted",
+            {"attempts": attempts, "last_error": last_error or "unknown"},
+        )
+        return None
+
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError:
+        _LAST_MISTRAL_SKIP_REASON = "invalid_json"
+        logger.warning("Anthropic API response was not valid JSON. response_preview=%s", raw_body[:300].replace("\n", "\\n"))
+        return None
+    if not isinstance(body, dict):
+        _LAST_MISTRAL_SKIP_REASON = "invalid_envelope"
+        logger.warning("Anthropic API response root was %s (expected object).", type(body).__name__)
+        return None
+    content = _extract_anthropic_text(body)
+    if not content:
+        _LAST_MISTRAL_SKIP_REASON = "empty_content"
+        logger.warning("Anthropic API response contained no assistant text. response_keys=%s", sorted(body.keys()))
+        return None
+    parsed_content = _parse_json_content(content, logger)
+    if parsed_content is None:
+        _LAST_MISTRAL_SKIP_REASON = "content_parse_failed"
+        _debug_log(
+            "mixtral-debug",
+            "H12",
+            "mixtral_anchor_provider.py:_call_anthropic_chat",
+            "Anthropic content parse failed",
+            {
+                "model": clean_model,
+                "stop_reason": body.get("stop_reason", ""),
+                "content_preview": content[:600],
+            },
+        )
+        return None
+
+    state["success_count"] = int(state.get("success_count", 0)) + 1
+    decayed = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(success_decay)
+    state["adaptive_min_interval_seconds"] = max(float(min_interval_seconds), min(float(max_interval_seconds), decayed))
+    state["updated_at_epoch_s"] = time.time()
+    _NEXT_MISTRAL_ATTEMPT_EPOCH_S = max(
+        _NEXT_MISTRAL_ATTEMPT_EPOCH_S,
+        state["last_request_epoch_s"] + state["adaptive_min_interval_seconds"],
+    )
+    _write_rate_state(rate_state_path, state)
+    _LAST_MISTRAL_SKIP_REASON = ""
+    logger.debug("Parsed Anthropic API content keys=%s", sorted(parsed_content.keys()))
+    return parsed_content
+
+
 def call_mixtral_chat(
     base_url: str,
     model: str,
@@ -1275,22 +1684,30 @@ def call_mixtral_chat(
     success_decay: float = 0.9,
     rate_limit_growth: float = 1.8,
     ollama_unavailable_cooldown_seconds: int = 120,
+    max_tokens: int = 4096,
+    json_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
     global _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S, _LAST_OLLAMA_SKIP_LOG_EPOCH_S, _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S, _LAST_API_FAILURE_LOG_EPOCH_S, _LAST_MISTRAL_SKIP_REASON
     resolved_provider = (provider or "auto").lower()
     if resolved_provider in {"google", "google_ai", "google_ai_studio", "gemini_api"}:
         resolved_provider = "gemini"
+    if resolved_provider in {"claude", "anthropic_api"}:
+        resolved_provider = "anthropic"
+    if resolved_provider in {"open_router", "openrouter_api"}:
+        resolved_provider = "openrouter"
     now_s = time.time()
 
-    if resolved_provider in {"mistral_api", "api", "auto"}:
+    if resolved_provider in {"mistral_api", "api", "auto", "anthropic", "openrouter"}:
         provider_locked = _NEXT_MISTRAL_ATTEMPT_EPOCH_S > now_s
-        if provider_locked and (resolved_provider in {"mistral_api", "api"} or not auto_fallback_to_ollama):
+        if provider_locked and (resolved_provider in {"mistral_api", "api", "anthropic", "openrouter"} or not auto_fallback_to_ollama):
             _LAST_MISTRAL_SKIP_REASON = "provider_locked"
             return None
 
     gemini_key = _resolve_gemini_api_key() if resolved_provider == "gemini" else None
-    api_key = _resolve_mixtral_api_key() if resolved_provider != "gemini" else None
+    anthropic_key = _resolve_anthropic_api_key() if resolved_provider == "anthropic" else None
+    openrouter_key = _resolve_openrouter_api_key() if resolved_provider == "openrouter" else None
+    api_key = _resolve_mixtral_api_key() if resolved_provider not in {"gemini", "anthropic", "openrouter"} else None
     if now_s - _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S >= 1.0:
         _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S = now_s
         # region agent log
@@ -1301,7 +1718,7 @@ def call_mixtral_chat(
             "Resolved provider mode before dispatch",
             {
                 "provider": resolved_provider,
-                "has_api_key": bool(api_key or gemini_key),
+                "has_api_key": bool(api_key or gemini_key or anthropic_key or openrouter_key),
                 "api_model": api_model,
                 "ollama_model": model,
             },
@@ -1330,6 +1747,64 @@ def call_mixtral_chat(
             max_interval_seconds=max_interval_seconds,
             success_decay=success_decay,
             rate_limit_growth=rate_limit_growth,
+            max_tokens=max_tokens,
+        )
+
+    if resolved_provider == "anthropic":
+        if not anthropic_key:
+            logger.warning("Anthropic provider selected but no ANTHROPIC_API_KEY found in environment/.env.")
+            _LAST_MISTRAL_SKIP_REASON = "missing_api_key"
+            return None
+        anthropic_base_url = api_base_url
+        if "mistral.ai" in anthropic_base_url or "generativelanguage.googleapis.com" in anthropic_base_url:
+            anthropic_base_url = "https://api.anthropic.com/v1"
+        anthropic_model = api_model if api_model and api_model != "mistral-large-latest" else "claude-opus-4-1-20250805"
+        return _call_anthropic_chat(
+            anthropic_base_url,
+            anthropic_key,
+            anthropic_model,
+            prompt,
+            temperature,
+            timeout_seconds,
+            retries=api_retries,
+            rate_limit_cooldown_seconds=rate_limit_cooldown_seconds,
+            rate_state_path=rate_state_path,
+            min_interval_seconds=min_interval_seconds,
+            max_interval_seconds=max_interval_seconds,
+            success_decay=success_decay,
+            rate_limit_growth=rate_limit_growth,
+            max_tokens=max_tokens,
+        )
+
+    if resolved_provider == "openrouter":
+        if not openrouter_key:
+            logger.warning("OpenRouter provider selected but no OPENROUTER_API_KEY/OPENROUTER_KEY found in environment/.env.")
+            _LAST_MISTRAL_SKIP_REASON = "missing_api_key"
+            return None
+        openrouter_base_url = api_base_url
+        if (
+            "mistral.ai" in openrouter_base_url
+            or "generativelanguage.googleapis.com" in openrouter_base_url
+            or "anthropic.com" in openrouter_base_url
+        ):
+            openrouter_base_url = "https://openrouter.ai/api/v1"
+        openrouter_model = api_model if api_model and api_model != "mistral-large-latest" else "qwen/qwen3.5-flash-02-23"
+        return _call_openrouter_chat(
+            openrouter_base_url,
+            openrouter_key,
+            openrouter_model,
+            prompt,
+            temperature,
+            timeout_seconds,
+            retries=api_retries,
+            rate_limit_cooldown_seconds=rate_limit_cooldown_seconds,
+            rate_state_path=rate_state_path,
+            min_interval_seconds=min_interval_seconds,
+            max_interval_seconds=max_interval_seconds,
+            success_decay=success_decay,
+            rate_limit_growth=rate_limit_growth,
+            max_tokens=max_tokens,
+            json_schema=json_schema,
         )
 
     if resolved_provider in {"mistral_api", "api"}:
@@ -1350,6 +1825,9 @@ def call_mixtral_chat(
             max_interval_seconds=max_interval_seconds,
             success_decay=success_decay,
             rate_limit_growth=rate_limit_growth,
+            max_tokens=max_tokens,
+            response_format_json=True,
+            json_schema=json_schema,
         )
 
     if resolved_provider == "ollama":
@@ -1392,6 +1870,9 @@ def call_mixtral_chat(
             max_interval_seconds=max_interval_seconds,
             success_decay=success_decay,
             rate_limit_growth=rate_limit_growth,
+            max_tokens=max_tokens,
+            response_format_json=True,
+            json_schema=json_schema,
         )
         if api_result is not None:
             return api_result
@@ -1406,6 +1887,7 @@ def call_mixtral_chat(
         if now_s - _LAST_API_FAILURE_LOG_EPOCH_S >= 2.0:
             logger.warning("Falling back to Ollama as configured.")
             _LAST_API_FAILURE_LOG_EPOCH_S = now_s
+
     if _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S > now_s:
         if now_s - _LAST_OLLAMA_SKIP_LOG_EPOCH_S >= 5.0:
             _LAST_OLLAMA_SKIP_LOG_EPOCH_S = now_s
@@ -1420,6 +1902,7 @@ def call_mixtral_chat(
             )
             # endregion
         return None
+
     return _call_ollama_chat(
         base_url,
         model,
@@ -1429,10 +1912,8 @@ def call_mixtral_chat(
         unavailable_cooldown_seconds=ollama_unavailable_cooldown_seconds,
     )
 
-
 def load_seed_entities(seed_path: Path | None) -> list[str]:
     return load_entity_names(seed_path)
-
 
 def build_stage_a_prompt(doc_excerpt: str) -> str:
     return f"""You extract ontology anchors from a lore bible.

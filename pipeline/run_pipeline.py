@@ -16,6 +16,7 @@ from pipeline.stage_e_alias import run as run_stage_e
 from pipeline.stage_f_draft import run as run_stage_f
 from pipeline.stage_g_merge_engine import run as run_stage_g
 from pipeline.stage_h_notion_export import run as run_stage_h
+from pipeline.notion_draft_sync import sync_draft_cards_to_notion
 
 
 REVIEW_REQUIRED_EXIT_CODE = 2
@@ -211,14 +212,13 @@ def determine_resume_start_stage(root: Path) -> tuple[int, str]:
         return 0, "Paused for claim review; approve/reject draft claims before Stage 10 card synthesis."
 
     claim_decisions = root / "07_review" / "claim_review_decisions.json"
+    author_claims = root / "07_review" / "author_claims.json"
     author_directives = root / "07_review" / "author_directives.json"
     identity_merge_decisions = root / "07_review" / "identity_merge_decisions.json"
     card_decisions = root / "07_review" / "card_review_decisions.json"
     identity_merge_proposals = root / "07_review" / "identity_merge_proposals.json"
     if _pending_identity_merge_count(root) > 0:
         return 0, "Paused for identity merge review; approve/reject identity merge proposals before rerunning Stage 10."
-    if _pending_card_count(root) > 0:
-        return 0, "Paused for card review; approve/reject synthesized card drafts before canonical merge."
     if _missing(stage10):
         return 10, "Stage 10 card synthesis/canon merge artifacts are missing."
     if _newer_than_outputs(
@@ -227,6 +227,7 @@ def determine_resume_start_stage(root: Path) -> tuple[int, str]:
             root / "05_alias" / "resolved_entities.json",
             root / "03_relevance" / "snippets_candidates.jsonl",
             claim_decisions,
+            author_claims,
             author_directives,
             identity_merge_decisions,
             card_decisions,
@@ -236,6 +237,8 @@ def determine_resume_start_stage(root: Path) -> tuple[int, str]:
         return 10, "Stage 10 card synthesis/canon merge artifacts are stale after review decisions."
     if identity_merge_proposals.exists() and _newer_than_outputs([identity_merge_proposals], stage10):
         return 10, "Stage 10 identity merge proposals changed after card synthesis."
+    if _pending_card_count(root) > 0:
+        return 0, "Paused for card review; approve/reject synthesized card drafts before canonical merge."
 
     if _missing(stage11) or _newer_than_outputs(
         [
@@ -554,6 +557,21 @@ def main() -> None:
             len(read_json(root / "07_review" / "card_drafts.json").get("cards", [])),
             len(read_json(root / "07_review" / "canonical_cards.json").get("cards", [])),
             _count_jsonl(root / "07_review" / "merge_log.jsonl"),
+        )
+        draft_sync_report = sync_draft_cards_to_notion(
+            root,
+            Path("config/pipeline_config.json"),
+            Path(".env"),
+            progress_callback=lambda message: logger.info(message),
+        )
+        logger.info(
+            "Stage 10 Notion draft sync: status=%s created=%d updated=%d failed=%d report=%s reason=%s",
+            draft_sync_report.get("status", "unknown"),
+            int(draft_sync_report.get("created_pages", 0) or 0),
+            int(draft_sync_report.get("updated_pages", 0) or 0),
+            len(draft_sync_report.get("failed_pages", []) or []),
+            root / "08_notion" / "notion_draft_sync_report.json",
+            draft_sync_report.get("reason", ""),
         )
     else:
         logger.info("[10/%d] SKIP  Stage 10 Card Synthesis (resume starts at Stage %02d)", total_stages, start_stage)
