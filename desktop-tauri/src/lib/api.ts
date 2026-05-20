@@ -2,11 +2,15 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppState,
   BridgeResponse,
+  CardAgentActivityResponse,
+  DraftCardsResponse,
+  EntityEvidenceResponse,
   IdentityClustersResponse,
   InventoryResponse,
   PipelineLogTail,
   PipelineProgressTail,
   PipelineRuntimeStatus,
+  RelationshipGraphResponse,
 } from "./types";
 
 let repoRoot = "";
@@ -69,8 +73,32 @@ export async function loadEntityInventory(artifactsRoot: string): Promise<Invent
   return bridge<InventoryResponse>("entity_inventory", { artifacts_root: artifactsRoot });
 }
 
+export async function loadEntityEvidence(
+  artifactsRoot: string,
+  rowId: string,
+  view: "candidates" | "merged" | string,
+): Promise<EntityEvidenceResponse> {
+  return bridge<EntityEvidenceResponse>("entity_evidence", { artifacts_root: artifactsRoot, row_id: rowId, view });
+}
+
 export async function decideEntity(payload: Record<string, unknown>): Promise<InventoryResponse> {
   return bridge<InventoryResponse>("entity_decision", payload);
+}
+
+export async function loadDraftCards(artifactsRoot: string): Promise<DraftCardsResponse> {
+  return bridge<DraftCardsResponse>("draft_cards", { artifacts_root: artifactsRoot });
+}
+
+export async function loadEntityRelationships(artifactsRoot: string): Promise<RelationshipGraphResponse> {
+  return bridge<RelationshipGraphResponse>("entity_relationships", { artifacts_root: artifactsRoot });
+}
+
+export async function loadCardAgentActivity(artifactsRoot: string): Promise<CardAgentActivityResponse> {
+  return bridge<CardAgentActivityResponse>("card_agent_activity", { artifacts_root: artifactsRoot });
+}
+
+export async function undoCardAgentTransaction(payload: Record<string, unknown>): Promise<CardAgentActivityResponse> {
+  return bridge<CardAgentActivityResponse>("undo_card_agent_transaction", payload);
 }
 
 export async function startPipeline(

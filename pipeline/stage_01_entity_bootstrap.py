@@ -13,6 +13,7 @@ from pipeline.entity_resolution import (
     display_name,
     entity_seed_id,
     is_blocked_seed_name,
+    normalize_entity_type,
     normalized_name_key,
 )
 from pipeline.model_provider import build_stage_01_prompt, call_model_chat, model_call_kwargs
@@ -114,9 +115,7 @@ def infer_entities_with_model(text: str, config: dict[str, Any]) -> dict[str, An
         if not isinstance(item, dict):
             continue
         name = str(item.get("canonical_name", "")).strip()
-        entity_type = str(item.get("entity_type", "term")).strip()
-        if entity_type == "ai_system":
-            entity_type = "character"
+        entity_type = normalize_entity_type(item.get("entity_type", "term"))
         source_section_hint = str(item.get("source_section_hint") or item.get("summary", "")).strip()
         aliases_raw = item.get("aliases", [])
         aliases = []

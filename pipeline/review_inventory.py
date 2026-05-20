@@ -11,8 +11,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import now_utc_iso, stable_id, write_json
-from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalized_name_key
+from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalize_entity_type, normalized_name_key
 from pipeline.ui_review_app import (
     _claim_attention_by_id,
     _human_decision_ids,
@@ -344,11 +345,12 @@ def artifact_sort_key(root: Path) -> tuple[int, int, float, str]:
     total = pending_review_total(counts)
     has_gate = int(counts.get("conversation_entities", 0) > 0 or counts.get("identity_merges", 0) > 0)
     latest = 0.0
+    paths = ArtifactPaths(root)
     for marker in [
-        root / "05_alias" / "conversation_entity_proposals.json",
-        root / "07_review" / "identity_merge_proposals.json",
-        root / "06_drafts" / "card_drafts" / "claim_drafts.json",
-        root / "07_review" / "card_drafts.json",
+        paths.conversation_entity_proposals,
+        paths.identity_merge_proposals,
+        paths.claim_drafts,
+        paths.card_drafts,
     ]:
         if marker.exists():
             latest = max(latest, marker.stat().st_mtime)
@@ -408,7 +410,7 @@ def _kv(label: str, value: Any) -> str:
 def _source_snippet_previews(root: Path, source_ids: list[str], limit: int = 4) -> list[str]:
     if not source_ids:
         return []
-    source_path = root / "03_relevance" / "snippets_candidates.jsonl"
+    source_path = ArtifactPaths(root).snippets
     if not source_path.exists():
         return []
     wanted = {str(item) for item in source_ids[:limit]}
@@ -549,7 +551,7 @@ def format_review_item(kind: str, item: dict[str, Any], artifacts_root: Path) ->
         for member in item.get("member_entities", []) or []:
             if isinstance(member, dict):
                 label = str(member.get("canonical_name") or member.get("entity_id") or "").strip()
-                entity_type = str(member.get("entity_type", "")).strip()
+                entity_type = normalize_entity_type(member.get("entity_type", "term"))
                 if label:
                     member_names.append(f"{label} ({entity_type})" if entity_type else label)
         edge_lines = []
@@ -648,7 +650,7 @@ def format_review_item(kind: str, item: dict[str, Any], artifacts_root: Path) ->
                 "Card Draft",
                 [
                     _kv("Name", item.get("canonical_name")),
-                    _kv("Type", item.get("entity_type")),
+                    _kv("Type", normalize_entity_type(item.get("entity_type", "term"))),
                     _kv("Status", item.get("status")),
                     _kv("Card ID", item.get("card_id")),
                 ],
@@ -827,7 +829,7 @@ def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path 
                 "candidate_name": display_name,
                 "raw_candidate_name": raw_name,
                 "canonical_name": canonical_name,
-                "proposed_entity_type": str(item.get("entity_type", proposal.get("proposed_entity_type", "term")) or "term"),
+                "proposed_entity_type": normalize_entity_type(item.get("entity_type", proposal.get("proposed_entity_type", "term"))),
                 "evidence_count": int(proposal.get("evidence_count", item.get("evidence_count", 0)) or 0),
                 "topics": _as_text_list(proposal.get("candidate_topics")),
                 "tracks": _as_text_list(proposal.get("knowledge_tracks")),
@@ -854,7 +856,7 @@ def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path 
             "candidate_name": raw_name,
             "raw_candidate_name": raw_name,
             "canonical_name": canonical_name,
-            "proposed_entity_type": str(item.get("proposed_entity_type", "term") or "term"),
+            "proposed_entity_type": normalize_entity_type(item.get("proposed_entity_type", "term")),
             "evidence_count": int(item.get("evidence_count", 0) or 0),
             "topics": ["alias"],
             "tracks": [],
@@ -890,7 +892,7 @@ def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path 
                 "candidate_name": name,
                 "raw_candidate_name": raw_name,
                 "canonical_name": canonical_name,
-                "proposed_entity_type": str(item.get("proposed_entity_type", item.get("initial_proposed_entity_type", "term")) or "term"),
+                "proposed_entity_type": normalize_entity_type(item.get("proposed_entity_type", item.get("initial_proposed_entity_type", "term"))),
                 "evidence_count": int(item.get("evidence_count", 0) or 0),
                 "topics": topics,
                 "tracks": tracks,
@@ -926,7 +928,7 @@ def write_candidate_inventory_override_decision(
     base_payload = {
         "decision": decision,
         "canonical_name": canonical_name.strip(),
-        "entity_type": entity_type.strip() or "term",
+        "entity_type": normalize_entity_type(entity_type),
         "reviewer": reviewer,
         "rationale": rationale,
         "timestamp_utc": timestamp,
@@ -1052,7 +1054,8 @@ def _identity_edge_bucket(decision: dict[str, Any]) -> str:
 
 
 def author_claims_path_for_root(artifacts_root: Path) -> Path:
-    return artifacts_root / "07_review" / "author_claims.json"
+    migrate_run_artifacts_to_numbered(artifacts_root)
+    return ArtifactPaths(artifacts_root).author_claims
 
 
 def _author_claim_normalized_text(text: str) -> str:
@@ -1085,23 +1088,25 @@ def _normalize_author_claim_track(value: Any, claim_type: str, claim_text: str) 
 
 
 def _entity_lookup_options(artifacts_root: Path) -> list[dict[str, Any]]:
-    entities_path = artifacts_root / "05_alias" / "resolved_entities.json"
+    migrate_run_artifacts_to_numbered(artifacts_root)
+    entities_path = ArtifactPaths(artifacts_root).resolved_entities
     options: list[dict[str, Any]] = []
     for entity in load_entity_records(entities_path):
         canonical_name = str(entity.get("canonical_name", "")).strip()
         if not canonical_name:
             continue
-        entity_type = str(entity.get("entity_type", "term") or "term")
+        entity_type = normalize_entity_type(entity.get("entity_type", "term"))
         label = f"{canonical_name} ({entity_type})"
         options.append({"label": label, "entity": entity})
     return sorted(options, key=lambda row: str(row["label"]).lower())
 
 
 def _resolve_author_claim_entity(artifacts_root: Path, target_text: str) -> dict[str, Any] | None:
+    migrate_run_artifacts_to_numbered(artifacts_root)
     query = str(target_text or "").strip()
     if not query:
         return None
-    entities = load_entity_records(artifacts_root / "05_alias" / "resolved_entities.json")
+    entities = load_entity_records(ArtifactPaths(artifacts_root).resolved_entities)
     query_key = normalized_name_key(re.sub(r"\s+\([^)]*\)\s*$", "", query).strip())
     for entity in entities:
         entity_id = str(entity.get("entity_id", "")).strip()
@@ -1244,6 +1249,7 @@ def claim_inventory_category(claim: dict[str, Any]) -> str:
 
 
 def claim_inventory_browser_rows(claims_path: Path, decisions_path: Path, artifacts_root: Path) -> list[dict[str, Any]]:
+    migrate_run_artifacts_to_numbered(artifacts_root)
     claims, _reason = _load_patches_or_reason(claims_path)
     if claims is None:
         claims = []

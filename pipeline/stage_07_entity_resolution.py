@@ -14,6 +14,7 @@ from pipeline.entity_resolution import (
     entity_id,
     is_blocked_seed_name,
     load_entity_records,
+    normalize_entity_type as normalize_shared_entity_type,
     normalized_name_key,
     resolve_entities,
 )
@@ -228,17 +229,12 @@ RECENT_EVIDENCE_MULTIPLIER = 1.35
 CURRENT_EVIDENCE_WINDOW_DAYS = 14
 CURRENT_EVIDENCE_MULTIPLIER = 1.5
 
-ENTITY_TYPE_ALIASES = {"ai_system": "character"}
 ENTITY_TYPES = {"character", "faction", "organization", "location", "quest", "event", "timeline_node", "theme", "term"}
 TYPE_RECONSIDERATION_MARGIN = 0.75
 
 
 def normalize_entity_type(entity_type: Any, default: str = "term") -> str:
-    raw = str(entity_type or "").strip().lower()
-    raw = ENTITY_TYPE_ALIASES.get(raw, raw)
-    if raw in ENTITY_TYPES:
-        return raw
-    return default if default in ENTITY_TYPES else "term"
+    return normalize_shared_entity_type(entity_type, default)
 
 # Music / quest-naming detection
 MUSIC_QUEST_CONTEXT_MARKERS = {
@@ -613,7 +609,7 @@ def build_alias_review_groups(proposals: list[dict[str, Any]]) -> list[dict[str,
                 "candidate_name": f"{target_name} aliases",
                 "normalized_name_key": f"{target_key} aliases",
                 "suggested_canonical_name": target_name,
-                "proposed_entity_type": str(proposal.get("proposed_entity_type", "term")),
+                "proposed_entity_type": normalize_entity_type(proposal.get("proposed_entity_type", "term")),
                 "review_status": "pending",
                 "triage_status": "review_required",
                 "triage_reason": f"alias review group for {target_name}",
@@ -626,7 +622,7 @@ def build_alias_review_groups(proposals: list[dict[str, Any]]) -> list[dict[str,
                 "sample_texts": [],
             },
         )
-        if proposal.get("proposed_entity_type") == "character":
+        if normalize_entity_type(proposal.get("proposed_entity_type", "term")) == "character":
             group["proposed_entity_type"] = "character"
         proposal_id = str(proposal.get("proposal_id", "")).strip()
         if proposal_id and proposal_id not in group["child_proposal_ids"]:
@@ -635,7 +631,7 @@ def build_alias_review_groups(proposals: list[dict[str, Any]]) -> list[dict[str,
             {
                 "proposal_id": proposal_id,
                 "candidate_name": candidate_name,
-                "proposed_entity_type": proposal.get("proposed_entity_type", "term"),
+                "proposed_entity_type": normalize_entity_type(proposal.get("proposed_entity_type", "term")),
                 "evidence_count": int(proposal.get("evidence_count", 0) or 0),
                 "confidence": proposal.get("confidence", 0.0),
                 "triage_reason": proposal.get("triage_reason", ""),
@@ -758,7 +754,7 @@ def triage_conversation_entity_proposal(
     evidence_count = int(proposal.get("evidence_count", 0) or 0)
     metrics = recency_metrics or proposal_recency_metrics(proposal, None)
     adjusted_evidence_count = float(metrics.get("recency_adjusted_evidence_count", evidence_count) or evidence_count)
-    proposed_type = str(proposal.get("proposed_entity_type", "term"))
+    proposed_type = normalize_entity_type(proposal.get("proposed_entity_type", "term"))
     update_types = {str(item).strip().lower() for item in proposal.get("patch_update_types", []) or [] if str(item).strip()}
     patch_item_types = {str(item).strip().lower() for item in proposal.get("patch_item_types", []) or [] if str(item).strip()}
     type_reconsidered = bool(proposal.get("type_reconsidered", False))
@@ -907,7 +903,7 @@ def is_low_value_phrase_name(key: str) -> bool:
 
 
 def is_meta_team_contributor_candidate(proposal: dict[str, Any]) -> bool:
-    proposed_type = str(proposal.get("proposed_entity_type") or "term").strip().lower()
+    proposed_type = normalize_entity_type(proposal.get("proposed_entity_type") or "term")
     if proposed_type not in {"character", "term", "organization", "faction"}:
         return False
 
@@ -1194,7 +1190,7 @@ def build_candidate_alias_resolution_prompt(known_entities: list[dict[str, Any]]
     candidate_rows = [
         {
             "candidate_name": proposal.get("candidate_name", ""),
-            "proposed_entity_type": proposal.get("proposed_entity_type", "term"),
+            "proposed_entity_type": normalize_entity_type(proposal.get("proposed_entity_type", "term")),
             "evidence_count": proposal.get("evidence_count", 0),
             "knowledge_tracks": proposal.get("knowledge_tracks", []),
             "candidate_topics": proposal.get("candidate_topics", []),

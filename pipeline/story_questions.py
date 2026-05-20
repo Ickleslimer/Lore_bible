@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json
 from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalized_name_key
 from pipeline.model_provider import call_model_chat, get_model_runtime_status, model_call_kwargs
@@ -202,7 +203,9 @@ AUTHOR_META_TEXT_MARKERS = (
 
 
 def story_question_paths(root: Path) -> dict[str, Path]:
-    review_root = root / "07_review"
+    migrate_run_artifacts_to_numbered(root)
+    paths = ArtifactPaths(root)
+    review_root = paths.stage09
     return {
         "session": review_root / "story_question_session.json",
         "questions": review_root / "story_questions.jsonl",
@@ -210,8 +213,8 @@ def story_question_paths(root: Path) -> dict[str, Path]:
         "applications": review_root / "story_question_applications.jsonl",
         "application_proposals": review_root / "story_question_application_proposals.jsonl",
         "failures": review_root / "story_question_failures.json",
-        "claim_decisions": review_root / "claim_review_decisions.json",
-        "author_claims": review_root / "author_claims.json",
+        "claim_decisions": paths.claim_review_decisions,
+        "author_claims": paths.author_claims,
     }
 
 
@@ -332,7 +335,7 @@ def _is_auto_review_decision(decision: dict[str, Any] | None) -> bool:
 
 
 def _pending_attention_claim_ids(root: Path, human_reviewed: set[str]) -> set[str]:
-    payload = _read_json_or_default(root / "07_review" / "claim_auto_review_attention.json", {"items": []})
+    payload = _read_json_or_default(ArtifactPaths(root).claim_auto_review_attention, {"items": []})
     out: set[str] = set()
     for item in payload.get("items", []) if isinstance(payload, dict) else []:
         if not isinstance(item, dict):
@@ -344,7 +347,7 @@ def _pending_attention_claim_ids(root: Path, human_reviewed: set[str]) -> set[st
 
 
 def _claim_attention_by_id(root: Path, human_reviewed: set[str]) -> dict[str, dict[str, Any]]:
-    payload = _read_json_or_default(root / "07_review" / "claim_auto_review_attention.json", {"items": []})
+    payload = _read_json_or_default(ArtifactPaths(root).claim_auto_review_attention, {"items": []})
     out: dict[str, dict[str, Any]] = {}
     for item in payload.get("items", []) if isinstance(payload, dict) else []:
         if not isinstance(item, dict):
@@ -356,7 +359,7 @@ def _claim_attention_by_id(root: Path, human_reviewed: set[str]) -> dict[str, di
 
 
 def load_claims(root: Path) -> list[dict[str, Any]]:
-    payload = _read_json_or_default(root / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": []})
+    payload = _read_json_or_default(ArtifactPaths(root).claim_drafts, {"claims": []})
     claims = payload.get("claims", []) if isinstance(payload, dict) else []
     return [claim for claim in claims if isinstance(claim, dict)]
 
@@ -482,7 +485,7 @@ def _snippet_context(root: Path, snippet_ids: list[str], limit: int = 12) -> lis
     if not wanted:
         return []
     out: list[dict[str, Any]] = []
-    for row in read_jsonl(root / "03_relevance" / "snippets_candidates.jsonl"):
+    for row in read_jsonl(ArtifactPaths(root).snippets):
         snippet_id = str(row.get("snippet_id", "")).strip()
         if snippet_id not in wanted:
             continue
@@ -539,7 +542,7 @@ def _compact_patch_items(value: Any, limit: int) -> list[dict[str, Any]]:
 
 
 def _patch_note_context(root: Path, conversation_ids: set[str], limit: int = 12) -> list[dict[str, Any]]:
-    payload = _read_json_or_default(root / "02_timeline" / "conversation_patch_notes.json", {"notes": []})
+    payload = _read_json_or_default(ArtifactPaths(root).conversation_patch_notes, {"notes": []})
     notes = payload.get("notes", []) if isinstance(payload, dict) else []
     out: list[dict[str, Any]] = []
     for note in notes:
@@ -1373,7 +1376,7 @@ def _resolve_author_target(raw: dict[str, Any], entities: list[dict[str, Any]], 
 def _append_author_claims(root: Path, raw_claims: list[dict[str, Any]], fallback_claims: list[dict[str, Any]], answer: dict[str, Any]) -> list[dict[str, Any]]:
     if not raw_claims:
         return []
-    entities = load_entity_records(root / "05_alias" / "resolved_entities.json")
+    entities = load_entity_records(ArtifactPaths(root).resolved_entities)
     path = story_question_paths(root)["author_claims"]
     payload = _read_json_or_default(path, {"claims": []})
     claims = payload.setdefault("claims", [])
@@ -1436,7 +1439,7 @@ def _proposed_author_claims(
 ) -> list[dict[str, Any]]:
     if not raw_claims:
         return []
-    entities = load_entity_records(root / "05_alias" / "resolved_entities.json")
+    entities = load_entity_records(ArtifactPaths(root).resolved_entities)
     existing_payload = _read_json_or_default(story_question_paths(root)["author_claims"], {"claims": []})
     existing_ids = {
         str(claim.get("claim_id", "")).strip()
@@ -2007,3 +2010,4 @@ def story_question_display(root: Path) -> dict[str, Any]:
         "linked_claims": linked_claims,
         "evidence_snippets": snippets,
     }
+

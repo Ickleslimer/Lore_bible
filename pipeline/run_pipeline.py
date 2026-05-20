@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 from pathlib import Path
 
+from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import get_logger, read_json, read_jsonl, setup_logging, write_json
 from pipeline.stage_01_entity_bootstrap import run as run_stage_01
 from pipeline.stage_02_message_normalization import run as run_stage_02
@@ -92,14 +93,15 @@ def _decision_ids(path: Path, fields: list[str]) -> set[str]:
 
 
 def _pending_claim_count(root: Path) -> int:
-    claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
+    p = ArtifactPaths(root)
+    claims_path = p.claim_drafts
     if not claims_path.exists():
         return 0
     try:
         claims = read_json(claims_path).get("claims", [])
     except Exception:
         return 0
-    decisions = _decision_ids(root / "07_review" / "claim_review_decisions.json", ["claim_id"])
+    decisions = _decision_ids(p.claim_review_decisions, ["claim_id"])
     return sum(
         1
         for claim in claims
@@ -110,14 +112,15 @@ def _pending_claim_count(root: Path) -> int:
 
 
 def _pending_identity_merge_count(root: Path) -> int:
-    proposals_path = root / "07_review" / "identity_merge_proposals.json"
+    p = ArtifactPaths(root)
+    proposals_path = p.identity_merge_proposals
     if not proposals_path.exists():
         return 0
     try:
         proposals = read_json(proposals_path).get("proposals", [])
     except Exception:
         return 0
-    decisions = _decision_ids(root / "07_review" / "identity_merge_decisions.json", ["proposal_id", "merge_id"])
+    decisions = _decision_ids(p.identity_merge_decisions, ["proposal_id", "merge_id"])
     return sum(
         1
         for proposal in proposals
@@ -129,14 +132,15 @@ def _pending_identity_merge_count(root: Path) -> int:
 
 
 def _pending_card_count(root: Path) -> int:
-    cards_path = root / "07_review" / "card_drafts.json"
+    p = ArtifactPaths(root)
+    cards_path = p.card_drafts
     if not cards_path.exists():
         return 0
     try:
         cards = read_json(cards_path).get("cards", [])
     except Exception:
         return 0
-    decisions = _decision_ids(root / "07_review" / "card_review_decisions.json", ["card_id", "target_card_id"])
+    decisions = _decision_ids(p.card_review_decisions, ["card_id", "target_card_id"])
     return sum(
         1
         for card in cards
@@ -147,11 +151,12 @@ def _pending_card_count(root: Path) -> int:
 
 
 def _pending_card_architecture_count(root: Path) -> int:
+    p = ArtifactPaths(root)
     try:
         return len(
             pending_card_architecture_actions(
-                root / "07_review" / "card_architecture_proposals.json",
-                root / "07_review" / "card_architecture_decisions.json",
+                p.card_architecture_proposals,
+                p.card_architecture_decisions,
             )
         )
     except Exception:
@@ -159,8 +164,9 @@ def _pending_card_architecture_count(root: Path) -> int:
 
 
 def _unproposed_card_edit_request_count(root: Path) -> int:
-    requests_path = root / "07_review" / "card_edit_requests.jsonl"
-    proposals_path = root / "07_review" / "card_architecture_proposals.json"
+    p = ArtifactPaths(root)
+    requests_path = p.card_edit_requests
+    proposals_path = p.card_architecture_proposals
     if not requests_path.exists():
         return 0
     try:
@@ -177,7 +183,7 @@ def _unproposed_card_edit_request_count(root: Path) -> int:
         1
         for request in requests
         if isinstance(request, dict)
-        and str(request.get("status", "pending")) != "cancelled"
+        and str(request.get("status", "pending")).strip().lower() == "pending"
         and str(request.get("request_id", "")).strip()
         and str(request.get("request_id", "")).strip() not in covered
     )
@@ -200,31 +206,33 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     Stage 12, or the run is paused for human review and no pipeline stage
     should be started yet.
     """
-    stage1 = [root / "01_bootstrap" / "entity_seed.json"]
-    stage2 = [root / "02_timeline" / "messages_normalized_per_thread.jsonl", root / "02_timeline" / "summary.json"]
-    stage3 = [root / "02_timeline" / "messages_global_timeline.jsonl", root / "02_timeline" / "global_index.json"]
+    migrate_run_artifacts_to_numbered(root)
+    p = ArtifactPaths(root)
+    stage1 = [p.entity_seed]
+    stage2 = [p.normalized_messages, p.normalization_summary]
+    stage3 = [p.global_timeline, p.global_index]
     stage4 = [
-        root / "02_timeline" / "messages_relevant_conversations.jsonl",
-        root / "02_timeline" / "conversation_segments.json",
-        root / "02_timeline" / "conversation_index.json",
+        p.relevant_messages,
+        p.conversation_segments,
+        p.conversation_index,
     ]
-    stage5 = [root / "02_timeline" / "conversation_patch_notes.json"]
-    stage6 = [root / "03_relevance" / "snippets_candidates.jsonl", root / "03_relevance" / "dm_source_profiles.json"]
+    stage5 = [p.conversation_patch_notes]
+    stage6 = [p.snippets, p.source_profiles]
     stage7 = [
-        root / "05_alias" / "resolved_entities.json",
-        root / "05_alias" / "alias_map.json",
-        root / "05_alias" / "entity_timelines.json",
-        root / "05_alias" / "conversation_entity_proposals.json",
+        p.resolved_entities,
+        p.alias_map,
+        p.entity_timelines,
+        p.conversation_entity_proposals,
     ]
-    stage8 = [root / "04_grouping" / "snippet_clusters_lore.json", root / "04_grouping" / "snippet_clusters_meta.json"]
-    stage9 = [root / "06_drafts" / "card_drafts" / "claim_drafts.json"]
-    stage10 = [root / "07_review" / "identity_merge_proposals.json"]
+    stage8 = [p.snippet_clusters_lore, p.snippet_clusters_meta]
+    stage9 = [p.claim_drafts]
+    stage10 = [p.identity_merge_proposals]
     stage11 = [
-        root / "07_review" / "card_drafts.json",
-        root / "07_review" / "canonical_cards.json",
-        root / "07_review" / "merge_log.jsonl",
+        p.card_drafts,
+        p.canonical_cards,
+        p.merge_log,
     ]
-    stage12 = [root / "08_notion" / "notion_import.ndjson"]
+    stage12 = [p.notion_import]
 
     if _missing(stage1):
         return 1, "Stage 01 bootstrap artifacts are missing."
@@ -239,7 +247,7 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     if _missing(stage6) or _newer_than_outputs(stage5 + stage4, stage6):
         return 6, "Stage 06 snippets are missing or older than conversation patch notes."
 
-    conversation_decisions = root / "05_alias" / "conversation_entity_decisions.json"
+    conversation_decisions = p.conversation_entity_decisions
     if _missing(stage7):
         return 7, "Stage 07 entity resolution artifacts are missing."
     if _has_decisions(conversation_decisions) and _newer_than_outputs([conversation_decisions], stage7):
@@ -247,24 +255,24 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
 
     if _missing(stage8) or _newer_than_outputs(stage6 + [stage7[0]], stage8):
         return 8, "Stage 08 grouping artifacts are missing or stale."
-    if _missing(stage9) or _newer_than_outputs(stage8 + [stage7[0], root / "05_alias" / "alias_map.json"], stage9):
+    if _missing(stage9) or _newer_than_outputs(stage8 + [stage7[0], p.alias_map], stage9):
         return 9, "Stage 09 claim drafts are missing or stale."
 
     if not ignore_pending and _pending_claim_count(root) > 0:
         return 0, "Paused for claim review; approve/reject draft claims before Stage 10 identity merge."
 
-    claim_decisions = root / "07_review" / "claim_review_decisions.json"
-    author_claims = root / "07_review" / "author_claims.json"
-    author_directives = root / "07_review" / "author_directives.json"
-    identity_merge_decisions = root / "07_review" / "identity_merge_decisions.json"
-    card_decisions = root / "07_review" / "card_review_decisions.json"
-    identity_merge_proposals = root / "07_review" / "identity_merge_proposals.json"
-    card_edit_requests = root / "07_review" / "card_edit_requests.jsonl"
-    card_architecture_proposals = root / "07_review" / "card_architecture_proposals.json"
-    card_architecture_decisions = root / "07_review" / "card_architecture_decisions.json"
+    claim_decisions = p.claim_review_decisions
+    author_claims = p.author_claims
+    author_directives = p.author_directives
+    identity_merge_decisions = p.identity_merge_decisions
+    card_decisions = p.card_review_decisions
+    identity_merge_proposals = p.identity_merge_proposals
+    card_edit_requests = p.card_edit_requests
+    card_architecture_proposals = p.card_architecture_proposals
+    card_architecture_decisions = p.card_architecture_decisions
     identity_merge_inputs = [
         stage9[0],
-        root / "05_alias" / "resolved_entities.json",
+        p.resolved_entities,
         claim_decisions,
         author_claims,
     ]
@@ -275,20 +283,19 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     if not ignore_pending and _pending_card_architecture_count(root) > 0:
         return 0, "Paused for card architecture review; approve/reject card architecture proposals before Stage 11 card synthesis."
     if _unproposed_card_edit_request_count(root) > 0:
-        return 11, "Card Agent edit requests need Stage 11 architecture proposals."
+        return 11, "Pending Cardbase Agent requests need Stage 11 processing."
     if _missing(stage11):
         return 11, "Stage 11 card synthesis/canon merge artifacts are missing."
     if _newer_than_outputs(
         [
             stage9[0],
-            root / "05_alias" / "resolved_entities.json",
-            root / "03_relevance" / "snippets_candidates.jsonl",
+            p.resolved_entities,
+            p.snippets,
             claim_decisions,
             author_claims,
             author_directives,
             identity_merge_decisions,
             card_decisions,
-            card_edit_requests,
             card_architecture_proposals,
             card_architecture_decisions,
             identity_merge_proposals,
@@ -301,12 +308,12 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
 
     if _missing(stage12) or _newer_than_outputs(
         [
-            root / "07_review" / "canonical_cards.json",
-            root / "06_drafts" / "card_drafts" / "meta_cards_draft.json",
-            root / "05_alias" / "alias_map.json",
-            root / "03_relevance" / "snippets_candidates.jsonl",
-            root / "03_relevance" / "dm_source_profiles.json",
-            root / "07_review" / "merge_log.jsonl",
+            p.canonical_cards,
+            p.meta_cards_draft,
+            p.alias_map,
+            p.snippets,
+            p.source_profiles,
+            p.merge_log,
         ],
         stage12,
     ):
@@ -357,9 +364,11 @@ def main() -> None:
     logger = get_logger(__name__)
 
     root = args.artifacts_root
+    migrate_run_artifacts_to_numbered(root)
+    p = ArtifactPaths(root)
     thematic_runtime_path = root / "learning" / "thematic_profile_runtime.json"
     if args.ignore_pending:
-        bypass_path = root / "07_review" / "review_gate_bypass.json"
+        bypass_path = p.review_gate_bypass
         existing_bypass = read_json(bypass_path) if bypass_path.exists() else {}
         if not isinstance(existing_bypass, dict):
             existing_bypass = {}
@@ -391,12 +400,12 @@ def main() -> None:
             "Stage 01 Entity Bootstrap",
             run_stage_01,
             args.docx,
-            root / "01_bootstrap" / "entity_seed.json",
-            root / "01_bootstrap" / "schema_descriptor.json",
+            p.entity_seed,
+            p.schema_descriptor,
             Path("config/pipeline_config.json"),
             thematic_runtime_path,
         )
-        seed_payload = read_json(root / "01_bootstrap" / "entity_seed.json")
+        seed_payload = read_json(p.entity_seed)
         logger.info(
             "Stage 01 summary: provider=%s, entities=%d",
             seed_payload.get("provider_mode", "unknown"),
@@ -413,10 +422,10 @@ def main() -> None:
             "Stage 02 Message Normalization",
             run_stage_02,
             args.conversations_root,
-            root / "02_timeline" / "messages_normalized_per_thread.jsonl",
-            root / "02_timeline" / "summary.json",
+            p.normalized_messages,
+            p.normalization_summary,
         )
-        stage_02_summary = read_json(root / "02_timeline" / "summary.json")
+        stage_02_summary = read_json(p.normalization_summary)
         logger.info(
             "Stage 02 summary: files=%d, normalized_messages=%d, rejected=%d",
             int(stage_02_summary.get("input_files", 0)),
@@ -433,11 +442,11 @@ def main() -> None:
             total_stages,
             "Stage 03 Timeline Merge",
             run_stage_03,
-            root / "02_timeline" / "messages_normalized_per_thread.jsonl",
-            root / "02_timeline" / "messages_global_timeline.jsonl",
-            root / "02_timeline" / "global_index.json",
+            p.normalized_messages,
+            p.global_timeline,
+            p.global_index,
         )
-        stage_03_index = read_json(root / "02_timeline" / "global_index.json")
+        stage_03_index = read_json(p.global_index)
         logger.info(
             "Stage 03 summary: global_messages=%d, threads=%d",
             int(stage_03_index.get("message_count", 0)),
@@ -453,15 +462,15 @@ def main() -> None:
             total_stages,
             "Stage 04 Relevant Conversation Segmentation",
             run_stage_04,
-            root / "02_timeline" / "messages_global_timeline.jsonl",
-            root / "02_timeline" / "messages_relevant_conversations.jsonl",
-            root / "02_timeline" / "conversation_segments.json",
-            root / "02_timeline" / "conversation_index.json",
-            root / "02_timeline" / "conversation_segmentation_failures.json",
+            p.global_timeline,
+            p.relevant_messages,
+            p.conversation_segments,
+            p.conversation_index,
+            p.conversation_segmentation_failures,
             Path("config/pipeline_config.json"),
-            root / "01_bootstrap" / "entity_seed.json",
+            p.entity_seed,
         )
-        stage_04_index = read_json(root / "02_timeline" / "conversation_index.json")
+        stage_04_index = read_json(p.conversation_index)
         logger.info(
             "Stage 04 summary: relevant_segments=%d, relevant_messages=%d, dropped=%d, failures=%d",
             int(stage_04_index.get("relevant_segments", 0)),
@@ -479,14 +488,14 @@ def main() -> None:
             total_stages,
             "Stage 05 Conversation Patch Notes",
             run_stage_05,
-            root / "02_timeline" / "messages_relevant_conversations.jsonl",
-            root / "02_timeline" / "conversation_segments.json",
-            root / "02_timeline" / "conversation_patch_notes.json",
-            root / "02_timeline" / "conversation_patch_notes.jsonl",
-            root / "02_timeline" / "conversation_patch_note_failures.json",
+            p.relevant_messages,
+            p.conversation_segments,
+            p.conversation_patch_notes,
+            p.conversation_patch_notes_jsonl,
+            p.conversation_patch_note_failures,
             Path("config/pipeline_config.json"),
         )
-        stage_05_index = read_json(root / "02_timeline" / "conversation_patch_notes.json")
+        stage_05_index = read_json(p.conversation_patch_notes)
         logger.info(
             "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
             int(stage_05_index.get("notes_count", 0)),
@@ -503,21 +512,21 @@ def main() -> None:
             total_stages,
             "Stage 06 Snippet Extraction",
             run_stage_06,
-            root / "02_timeline" / "messages_relevant_conversations.jsonl",
-            root / "03_relevance" / "dm_source_profiles.json",
-            root / "03_relevance" / "snippets_candidates.jsonl",
-            root / "03_relevance" / "snippets_needs_review.jsonl",
-            root / "03_relevance" / "dm_source_profiles.json",
+            p.relevant_messages,
+            p.source_profiles,
+            p.snippets,
+            p.snippets_needs_review,
+            p.source_profiles,
             Path("config/pipeline_config.json"),
-            root / "01_bootstrap" / "entity_seed.json",
+            p.entity_seed,
             thematic_runtime_path,
-            root / "02_timeline" / "conversation_patch_notes.json",
+            p.conversation_patch_notes,
         )
         logger.info(
             "Stage 06 summary: snippets=%d, needs_review=%d, profiles=%d",
-            _count_jsonl(root / "03_relevance" / "snippets_candidates.jsonl"),
-            _count_jsonl(root / "03_relevance" / "snippets_needs_review.jsonl"),
-            len(read_json(root / "03_relevance" / "dm_source_profiles.json").get("profiles", [])),
+            _count_jsonl(p.snippets),
+            _count_jsonl(p.snippets_needs_review),
+            len(read_json(p.source_profiles).get("profiles", [])),
         )
     else:
         logger.info("[6/%d] SKIP  Stage 06 Snippet Extraction (resume starts at Stage %02d)", total_stages, start_stage)
@@ -529,23 +538,23 @@ def main() -> None:
             total_stages,
             "Stage 07 Entity Resolution",
             run_stage_07,
-            root / "03_relevance" / "snippets_candidates.jsonl",
-            root / "01_bootstrap" / "entity_seed.json",
-            root / "05_alias" / "alias_map.json",
-            root / "05_alias" / "entity_timelines.json",
-            root / "05_alias" / "resolved_entities.json",
+            p.snippets,
+            p.entity_seed,
+            p.alias_map,
+            p.entity_timelines,
+            p.resolved_entities,
             Path("canon/review_memory.json"),
-            root / "05_alias" / "conversation_entity_proposals.json",
-            root / "05_alias" / "conversation_entity_decisions.json",
+            p.conversation_entity_proposals,
+            p.conversation_entity_decisions,
             Path("config/pipeline_config.json"),
         )
         logger.info(
             "Stage 07 summary: resolved_entities=%d seed_only_entities=%d conversation_entity_proposals=%d aliases=%d entity_timelines=%d",
-            len(read_json(root / "05_alias" / "resolved_entities.json").get("resolved_entities", [])),
-            len(read_json(root / "05_alias" / "resolved_entities.json").get("seed_only_entities", [])),
-            len(read_json(root / "05_alias" / "conversation_entity_proposals.json").get("proposals", [])),
-            len(read_json(root / "05_alias" / "alias_map.json").get("aliases", [])),
-            len(read_json(root / "05_alias" / "entity_timelines.json").get("entity_timelines", {})),
+            len(read_json(p.resolved_entities).get("resolved_entities", [])),
+            len(read_json(p.resolved_entities).get("seed_only_entities", [])),
+            len(read_json(p.conversation_entity_proposals).get("proposals", [])),
+            len(read_json(p.alias_map).get("aliases", [])),
+            len(read_json(p.entity_timelines).get("entity_timelines", {})),
         )
     else:
         logger.info("[7/%d] SKIP  Stage 07 Entity Resolution (resume starts at Stage %02d)", total_stages, start_stage)
@@ -557,17 +566,17 @@ def main() -> None:
             total_stages,
             "Stage 08 Snippet Grouping",
             run_stage_08,
-            root / "03_relevance" / "snippets_candidates.jsonl",
-            root / "05_alias" / "resolved_entities.json",
-            root / "04_grouping" / "snippet_clusters_lore.json",
-            root / "04_grouping" / "snippet_clusters_meta.json",
+            p.snippets,
+            p.resolved_entities,
+            p.snippet_clusters_lore,
+            p.snippet_clusters_meta,
             Path("config/pipeline_config.json"),
             thematic_runtime_path,
         )
         logger.info(
             "Stage 08 summary: lore_clusters=%d, meta_clusters=%d",
-            len(read_json(root / "04_grouping" / "snippet_clusters_lore.json").get("clusters", [])),
-            len(read_json(root / "04_grouping" / "snippet_clusters_meta.json").get("clusters", [])),
+            len(read_json(p.snippet_clusters_lore).get("clusters", [])),
+            len(read_json(p.snippet_clusters_meta).get("clusters", [])),
         )
     else:
         logger.info("[8/%d] SKIP  Stage 08 Snippet Grouping (resume starts at Stage %02d)", total_stages, start_stage)
@@ -579,19 +588,19 @@ def main() -> None:
             total_stages,
             "Stage 09 Claim Drafting",
             run_stage_09,
-            root / "05_alias" / "resolved_entities.json",
-            root / "04_grouping" / "snippet_clusters_lore.json",
-            root / "04_grouping" / "snippet_clusters_meta.json",
-            root / "05_alias" / "alias_map.json",
-            root / "03_relevance" / "snippets_candidates.jsonl",
-            root / "06_drafts" / "card_drafts",
+            p.resolved_entities,
+            p.snippet_clusters_lore,
+            p.snippet_clusters_meta,
+            p.alias_map,
+            p.snippets,
+            p.claim_drafting_dir,
             Path("config/pipeline_config.json"),
             Path("canon/review_memory.json"),
         )
         logger.info(
             "Stage 09 summary: claim_drafts=%d, meta_cards=%d",
-            len(read_json(root / "06_drafts" / "card_drafts" / "claim_drafts.json").get("claims", [])),
-            len(read_json(root / "06_drafts" / "card_drafts" / "meta_cards_draft.json").get("meta_cards", [])),
+            len(read_json(p.claim_drafts).get("claims", [])),
+            len(read_json(p.meta_cards_draft).get("meta_cards", [])),
         )
     else:
         logger.info("[9/%d] SKIP  Stage 09 Claim Drafting (resume starts at Stage %02d)", total_stages, start_stage)
@@ -613,17 +622,17 @@ def main() -> None:
             total_stages,
             "Stage 10 Identity Merge",
             run_stage_10,
-            root / "05_alias" / "resolved_entities.json",
-            root / "06_drafts" / "card_drafts" / "claim_drafts.json",
-            root / "07_review" / "claim_review_decisions.json",
+            p.resolved_entities,
+            p.claim_drafts,
+            p.claim_review_decisions,
             Path("canon/review_memory.json"),
-            root / "07_review" / "identity_merge_proposals.json",
-            root / "07_review" / "identity_merge_decisions.json",
+            p.identity_merge_proposals,
+            p.identity_merge_decisions,
             Path("config/pipeline_config.json"),
         )
         logger.info(
             "Stage 10 summary: identity_merge_proposals=%d pending_identity_merges=%d",
-            len(read_json(root / "07_review" / "identity_merge_proposals.json").get("proposals", [])),
+            len(read_json(p.identity_merge_proposals).get("proposals", [])),
             _pending_identity_merge_count(root),
         )
     else:
@@ -646,23 +655,23 @@ def main() -> None:
             total_stages,
             "Stage 11 Card Synthesis",
             run_stage_11,
-            root / "05_alias" / "resolved_entities.json",
-            root / "06_drafts" / "card_drafts" / "claim_drafts.json",
-            root / "07_review" / "claim_review_decisions.json",
-            root / "07_review" / "card_review_decisions.json",
-            root / "07_review" / "author_directives.json",
+            p.resolved_entities,
+            p.claim_drafts,
+            p.claim_review_decisions,
+            p.card_review_decisions,
+            p.author_directives,
             Path("canon/review_memory.json"),
-            root / "07_review" / "card_drafts.json",
-            root / "07_review" / "canonical_cards.json",
-            root / "07_review" / "merge_log.jsonl",
+            p.card_drafts,
+            p.canonical_cards,
+            p.merge_log,
             Path("config/pipeline_config.json"),
-            root / "03_relevance" / "snippets_candidates.jsonl",
+            p.snippets,
         )
         logger.info(
             "Stage 11 summary: card_drafts=%d canonical_cards=%d merge_log=%d",
-            len(read_json(root / "07_review" / "card_drafts.json").get("cards", [])),
-            len(read_json(root / "07_review" / "canonical_cards.json").get("cards", [])),
-            _count_jsonl(root / "07_review" / "merge_log.jsonl"),
+            len(read_json(p.card_drafts).get("cards", [])),
+            len(read_json(p.canonical_cards).get("cards", [])),
+            _count_jsonl(p.merge_log),
         )
         draft_sync_report = sync_draft_cards_to_notion(
             root,
@@ -676,7 +685,7 @@ def main() -> None:
             int(draft_sync_report.get("created_pages", 0) or 0),
             int(draft_sync_report.get("updated_pages", 0) or 0),
             len(draft_sync_report.get("failed_pages", []) or []),
-            root / "08_notion" / "notion_draft_sync_report.json",
+            p.notion_draft_sync_report,
             draft_sync_report.get("reason", ""),
         )
     else:
@@ -699,21 +708,21 @@ def main() -> None:
             total_stages,
             "Stage 12 Notion Export",
             run_stage_12,
-            root / "07_review" / "canonical_cards.json",
-            root / "06_drafts" / "card_drafts" / "meta_cards_draft.json",
-            root / "05_alias" / "alias_map.json",
-            root / "03_relevance" / "snippets_candidates.jsonl",
-            root / "03_relevance" / "dm_source_profiles.json",
-            root / "07_review" / "merge_log.jsonl",
-            root / "08_notion" / "notion_import.ndjson",
+            p.canonical_cards,
+            p.meta_cards_draft,
+            p.alias_map,
+            p.snippets,
+            p.source_profiles,
+            p.merge_log,
+            p.notion_import,
         )
         logger.info(
             "Stage 12 summary: notion_records=%d",
-            _count_jsonl(root / "08_notion" / "notion_import.ndjson"),
+            _count_jsonl(p.notion_import),
         )
     else:
         logger.info("[12/%d] SKIP  Stage 12 Notion Export (resume starts at Stage %02d)", total_stages, start_stage)
-    logger.info("Pipeline complete. Notion export written under: %s", root / "08_notion")
+    logger.info("Pipeline complete. Notion export written under: %s", p.stage12)
 
 
 if __name__ == "__main__":

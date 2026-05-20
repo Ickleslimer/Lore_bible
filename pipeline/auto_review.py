@@ -14,7 +14,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, write_json
+from pipeline.entity_resolution import normalize_entity_type
 from pipeline.review_memory import normalize_claim_text
 
 logger = get_logger(__name__)
@@ -328,23 +330,27 @@ def _decision_ids(path: Path, id_fields: list[str]) -> set[str]:
 
 
 def _run_root_from_claims_path(path: Path) -> Path:
-    """Best-effort run root detection for 06_drafts/card_drafts/claim_drafts.json."""
+    """Best-effort run root detection for stage claim_drafts.json."""
     resolved = path.resolve()
     candidates: list[Path] = []
+    if resolved.parent.name == "09_claim_drafting":
+        candidates.append(resolved.parent.parent)
     try:
         candidates.append(resolved.parents[2])
     except IndexError:
         pass
     candidates.extend([resolved.parent, *resolved.parents])
     for candidate in candidates:
-        if (candidate / "07_review").exists() or (candidate / "06_drafts").exists():
+        paths = ArtifactPaths(candidate)
+        if paths.stage09.exists() or paths.stage11.exists() or (candidate / "07_review").exists() or (candidate / "06_drafts").exists():
+            migrate_run_artifacts_to_numbered(candidate)
             return candidate
     return resolved.parent
 
 
 def _story_answered_claim_ids(root: Path) -> set[str]:
     """Claim ids already covered by answered Story Questions should not be auto-reviewed."""
-    session_path = root / "07_review" / "story_question_session.json"
+    session_path = ArtifactPaths(root).stage09 / "story_question_session.json"
     session = _read_json_or_default(session_path, {})
     if not isinstance(session, dict):
         return set()
@@ -377,7 +383,7 @@ def _story_answered_claim_ids(root: Path) -> set[str]:
 
 def _author_claim_normalized_texts(root: Path) -> set[str]:
     """Return normalized author-supplied claim texts for duplicate suppression."""
-    payload = _read_json_or_default(root / "07_review" / "author_claims.json", {"claims": []})
+    payload = _read_json_or_default(ArtifactPaths(root).author_claims, {"claims": []})
     texts: set[str] = set()
     for claim in payload.get("claims", []) if isinstance(payload, dict) else []:
         if not isinstance(claim, dict):
@@ -592,8 +598,8 @@ def _coerce_bool(value: Any) -> bool:
 
 
 def _entity_type_attention_reason(proposal: dict[str, Any], entity_type: str) -> str:
-    proposed_type = str(proposal.get("proposed_entity_type", "")).strip().lower()
-    decided_type = str(entity_type).strip().lower()
+    proposed_type = normalize_entity_type(proposal.get("proposed_entity_type", ""), default="")
+    decided_type = normalize_entity_type(entity_type, default="")
     if proposed_type and decided_type and proposed_type != decided_type:
         return f"type changed from {proposed_type} to {decided_type}"
     return ""
@@ -602,9 +608,7 @@ def _entity_type_attention_reason(proposal: dict[str, Any], entity_type: str) ->
 def _postprocess_entity_type(candidate_name: str, entity_type: str, item: dict[str, Any]) -> tuple[str, list[str], str]:
     """Normalize obvious physical-place types while preserving secondary context."""
     key = _name_key(candidate_name)
-    decided_type = str(entity_type or item.get("proposed_entity_type") or "term").strip().lower()
-    if decided_type == "ai_system":
-        decided_type = "character"
+    decided_type = normalize_entity_type(entity_type or item.get("proposed_entity_type") or "term")
     secondary_types: list[str] = []
     reason = ""
     sample_text = "\n".join(str(text) for text in item.get("sample_texts", []) or []).lower()
@@ -684,7 +688,7 @@ def _claim_duplicate_key(claim: dict[str, Any]) -> tuple[str, str, str]:
 def _source_snippets_path_for_claims(patches_path: Path) -> Path | None:
     for parent in [patches_path.parent, *patches_path.parents]:
         for candidate in (
-            parent / "03_relevance" / "snippets_candidates.jsonl",
+            parent / "06_snippet_extraction" / "snippets_candidates.jsonl",
             parent / "snippets_candidates.jsonl",
         ):
             if candidate.exists():
@@ -986,9 +990,7 @@ def _auto_review_conversation_entities(
         response_secondary = resp.get("secondary_entity_types", [])
         if isinstance(response_secondary, list):
             for item in response_secondary:
-                item_type = str(item).strip()
-                if item_type == "ai_system":
-                    item_type = "character"
+                item_type = normalize_entity_type(item, default="")
                 if item_type and item_type not in secondary_types:
                     secondary_types.append(item_type)
         if secondary_types:
@@ -1092,9 +1094,7 @@ def _auto_review_conversation_entities(
         response_secondary = resp.get("secondary_entity_types", [])
         if isinstance(response_secondary, list):
             for item in response_secondary:
-                item_type = str(item).strip()
-                if item_type == "ai_system":
-                    item_type = "character"
+                item_type = normalize_entity_type(item, default="")
                 if item_type and item_type not in secondary_types:
                     secondary_types.append(item_type)
         if secondary_types:

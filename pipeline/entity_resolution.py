@@ -37,6 +37,17 @@ CANONICAL_OVERRIDES = {
     "joy roberts": "Joy Roberts",
 }
 
+ENTITY_TYPE_ALIASES = {"ai_system": "character", "ai system": "character", "ai systems": "character"}
+ENTITY_TYPES = {"character", "faction", "organization", "location", "quest", "event", "timeline_node", "theme", "term"}
+
+
+def normalize_entity_type(entity_type: Any, default: str = "term") -> str:
+    raw = str(entity_type or "").strip().lower()
+    raw = ENTITY_TYPE_ALIASES.get(raw, raw)
+    if raw in ENTITY_TYPES:
+        return raw
+    return default if default in ENTITY_TYPES else "term"
+
 
 def display_name(value: str) -> str:
     cleaned = clean_candidate_name(value)
@@ -100,9 +111,9 @@ def load_entity_records(path: Path | None) -> list[dict[str, Any]]:
     payload = read_json(path)
     if isinstance(payload, dict):
         if isinstance(payload.get("resolved_entities"), list):
-            return [x for x in payload["resolved_entities"] if isinstance(x, dict)]
+            return [{**x, "entity_type": normalize_entity_type(x.get("entity_type", "term"))} for x in payload["resolved_entities"] if isinstance(x, dict)]
         if isinstance(payload.get("entities"), list):
-            return [x for x in payload["entities"] if isinstance(x, dict)]
+            return [{**x, "entity_type": normalize_entity_type(x.get("entity_type", "term"))} for x in payload["entities"] if isinstance(x, dict)]
         if isinstance(payload.get("cards"), list):
             # Backwards-compatible reader for old artifacts.
             out: list[dict[str, Any]] = []
@@ -117,7 +128,7 @@ def load_entity_records(path: Path | None) -> list[dict[str, Any]]:
                         "entity_id": entity_id(name),
                         "entity_seed_id": entity_seed_id(name),
                         "canonical_name": name,
-                        "entity_type": card.get("entity_type", "term"),
+                        "entity_type": normalize_entity_type(card.get("entity_type", "term")),
                         "aliases": card.get("aliases", []),
                         "seed_status": "active",
                     }
@@ -216,7 +227,7 @@ def resolve_entities(seed_entities: list[dict[str, Any]], review_memory: dict[st
             for hint in item.get("relationship_hints", []) or []:
                 if isinstance(hint, dict):
                     relationship_hints.append(hint)
-            entity_type = str(item.get("entity_type", "term"))
+            entity_type = normalize_entity_type(item.get("entity_type", "term"))
             type_counts[entity_type] += 1
         entity_type = sorted(type_counts.items(), key=lambda x: (-x[1], x[0]))[0][0] if type_counts else "term"
         resolved.append(

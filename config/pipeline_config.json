@@ -28,18 +28,28 @@
         "adaptive_min_interval_seconds": 0.5
       },
       "premium_reasoning": {
-        "provider": "anthropic",
-        "api_model": "claude-opus-4-1-20250805",
-        "api_base_url": "https://api.anthropic.com/v1",
-        "rate_state_path": "artifacts/learning/anthropic_premium_reasoning_rate_runtime.json",
+        "provider": "openrouter",
+        "api_model": "google/gemini-3.1-pro-preview",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_gemini_31_premium_reasoning_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5,
-        "timeout_seconds": 180
+        "timeout_seconds": 180,
+        "max_tokens": 8192
       },
       "deep_reasoning": {
-        "provider": "anthropic",
-        "api_model": "claude-sonnet-4-6",
-        "api_base_url": "https://api.anthropic.com/v1",
-        "rate_state_path": "artifacts/learning/anthropic_deep_reasoning_rate_runtime.json",
+        "provider": "openrouter",
+        "api_model": "google/gemini-3.1-pro-preview",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_gemini_31_deep_reasoning_rate_runtime.json",
+        "adaptive_min_interval_seconds": 0.5,
+        "timeout_seconds": 180,
+        "max_tokens": 8192
+      },
+      "card_writing": {
+        "provider": "openrouter",
+        "api_model": "deepseek/deepseek-v4-flash",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_deepseek_card_writing_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5,
         "timeout_seconds": 180,
         "max_tokens": 8192
@@ -81,7 +91,7 @@
         "batch_display_name": "theriac-stage-09-claim-drafting"
       },
       "stage_11_card_synthesis": {
-        "profile": "deep_reasoning",
+        "profile": "card_writing",
         "batch_enabled": false
       },
       "stage_11_card_architecture_agent": {
@@ -105,7 +115,7 @@
   "story_questions": {
     "enabled": true,
     "provider": "openrouter",
-    "model": "deepseek/deepseek-v4-flash",
+    "model": "google/gemini-3.1-pro-preview",
     "max_linked_claims_per_question": 8,
     "application_policy": "moderate"
   },

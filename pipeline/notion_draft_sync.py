@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 import requests
 
+from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import get_logger, now_utc_iso, read_json, write_json
 from pipeline.ui_review_app import card_review_sections
 
@@ -18,7 +19,6 @@ NOTION_API_BASE = "https://api.notion.com/v1"
 RICH_TEXT_LIMIT = 1900
 APPEND_BLOCK_LIMIT = 100
 STATE_PATH = Path("artifacts/learning/notion_draft_cards_state.json")
-REPORT_PATH = Path("08_notion/notion_draft_sync_report.json")
 DATABASE_TITLE = "THERIAC Draft Lore Cards"
 
 
@@ -358,7 +358,7 @@ def page_properties_for_card(card: dict[str, Any], run_id: str, review_status: s
         "Evidence Count": {"number": len(card.get("source_evidence", []) or [])},
         "Word Count": {"number": card_word_count(card)},
         "Last Synced": {"date": {"start": now_utc_iso()}},
-        "Local Artifact Path": _rich_property(str(run_root / "07_review" / "card_drafts.json")),
+        "Local Artifact Path": _rich_property(str(ArtifactPaths(run_root).card_drafts)),
     }
 
 
@@ -424,15 +424,17 @@ def sync_draft_cards_to_notion(
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     logger = get_logger(__name__)
-    out_report = run_root / REPORT_PATH
+    migrate_run_artifacts_to_numbered(run_root)
+    paths = ArtifactPaths(run_root)
+    out_report = paths.notion_draft_sync_report
 
     def log(message: str) -> None:
         logger.info(message)
         if progress_callback:
             progress_callback(message)
 
-    card_drafts_path = run_root / "07_review" / "card_drafts.json"
-    decisions_path = run_root / "07_review" / "card_review_decisions.json"
+    card_drafts_path = paths.card_drafts
+    decisions_path = paths.card_review_decisions
     payload = _read_json_or_default(card_drafts_path, {"cards": []})
     cards = [card for card in payload.get("cards", []) if isinstance(card, dict)] if isinstance(payload, dict) else []
     report: dict[str, Any] = {
@@ -450,7 +452,7 @@ def sync_draft_cards_to_notion(
         "created_at_utc": now_utc_iso(),
     }
     if not cards:
-        report["reason"] = "No draft cards found at 07_review/card_drafts.json."
+        report["reason"] = "No draft cards found at 11_card_synthesis/card_drafts.json."
         write_json(out_report, report)
         return report
 

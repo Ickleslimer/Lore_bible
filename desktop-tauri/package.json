@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "tauri build && node scripts/copy-release-exe.mjs",
     "dev:vite": "vite --host 127.0.0.1",
     "build:vite": "vite build",
+    "copy:exe": "node scripts/copy-release-exe.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.0",
+    "@xyflow/svelte": "^1.5.2",
     "lucide-svelte": "^0.468.0",
     "svelte": "^5.55.8"
   },

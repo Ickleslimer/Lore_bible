@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 from time import perf_counter
 
+from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import get_logger, read_json, read_jsonl, setup_logging
 from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
@@ -56,6 +57,8 @@ def main() -> None:
     setup_logging(args.log_level)
     logger = get_logger(__name__)
     root = args.artifacts_root
+    migrate_run_artifacts_to_numbered(root)
+    paths = ArtifactPaths(root)
     thematic_runtime_path = root / "learning" / "thematic_profile_runtime.json"
     total_stages = 12
 
@@ -65,14 +68,14 @@ def main() -> None:
         total_stages,
         "Stage 05 Conversation Patch Notes",
         run_stage_05,
-        root / "02_timeline" / "messages_relevant_conversations.jsonl",
-        root / "02_timeline" / "conversation_segments.json",
-        root / "02_timeline" / "conversation_patch_notes.json",
-        root / "02_timeline" / "conversation_patch_notes.jsonl",
-        root / "02_timeline" / "conversation_patch_note_failures.json",
+        paths.relevant_messages,
+        paths.conversation_segments,
+        paths.conversation_patch_notes,
+        paths.conversation_patch_notes_jsonl,
+        paths.conversation_patch_note_failures,
         Path("config/pipeline_config.json"),
     )
-    stage_05_index = read_json(root / "02_timeline" / "conversation_patch_notes.json")
+    stage_05_index = read_json(paths.conversation_patch_notes)
     logger.info(
         "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
         int(stage_05_index.get("notes_count", 0)),
@@ -86,21 +89,21 @@ def main() -> None:
         total_stages,
         "Stage 06 Snippet Extraction",
         run_stage_06,
-        root / "02_timeline" / "messages_relevant_conversations.jsonl",
-        root / "03_relevance" / "dm_source_profiles.json",
-        root / "03_relevance" / "snippets_candidates.jsonl",
-        root / "03_relevance" / "snippets_needs_review.jsonl",
-        root / "03_relevance" / "dm_source_profiles.json",
+        paths.relevant_messages,
+        paths.source_profiles,
+        paths.snippets,
+        paths.snippets_needs_review,
+        paths.source_profiles,
         Path("config/pipeline_config.json"),
-        root / "01_bootstrap" / "entity_seed.json",
+        paths.entity_seed,
         thematic_runtime_path,
-        root / "02_timeline" / "conversation_patch_notes.json",
+        paths.conversation_patch_notes,
     )
     logger.info(
         "Stage 06 summary: snippets=%d, needs_review=%d, profiles=%d",
-        _count_jsonl(root / "03_relevance" / "snippets_candidates.jsonl"),
-        _count_jsonl(root / "03_relevance" / "snippets_needs_review.jsonl"),
-        len(read_json(root / "03_relevance" / "dm_source_profiles.json").get("profiles", [])),
+        _count_jsonl(paths.snippets),
+        _count_jsonl(paths.snippets_needs_review),
+        len(read_json(paths.source_profiles).get("profiles", [])),
     )
 
     _run_stage(
@@ -109,14 +112,14 @@ def main() -> None:
         total_stages,
         "Stage 07 Entity Resolution",
         run_stage_07,
-        root / "03_relevance" / "snippets_candidates.jsonl",
-        root / "01_bootstrap" / "entity_seed.json",
-        root / "05_alias" / "alias_map.json",
-        root / "05_alias" / "entity_timelines.json",
-        root / "05_alias" / "resolved_entities.json",
+        paths.snippets,
+        paths.entity_seed,
+        paths.alias_map,
+        paths.entity_timelines,
+        paths.resolved_entities,
         Path("canon/review_memory.json"),
-        root / "05_alias" / "conversation_entity_proposals.json",
-        root / "05_alias" / "conversation_entity_decisions.json",
+        paths.conversation_entity_proposals,
+        paths.conversation_entity_decisions,
         Path("config/pipeline_config.json"),
     )
 
@@ -126,10 +129,10 @@ def main() -> None:
         total_stages,
         "Stage 08 Snippet Grouping",
         run_stage_08,
-        root / "03_relevance" / "snippets_candidates.jsonl",
-        root / "05_alias" / "resolved_entities.json",
-        root / "04_grouping" / "snippet_clusters_lore.json",
-        root / "04_grouping" / "snippet_clusters_meta.json",
+        paths.snippets,
+        paths.resolved_entities,
+        paths.snippet_clusters_lore,
+        paths.snippet_clusters_meta,
         Path("config/pipeline_config.json"),
         thematic_runtime_path,
     )
@@ -140,12 +143,12 @@ def main() -> None:
         total_stages,
         "Stage 09 Claim Drafting",
         run_stage_09,
-        root / "05_alias" / "resolved_entities.json",
-        root / "04_grouping" / "snippet_clusters_lore.json",
-        root / "04_grouping" / "snippet_clusters_meta.json",
-        root / "05_alias" / "alias_map.json",
-        root / "03_relevance" / "snippets_candidates.jsonl",
-        root / "06_drafts" / "card_drafts",
+        paths.resolved_entities,
+        paths.snippet_clusters_lore,
+        paths.snippet_clusters_meta,
+        paths.alias_map,
+        paths.snippets,
+        paths.claim_drafting_dir,
         Path("config/pipeline_config.json"),
         Path("canon/review_memory.json"),
     )

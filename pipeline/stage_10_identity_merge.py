@@ -18,6 +18,7 @@ from pipeline.stage_11_card_synthesis import (
     _load_identity_merge_proposals,
     annotate_identity_merge_proposals,
     apply_claim_decisions,
+    build_identity_merged_entities_preview,
     default_author_claim_decisions,
     default_author_claims_path,
     detect_identity_merge_proposals,
@@ -101,6 +102,15 @@ def run(
 
     remember_identity_merge_decisions(memory, identity_merge_proposals, identity_merge_decisions)
     identity_merge_proposals = annotate_identity_merge_proposals(identity_merge_proposals, identity_merge_decisions)
+    write_json(
+        out_identity_merge_proposals_json.with_name("identity_merged_entities_preview.json"),
+        build_identity_merged_entities_preview(
+            entities,
+            identity_merge_proposals,
+            identity_merge_decisions,
+            include_pending=True,
+        ),
+    )
     write_json(
         out_identity_merge_proposals_json,
         {

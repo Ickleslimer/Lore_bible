@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.common import now_utc_iso, read_json, write_json
+from pipeline.entity_resolution import normalize_entity_type
 
 
 MEMORY_VERSION = 1
@@ -64,10 +65,7 @@ def save_review_memory(path: Path, memory: dict[str, Any]) -> None:
 
 
 def normalize_memory_entity_type(entity_type: Any) -> str:
-    raw = str(entity_type or "").strip().lower()
-    if raw == "ai_system":
-        return "character"
-    return raw or "term"
+    return normalize_entity_type(entity_type, "term")
 
 
 def normalize_claim_text(text: str) -> str:

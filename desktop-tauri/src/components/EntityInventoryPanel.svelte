@@ -1,0 +1,379 @@
+<script lang="ts">
+  import { createEventDispatcher } from "svelte";
+  import { Check, ChevronDown, ChevronRight, HelpCircle, Search, X } from "lucide-svelte";
+  import { decideEntity, loadEntityEvidence } from "../lib/api";
+  import type { EntityEvidenceResponse, InventoryRow } from "../lib/types";
+
+  export let artifactsRoot = "";
+  export let rows: InventoryRow[] = [];
+  export let mergedRows: InventoryRow[] = [];
+  export let mergedMetadata: Record<string, unknown> = {};
+  export let disabled = false;
+
+  const dispatch = createEventDispatcher<{ changed: void }>();
+
+  let search = "";
+  let bucket = "all";
+  let category = "all";
+  let sortKey = "evidence";
+  let descending = true;
+  let visibleLimit = 350;
+  let localError = "";
+  let viewMode: "merged" | "candidates" = "merged";
+  let expanded: Record<string, boolean> = {};
+  let rationales: Record<string, string> = {};
+  let workingCanonical: Record<string, string> = {};
+  let workingType: Record<string, string> = {};
+  let evidenceByRow: Record<string, EntityEvidenceResponse> = {};
+  let evidenceLoading: Record<string, boolean> = {};
+
+  const entityTypes = ["term", "theme", "quest", "event", "character", "faction", "organization", "location", "timeline_node"];
+
+  $: hasMergedRows = mergedRows.length > 0;
+  $: if (!hasMergedRows && viewMode === "merged") viewMode = "candidates";
+  $: activeRows = viewMode === "merged" && hasMergedRows ? mergedRows : rows;
+  $: buckets = uniqueValues(activeRows.map((row) => row.bucket));
+  $: categories = uniqueValues(activeRows.map((row) => row.category));
+  $: filtered = sortRows(
+    activeRows.filter((row) => {
+      const haystack = [
+        row.candidate_name,
+        row.raw_candidate_name,
+        row.canonical_name,
+        row.proposed_entity_type,
+        row.triage_reason,
+        row.decision,
+        ...(row.topics ?? []),
+        ...(row.tracks ?? []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      const query = search.trim().toLowerCase();
+      return (bucket === "all" || row.bucket === bucket)
+        && (category === "all" || row.category === category)
+        && (!query || haystack.includes(query));
+    }),
+  );
+  $: visibleRows = filtered.slice(0, visibleLimit);
+
+  function uniqueValues(values: Array<string | undefined>): string[] {
+    return Array.from(new Set(values.map((value) => String(value || "").trim()).filter(Boolean))).sort();
+  }
+
+  function textValue(row: InventoryRow): string {
+    return String(row.raw_candidate_name || row.candidate_name || "");
+  }
+
+  function canonicalFor(row: InventoryRow): string {
+    return workingCanonical[row.row_id] ?? String(row.canonical_name || row.raw_candidate_name || row.candidate_name || "");
+  }
+
+  function entityTypeFor(row: InventoryRow): string {
+    return workingType[row.row_id] ?? String(row.proposed_entity_type || "term");
+  }
+
+  function reviewLabel(row: InventoryRow): string {
+    return String(row.decision || row.review_priority || row.bucket || "pending");
+  }
+
+  function isMergedRow(row: InventoryRow): boolean {
+    return row.row_kind === "merged_entity";
+  }
+
+  async function toggleExpanded(row: InventoryRow) {
+    expanded[row.row_id] = !expanded[row.row_id];
+    if (expanded[row.row_id]) {
+      await ensureEvidence(row);
+    }
+  }
+
+  async function ensureEvidence(row: InventoryRow) {
+    if (evidenceByRow[row.row_id] || evidenceLoading[row.row_id]) return;
+    evidenceLoading[row.row_id] = true;
+    try {
+      evidenceByRow[row.row_id] = await loadEntityEvidence(
+        artifactsRoot,
+        row.row_id,
+        isMergedRow(row) ? "merged" : "candidates",
+      );
+    } catch (err) {
+      localError = err instanceof Error ? err.message : String(err);
+    } finally {
+      evidenceLoading[row.row_id] = false;
+    }
+  }
+
+  function metadataText(key: string): string {
+    const value = mergedMetadata?.[key];
+    if (value === undefined || value === null || value === "") return "0";
+    return String(value);
+  }
+
+  function textField(value: unknown): string {
+    return String(value ?? "").trim();
+  }
+
+  function rowAliases(row: InventoryRow): string[] {
+    const aliases = row.item?.aliases;
+    if (!Array.isArray(aliases)) return [];
+    return aliases.map((alias) => String(alias)).filter(Boolean).slice(0, 12);
+  }
+
+  function sortRows(input: InventoryRow[]): InventoryRow[] {
+    const copy = [...input];
+    copy.sort((a, b) => String(a.candidate_name || "").localeCompare(String(b.candidate_name || "")));
+    copy.sort((a, b) => {
+      const left = sortValue(a);
+      const right = sortValue(b);
+      if (typeof left === "number" && typeof right === "number") {
+        return descending ? right - left : left - right;
+      }
+      return descending ? String(right).localeCompare(String(left)) : String(left).localeCompare(String(right));
+    });
+    return copy;
+  }
+
+  function sortValue(row: InventoryRow): string | number {
+    if (sortKey === "evidence") return Number(row.evidence_count ?? 0);
+    if (sortKey === "bucket") return row.bucket;
+    if (sortKey === "category") return row.category;
+    if (sortKey === "type") return row.proposed_entity_type || "";
+    if (sortKey === "decision") return row.decision || "";
+    return row.candidate_name || "";
+  }
+
+  async function decide(row: InventoryRow, decision: "approve" | "reject" | "defer" | "needs_more_context") {
+    localError = "";
+    try {
+      await decideEntity({
+        artifacts_root: artifactsRoot,
+        row_id: row.row_id,
+        decision,
+        canonical_name: canonicalFor(row),
+        entity_type: entityTypeFor(row),
+        rationale: rationales[row.row_id] || "",
+      });
+      rationales[row.row_id] = "";
+      dispatch("changed");
+    } catch (err) {
+      localError = err instanceof Error ? err.message : String(err);
+    }
+  }
+</script>
+
+<section class="inventory-panel">
+  <div class="entity-view-switcher">
+    <div>
+      <span class="caption">Entity View</span>
+      <h3>{viewMode === "merged" ? "Merged Entity List" : "Candidate Review"}</h3>
+      <p>
+        {#if hasMergedRows}
+          Stage 10 preview: {metadataText("source_entity_count")} source entities -> {metadataText("merged_entity_count")} merged entities, {metadataText("merge_record_count")} merge records.
+        {:else}
+          Stage 10 merged entity preview is not available yet.
+        {/if}
+      </p>
+    </div>
+    <div class="segmented-control">
+      <button class:active={viewMode === "merged"} disabled={!hasMergedRows} on:click={() => (viewMode = "merged")}>
+        Merged List
+      </button>
+      <button class:active={viewMode === "candidates"} on:click={() => (viewMode = "candidates")}>
+        Candidates
+      </button>
+    </div>
+  </div>
+
+  <div class="review-toolbar inventory-toolbar">
+    <label class="search-box">
+      <Search size={16} />
+      <input bind:value={search} placeholder="Search entities" />
+    </label>
+    <select bind:value={bucket}>
+      <option value="all">All buckets</option>
+      {#each buckets as value}
+        <option value={value}>{value}</option>
+      {/each}
+    </select>
+    <select bind:value={category}>
+      <option value="all">All categories</option>
+      {#each categories as value}
+        <option value={value}>{value}</option>
+      {/each}
+    </select>
+    <select bind:value={sortKey}>
+      <option value="evidence">Sort: evidence</option>
+      <option value="bucket">Sort: bucket</option>
+      <option value="category">Sort: category</option>
+      <option value="type">Sort: type</option>
+      <option value="decision">Sort: decision</option>
+      <option value="name">Sort: name</option>
+    </select>
+    <button class="secondary" on:click={() => (descending = !descending)}>
+      {descending ? "High to low" : "Low to high"}
+    </button>
+  </div>
+
+  <div class="inventory-summary">
+    <strong>{filtered.length}</strong>
+    <span>{viewMode === "merged" ? "merged entities" : "entity candidates"} matched. Showing {visibleRows.length}.</span>
+  </div>
+
+  {#if localError}
+    <div class="error-banner">{localError}</div>
+  {/if}
+
+  <div class="entity-candidate-grid">
+    {#each visibleRows as row}
+      <article class={`entity-candidate-card ${row.bucket} ${expanded[row.row_id] ? "expanded" : ""}`}>
+        <header class="entity-candidate-header">
+          <div>
+            <span class="caption">{row.bucket} - {row.category}</span>
+            <h3>{row.candidate_name}</h3>
+          </div>
+          <button
+            class="compact secondary"
+            aria-expanded={Boolean(expanded[row.row_id])}
+            on:click={() => toggleExpanded(row)}
+          >
+            {#if expanded[row.row_id]}
+              <ChevronDown size={15} /> Open
+            {:else}
+              <ChevronRight size={15} /> Details
+            {/if}
+          </button>
+        </header>
+
+        <div class="entity-card-stats">
+          <span><strong>{row.evidence_count ?? 0}</strong> evidence</span>
+          <span>{row.proposed_entity_type || "type unknown"}</span>
+          <span>{reviewLabel(row)}</span>
+        </div>
+
+        <p class="entity-card-preview">{row.triage_reason || textValue(row) || "No preview recorded."}</p>
+
+        {#if isMergedRow(row) && rowAliases(row).length}
+          <div class="inventory-meta compact-meta">
+            {#each rowAliases(row) as alias}
+              <span>{alias}</span>
+            {/each}
+          </div>
+        {/if}
+
+        {#if row.tracks?.length || row.topics?.length}
+          <div class="inventory-meta compact-meta">
+            {#if row.tracks?.length}<span>{row.tracks.join(", ")}</span>{/if}
+            {#if row.topics?.length}<span>{row.topics.slice(0, 3).join(", ")}</span>{/if}
+          </div>
+        {/if}
+
+        {#if expanded[row.row_id]}
+          <div class="entity-card-details">
+            {#if textValue(row) && textValue(row) !== row.candidate_name}
+              <p class="inventory-reason"><strong>Source:</strong> {textValue(row)}</p>
+            {/if}
+
+            {#if evidenceLoading[row.row_id]}
+              <p class="quiet-meta">Loading evidence...</p>
+            {:else if evidenceByRow[row.row_id]}
+              <div class="entity-evidence-panel">
+                {#if evidenceByRow[row.row_id].merged_from_entities.length}
+                  <section>
+                    <span class="caption">Merged From</span>
+                    <div class="inventory-meta">
+                      {#each evidenceByRow[row.row_id].merged_from_entities as source}
+                        <span>{textField(source.canonical_name || source.entity_id)}</span>
+                      {/each}
+                    </div>
+                  </section>
+                {/if}
+
+                {#if evidenceByRow[row.row_id].merge_records.length}
+                  <section>
+                    <span class="caption">Merge Evidence</span>
+                    {#each evidenceByRow[row.row_id].merge_records.slice(0, 6) as record}
+                      <p class="inventory-reason">
+                        {textField(record.source_entity_name)} -> {textField(record.target_entity_name)}
+                        {#if record.rationale}: {textField(record.rationale)}{/if}
+                      </p>
+                    {/each}
+                  </section>
+                {/if}
+
+                {#if evidenceByRow[row.row_id].claims.length}
+                  <section>
+                    <span class="caption">Accepted Claims</span>
+                    {#each evidenceByRow[row.row_id].claims.slice(0, 10) as claim}
+                      <p class="inventory-reason">{textField(claim.claim_text)}</p>
+                    {/each}
+                  </section>
+                {/if}
+
+                {#if evidenceByRow[row.row_id].sample_texts.length}
+                  <section>
+                    <span class="caption">Evidence Samples</span>
+                    {#each evidenceByRow[row.row_id].sample_texts.slice(0, 8) as sample}
+                      <p class="inventory-reason">{sample}</p>
+                    {/each}
+                  </section>
+                {/if}
+
+                {#if evidenceByRow[row.row_id].type_evidence.length}
+                  <section>
+                    <span class="caption">Type Evidence</span>
+                    <div class="inventory-meta">
+                      {#each evidenceByRow[row.row_id].type_evidence.slice(0, 12) as evidence}
+                        <span>{textField(evidence.entity_type)}: {textField(evidence.basis)}</span>
+                      {/each}
+                    </div>
+                  </section>
+                {/if}
+
+                {#if evidenceByRow[row.row_id].snippets.length}
+                  <section>
+                    <span class="caption">Source Snippets</span>
+                    {#each evidenceByRow[row.row_id].snippets.slice(0, 8) as snippet}
+                      <p class="inventory-reason">
+                        <strong>{textField(snippet.topic_label || snippet.snippet_id)}</strong>
+                        {#if snippet.text}: {textField(snippet.text)}{/if}
+                      </p>
+                    {/each}
+                  </section>
+                {/if}
+              </div>
+            {/if}
+
+            {#if !isMergedRow(row)}
+              <div class="entity-edit-row">
+                <label>
+                  <span class="caption">Canonical</span>
+                  <input value={canonicalFor(row)} on:input={(event) => (workingCanonical[row.row_id] = event.currentTarget.value)} />
+                </label>
+                <label>
+                  <span class="caption">Type</span>
+                  <select value={entityTypeFor(row)} on:change={(event) => (workingType[row.row_id] = event.currentTarget.value)}>
+                    {#each entityTypes as value}
+                      <option value={value}>{value}</option>
+                    {/each}
+                  </select>
+                </label>
+              </div>
+
+              <textarea bind:value={rationales[row.row_id]} placeholder="Decision rationale"></textarea>
+
+              <div class="inventory-actions">
+                <button disabled={disabled} on:click={() => decide(row, "approve")}><Check size={16} /> Approve</button>
+                <button class="secondary" disabled={disabled} on:click={() => decide(row, "defer")}><HelpCircle size={16} /> Defer</button>
+                <button class="danger" disabled={disabled} on:click={() => decide(row, "reject")}><X size={16} /> Reject</button>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </article>
+    {/each}
+  </div>
+
+  {#if visibleRows.length < filtered.length}
+    <button class="secondary load-more" on:click={() => (visibleLimit += 350)}>Show more</button>
+  {/if}
+</section>

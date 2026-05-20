@@ -14,6 +14,7 @@ desktop-tauri/dist/
 desktop-tauri/src-tauri/target/
 build/
 dist/
+theriac-lore-tauri.exe
 *.spec
 
 .cursor/

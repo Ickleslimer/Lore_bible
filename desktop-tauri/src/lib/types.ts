@@ -158,4 +158,127 @@ export interface InventoryResponse {
   active_root: string;
   rows: InventoryRow[];
   total: number;
+  merged_rows?: InventoryRow[];
+  merged_total?: number;
+  merged_metadata?: Record<string, unknown>;
+}
+
+export interface EntityEvidenceResponse {
+  active_root: string;
+  row_id: string;
+  view: "candidates" | "merged" | string;
+  claims: Array<Record<string, unknown>>;
+  snippets: Array<Record<string, unknown>>;
+  sample_texts: string[];
+  type_evidence: Array<Record<string, unknown>>;
+  merge_records: Array<Record<string, unknown>>;
+  merged_from_entities: Array<Record<string, unknown>>;
+  aliases: Array<unknown>;
+}
+
+export interface DraftCardSection {
+  key: string;
+  title: string;
+  text: string;
+  word_count: number;
+}
+
+export interface DraftCardItem {
+  card_id: string;
+  canonical_name: string;
+  entity_type?: string;
+  status: string;
+  summary: string;
+  sections: DraftCardSection[];
+  word_count: number;
+  section_count: number;
+  claim_count: number;
+  evidence_count: number;
+  relationships?: Array<Record<string, unknown>>;
+  timeline?: Array<Record<string, unknown>>;
+  wiki_links?: Array<Record<string, unknown>>;
+  unresolved_conflicts?: Array<unknown>;
+  item: Record<string, unknown>;
+}
+
+export interface DraftCardsMetadata {
+  source_kind?: string;
+  source_path?: string;
+  updated_at_utc?: string;
+  status?: string;
+  processed_count?: number;
+  total_count?: number;
+  current_entity_id?: string;
+  current_entity_name?: string;
+  failure_count?: number;
+}
+
+export interface DraftCardsResponse {
+  active_root: string;
+  metadata: DraftCardsMetadata;
+  cards: DraftCardItem[];
+  total: number;
+  failures: Array<Record<string, unknown>>;
+}
+
+export interface RelationshipGraphNode {
+  node_id: string;
+  entity_id?: string;
+  card_id?: string;
+  name: string;
+  entity_type?: string;
+  aliases?: string[];
+  resolved?: boolean;
+  degree: number;
+  evidence_count: number;
+  track_counts?: Record<string, number>;
+  source?: string;
+  [key: string]: unknown;
+}
+
+export interface RelationshipGraphEdge {
+  edge_id: string;
+  source_id: string;
+  target_id: string;
+  source_name: string;
+  target_name: string;
+  relation_type: string;
+  track: string;
+  evidence_count: number;
+  confidence?: number | null;
+  descriptions?: string[];
+  support_ids?: string[];
+  source_refs?: string[];
+  source_kinds?: string[];
+  [key: string]: unknown;
+}
+
+export interface RelationshipGraphResponse {
+  active_root: string;
+  nodes: RelationshipGraphNode[];
+  edges: RelationshipGraphEdge[];
+  metadata: Record<string, unknown>;
+}
+
+export interface CardAgentTransaction {
+  transaction_id: string;
+  request_id?: string;
+  request_text?: string;
+  status: string;
+  started_at_utc?: string;
+  finished_at_utc?: string;
+  rationale?: string;
+  error?: string;
+  steps?: Array<Record<string, unknown>>;
+  write_set?: Array<Record<string, unknown>>;
+  validation?: Record<string, unknown>;
+  reverses_transaction_id?: string;
+  [key: string]: unknown;
+}
+
+export interface CardAgentActivityResponse {
+  active_root: string;
+  transactions: CardAgentTransaction[];
+  total: number;
+  source_path?: string;
 }

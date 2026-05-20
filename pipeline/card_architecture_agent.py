@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from pipeline.artifact_paths import ArtifactPaths
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json, write_jsonl
 from pipeline.entity_resolution import card_id_for_entity, normalized_name_key
 from pipeline.model_provider import call_model_chat, model_call_kwargs
@@ -137,7 +138,7 @@ def append_card_edit_request(
         "status": "pending",
         "created_at_utc": created_at,
     }
-    path = artifacts_root / "07_review" / CARD_EDIT_REQUESTS_FILENAME
+    path = ArtifactPaths(artifacts_root).card_edit_requests
     rows = load_card_edit_requests(path) if path.exists() else []
     rows.append(row)
     write_jsonl(path, rows)
@@ -608,7 +609,11 @@ def prepare_card_architecture_review(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     ensure_card_architecture_files(review_dir)
     paths = card_architecture_paths(review_dir)
-    requests = [row for row in load_card_edit_requests(paths["requests"]) if str(row.get("status", "pending")) != "cancelled"]
+    requests = [
+        row
+        for row in load_card_edit_requests(paths["requests"])
+        if str(row.get("status", "pending")).strip().lower() == "pending"
+    ]
     existing_proposals = load_card_architecture_proposals(paths["proposals"])
     covered_request_ids = {
         str(proposal.get("request_id", "")).strip()
@@ -948,16 +953,28 @@ def apply_card_architecture_actions(
         for entity_id, entity in entity_by_id.items()
         if entity_id not in suppress_entity_ids
     ]
+    existing_applied_payload = read_json(paths["applied"]) if paths["applied"].exists() else {"applied_actions": []}
+    existing_applied_actions = [
+        row
+        for row in existing_applied_payload.get("applied_actions", [])
+        if isinstance(row, dict) and str(row.get("source", "")) == "cardbase_agent"
+    ] if isinstance(existing_applied_payload, dict) else []
+    existing_redirect_payload = read_json(paths["redirects"]) if paths["redirects"].exists() else {"redirects": []}
+    existing_redirects = [
+        row
+        for row in existing_redirect_payload.get("redirects", [])
+        if isinstance(row, dict) and str(row.get("card_agent_transaction_id", "")).strip()
+    ] if isinstance(existing_redirect_payload, dict) else []
     write_json(
         paths["applied"],
         {
             "generated_at_utc": now_utc_iso(),
-            "applied_actions": applied_actions,
+            "applied_actions": existing_applied_actions + applied_actions,
             "suppressed_entity_ids": sorted(suppress_entity_ids),
             "suppressed_claim_ids": sorted(suppressed_claim_ids),
         },
     )
-    write_json(paths["redirects"], {"generated_at_utc": now_utc_iso(), "redirects": redirects})
+    write_json(paths["redirects"], {"generated_at_utc": now_utc_iso(), "redirects": existing_redirects + redirects})
     write_json(paths["failures"], {"generated_at_utc": now_utc_iso(), "failures": failures})
 
     existing_action_ids = {

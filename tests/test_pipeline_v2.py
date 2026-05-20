@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from pipeline.artifact_paths import ArtifactPaths
+from pipeline.cardbase_agent import load_card_agent_transactions, run_pending_card_agent_requests, undo_card_agent_transaction
 from pipeline.common import stable_id
 from pipeline.auto_review import AutoReviewResult, _auto_review_claims, _auto_review_conversation_entities
 from pipeline.entity_resolution import normalized_name_key, resolve_entities
 from pipeline.model_provider import (
-    _call_anthropic_chat,
     _call_gemini_chat,
     _call_openrouter_chat,
     _extract_inline_responses,
@@ -81,6 +82,7 @@ from pipeline.ui_review_app import (
     render_pipeline_progress_html,
     save_last_open_artifacts_root,
 )
+from pipeline.tauri_bridge import handle_request
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -988,6 +990,19 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(synthesis_kwargs["provider"], "openrouter")
         self.assertEqual(synthesis_kwargs["api_model"], "qwen/qwen3-235b-a22b-2507")
         self.assertIn("openrouter_qwen_instruct_rate_runtime", str(synthesis_kwargs["rate_state_path"]))
+
+    def test_default_pipeline_config_routes_agentic_reasoning_to_gemini_31(self) -> None:
+        config = json.loads((Path("config") / "pipeline_config.json").read_text(encoding="utf-8"))
+
+        agent_kwargs = model_call_kwargs(config, "stage_11_card_architecture_agent")
+        identity_kwargs = model_call_kwargs(config, "stage_10_identity_merge_cluster_judgement")
+
+        self.assertEqual(agent_kwargs["provider"], "openrouter")
+        self.assertEqual(agent_kwargs["api_model"], "google/gemini-3.1-pro-preview")
+        self.assertIn("openrouter_gemini_31_deep_reasoning", str(agent_kwargs["rate_state_path"]))
+        self.assertEqual(identity_kwargs["api_model"], "google/gemini-3.1-pro-preview")
+        self.assertEqual(config["story_questions"]["provider"], "openrouter")
+        self.assertEqual(config["story_questions"]["model"], "google/gemini-3.1-pro-preview")
 
     def test_gemini_batch_response_parser_handles_nested_inline_responses(self) -> None:
         body = {
@@ -3552,6 +3567,123 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertNotIn("lore_bible_seed", canonical_cards[0]["source_evidence"])
             self.assertEqual(canonical_cards[0]["details"]["support_map"]["summary"], ["claim1"])
 
+    def test_stage_11_checkpoints_partial_card_drafts_before_interrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_hectr",
+                            "card_id": "card_hectr",
+                            "canonical_name": "HECTR",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                        {
+                            "entity_id": "entity_ruinr",
+                            "card_id": "card_ruinr",
+                            "canonical_name": "RUINR",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                    ]
+                },
+            )
+            claims = [
+                {
+                    "claim_id": "claim_hectr",
+                    "target_entity_id": "entity_hectr",
+                    "target_card_id": "card_hectr",
+                    "target_entity_name": "HECTR",
+                    "knowledge_track": "lore",
+                    "claim_text": "HECTR is a Krypteia AI ancestor.",
+                    "claim_type": "relationship",
+                    "source_snippet_ids": ["s1"],
+                    "confidence": 0.82,
+                    "status": "draft",
+                    "contradiction_notes": "",
+                    "created_at_utc": "2026-05-16T00:00:00Z",
+                },
+                {
+                    "claim_id": "claim_ruinr",
+                    "target_entity_id": "entity_ruinr",
+                    "target_card_id": "card_ruinr",
+                    "target_entity_name": "RUINR",
+                    "knowledge_track": "lore",
+                    "claim_text": "RUINR is tied to ACHILLES.",
+                    "claim_type": "relationship",
+                    "source_snippet_ids": ["s2"],
+                    "confidence": 0.82,
+                    "status": "draft",
+                    "contradiction_notes": "",
+                    "created_at_utc": "2026-05-16T00:00:00Z",
+                },
+            ]
+            write_json(root / "claim_drafts.json", {"claims": claims})
+            write_json(
+                root / "claim_decisions.json",
+                {
+                    "decisions": [
+                        {"claim_id": "claim_hectr", "decision": "accept", "reviewer": "r", "rationale": "ok"},
+                        {"claim_id": "claim_ruinr", "decision": "accept", "reviewer": "r", "rationale": "ok"},
+                    ]
+                },
+            )
+            write_json(root / "card_decisions.json", {"decisions": []})
+            write_json(root / "directives.json", {"directives": []})
+            write_json(root / "memory.json", {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
+            model_card = {
+                "summary": "HECTR is a Krypteia AI ancestor synthesized from reviewed claims.",
+                "sections": {
+                    "background": "Reviewed claim background.",
+                    "role_in_story": "It shapes Krypteia systems.",
+                    "relationships": "Linked to Krypteia AI.",
+                    "timeline": "",
+                    "inspirations": "",
+                    "open_questions": "",
+                },
+                "relationships": [],
+                "timeline": [],
+                "support_map": {
+                    "summary": ["claim_hectr"],
+                    "background": ["claim_hectr"],
+                    "role_in_story": ["claim_hectr"],
+                    "relationships": ["claim_hectr"],
+                    "timeline": [],
+                    "inspirations": [],
+                    "open_questions": [],
+                },
+            }
+
+            with patch("pipeline.stage_11_card_synthesis.synthesize_card_with_model", side_effect=[model_card, ValueError("interrupted")]):
+                with self.assertRaises(ValueError):
+                    run_stage_11(
+                        root / "resolved_entities.json",
+                        root / "claim_drafts.json",
+                        root / "claim_decisions.json",
+                        root / "card_decisions.json",
+                        root / "directives.json",
+                        root / "memory.json",
+                        root / "card_drafts.json",
+                        root / "canonical_cards.json",
+                        root / "merge_log.jsonl",
+                        None,
+                    )
+
+            self.assertFalse((root / "card_drafts.json").exists())
+            checkpoint = json.loads((root / "card_synthesis_checkpoint.json").read_text(encoding="utf-8"))
+            partial = json.loads((root / "card_drafts.partial.json").read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint["status"], "running")
+            self.assertEqual(checkpoint["processed_count"], 1)
+            self.assertEqual(checkpoint["total_count"], 2)
+            self.assertEqual(checkpoint["draft_card_count"], 1)
+            self.assertEqual(checkpoint["cards"][0]["canonical_name"], "HECTR")
+            self.assertEqual(partial["cards"][0]["card_id"], "card_hectr")
+
     def test_stage_11_card_synthesis_prompt_requests_full_fandom_wiki_style_entry(self) -> None:
         prompt = build_card_synthesis_prompt(
             {"canonical_name": "HECTR", "entity_type": "character"},
@@ -3679,6 +3811,366 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(draft_card["details"]["accepted_claim_ids"], ["author_claim_tunnel_mycelium"])
             self.assertEqual(draft_card["details"]["support_map"]["summary"], ["author_claim_tunnel_mycelium"])
             self.assertEqual(memory["accepted_claims"][0]["claim_id"], "author_claim_tunnel_mycelium")
+
+    def test_cardbase_agent_identity_merge_transaction_and_undo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            entities = [
+                {
+                    "entity_id": "entity_pandoras_mother",
+                    "card_id": "card_pandoras_mother",
+                    "canonical_name": "Pandora's mother",
+                    "entity_type": "character",
+                    "aliases": [],
+                    "resolution_status": "resolved",
+                },
+                {
+                    "entity_id": "entity_izanami",
+                    "card_id": "card_izanami",
+                    "canonical_name": "Izanami",
+                    "entity_type": "character",
+                    "aliases": [],
+                    "resolution_status": "resolved",
+                },
+                {
+                    "entity_id": "entity_pandora",
+                    "card_id": "card_pandora",
+                    "canonical_name": "Pandora",
+                    "entity_type": "character",
+                    "aliases": [],
+                    "resolution_status": "resolved",
+                },
+            ]
+            accepted_claims = [
+                {
+                    "claim_id": "claim_pandoras_mother_threshold",
+                    "target_entity_id": "entity_pandoras_mother",
+                    "target_card_id": "card_pandoras_mother",
+                    "target_entity_name": "Pandora's mother",
+                    "knowledge_track": "lore",
+                    "claim_text": "Pandora's mother guards the threshold to Yomi.",
+                    "claim_type": "background",
+                    "source_snippet_ids": ["snippet_mother"],
+                    "confidence": 0.92,
+                    "status": "accepted",
+                    "created_at_utc": "2026-05-20T00:00:00Z",
+                }
+            ]
+            memory_path = root / "canon" / "review_memory.json"
+            pre_memory = {
+                "version": 1,
+                "accepted_claims": [],
+                "rejected_claims": [],
+                "approved_aliases": [],
+                "entity_merges": [],
+                "approved_cards": [],
+                "author_directives": [],
+                "style_corrections": [],
+                "updated_at_utc": "2026-05-20T00:00:00Z",
+            }
+            pre_cards = {
+                "cards": [
+                    {
+                        "card_id": "card_pandoras_mother",
+                        "canonical_name": "Pandora's mother",
+                        "entity_type": "character",
+                        "status": "canonical",
+                        "summary": "Pandora's mother guards the threshold.",
+                        "details": {"entity_id": "entity_pandoras_mother", "accepted_claim_ids": ["claim_pandoras_mother_threshold"], "wiki_links": []},
+                        "relationships": [],
+                    },
+                    {
+                        "card_id": "card_izanami",
+                        "canonical_name": "Izanami",
+                        "entity_type": "character",
+                        "status": "canonical",
+                        "summary": "Izanami is a surviving card.",
+                        "details": {"entity_id": "entity_izanami", "accepted_claim_ids": [], "wiki_links": []},
+                        "relationships": [],
+                    },
+                    {
+                        "card_id": "card_pandora",
+                        "canonical_name": "Pandora",
+                        "entity_type": "character",
+                        "status": "canonical",
+                        "summary": "Pandora has a mother.",
+                        "details": {
+                            "entity_id": "entity_pandora",
+                            "accepted_claim_ids": [],
+                            "wiki_links": [
+                                {
+                                    "target_entity_id": "entity_pandoras_mother",
+                                    "target_card_id": "card_pandoras_mother",
+                                    "target_entity_name": "Pandora's mother",
+                                    "relation_type": "mother",
+                                    "section": "relationships",
+                                }
+                            ],
+                        },
+                        "relationships": [
+                            {
+                                "target_entity_id": "entity_pandoras_mother",
+                                "target_card_id": "card_pandoras_mother",
+                                "target_entity_name": "Pandora's mother",
+                                "relation_type": "mother",
+                                "note": "Pandora's mother is referenced before the merge.",
+                            }
+                        ],
+                    },
+                ]
+            }
+            write_json(memory_path, pre_memory)
+            write_json(paths.author_claims, {"claims": []})
+            write_json(paths.card_drafts, {"cards": []})
+            write_json(paths.canonical_cards, pre_cards)
+            write_jsonl(
+                paths.card_edit_requests,
+                [
+                    {
+                        "request_id": "req_pandoras_mother_is_izanami",
+                        "instruction_text": "Pandora's mother is Izanami",
+                        "status": "pending",
+                        "created_at_utc": "2026-05-20T00:01:00Z",
+                    }
+                ],
+            )
+            pre_request_text = paths.card_edit_requests.read_text(encoding="utf-8")
+
+            tool_calls = [
+                {"tool_name": "search_entities", "arguments": {"query": "Pandora's mother"}, "rationale": "Find the source entity."},
+                {"tool_name": "search_entities", "arguments": {"query": "Izanami"}, "rationale": "Find the surviving entity."},
+                {"tool_name": "get_card", "arguments": {"entity_id": "entity_pandoras_mother"}, "rationale": "Inspect the source card."},
+                {"tool_name": "get_card", "arguments": {"entity_id": "entity_izanami"}, "rationale": "Inspect the target card."},
+                {"tool_name": "get_claims", "arguments": {"entity_id": "entity_pandoras_mother"}, "rationale": "Collect source claims."},
+                {"tool_name": "get_relationships", "arguments": {"entity_id": "entity_pandoras_mother"}, "rationale": "Collect source relationships."},
+                {
+                    "tool_name": "apply_identity_merge",
+                    "arguments": {
+                        "source_entity_id": "entity_pandoras_mother",
+                        "target_entity_id": "entity_izanami",
+                        "claim_text": "Pandora's mother is Izanami",
+                        "rationale": "The author directly states these refer to the same identity.",
+                        "confidence": 1.0,
+                    },
+                    "rationale": "Apply the author-directed identity merge.",
+                },
+                {
+                    "tool_name": "rewrite_references",
+                    "arguments": {"source_entity_id": "entity_pandoras_mother", "target_entity_id": "entity_izanami"},
+                    "rationale": "Point surviving references at Izanami.",
+                },
+                {"tool_name": "synthesize_affected_cards", "arguments": {"entity_ids": ["entity_izanami"]}, "rationale": "Defer card prose to Stage 11."},
+                {
+                    "tool_name": "check_consistency",
+                    "arguments": {"source_entity_id": "entity_pandoras_mother", "target_entity_id": "entity_izanami"},
+                    "rationale": "Verify the merge.",
+                },
+                {
+                    "tool_name": "finish",
+                    "arguments": {"final_response": "Merged Pandora's mother into Izanami."},
+                    "final_response": "Merged Pandora's mother into Izanami.",
+                    "rationale": "The cardbase is consistent.",
+                },
+            ]
+
+            with patch("pipeline.cardbase_agent.call_model_chat", side_effect=tool_calls) as model:
+                result = run_pending_card_agent_requests(
+                    review_dir=paths.stage11,
+                    entities=entities,
+                    accepted_claims=accepted_claims,
+                    review_memory_path=memory_path,
+                    author_claims_path=paths.author_claims,
+                    card_drafts_path=paths.card_drafts,
+                    canonical_cards_path=paths.canonical_cards,
+                    config={},
+                )
+
+            self.assertEqual(result["processed_count"], 1)
+            self.assertEqual(len(result["completed"]), 1)
+            self.assertEqual(model.call_count, len(tool_calls))
+            memory = json.loads(memory_path.read_text(encoding="utf-8"))
+            self.assertEqual(memory["entity_merges"][0]["source_entity_name"], "Pandora's mother")
+            self.assertEqual(memory["entity_merges"][0]["target_entity_name"], "Izanami")
+            self.assertEqual(memory["approved_aliases"][0]["alias_text"], "Pandora's mother")
+            redirects = json.loads((paths.stage11 / "card_redirects.json").read_text(encoding="utf-8"))["redirects"]
+            self.assertEqual(redirects[0]["source_entity_name"], "Pandora's mother")
+            self.assertEqual(redirects[0]["target_entity_name"], "Izanami")
+            author_claims = json.loads(paths.author_claims.read_text(encoding="utf-8"))["claims"]
+            self.assertEqual(author_claims[0]["target_entity_name"], "Izanami")
+            self.assertEqual(author_claims[0]["claim_text"], "Pandora's mother is Izanami")
+
+            cards_after = json.loads(paths.canonical_cards.read_text(encoding="utf-8"))["cards"]
+            self.assertNotIn("card_pandoras_mother", {card["card_id"] for card in cards_after})
+            pandora_card = next(card for card in cards_after if card["card_id"] == "card_pandora")
+            self.assertEqual(pandora_card["relationships"][0]["target_entity_name"], "Izanami")
+            self.assertEqual(pandora_card["relationships"][0]["target_card_id"], "card_izanami")
+            self.assertEqual(pandora_card["details"]["wiki_links"][0]["target_entity_name"], "Izanami")
+            self.assertEqual(pandora_card["details"]["wiki_links"][0]["target_card_id"], "card_izanami")
+
+            transactions = load_card_agent_transactions(paths.stage11)
+            self.assertEqual(len(transactions), 1)
+            transaction = transactions[0]
+            self.assertEqual(transaction["status"], "completed")
+            self.assertEqual([step["tool_name"] for step in transaction["steps"]], [call["tool_name"] for call in tool_calls])
+            self.assertIn("entity_izanami", transaction["affected"]["entities"])
+            self.assertIn("entity_pandoras_mother", transaction["affected"]["entities"])
+            self.assertIn("card_izanami", transaction["affected"]["cards"])
+            self.assertIn("claim_pandoras_mother_threshold", transaction["affected"]["claims"])
+            changed_paths = {Path(item["path"]).name for item in transaction["write_set"] if item.get("changed")}
+            self.assertIn("review_memory.json", changed_paths)
+            self.assertIn("author_claims.json", changed_paths)
+            self.assertIn("canonical_cards.json", changed_paths)
+            self.assertIn("card_redirects.json", changed_paths)
+            self.assertIn("card_edit_requests.jsonl", changed_paths)
+
+            undo = undo_card_agent_transaction(paths.stage11, transaction["transaction_id"], reviewer="test", rationale="Undo test.")
+            self.assertEqual(undo["status"], "completed_reversal")
+            self.assertEqual(undo["reverses_transaction_id"], transaction["transaction_id"])
+            self.assertEqual(json.loads(memory_path.read_text(encoding="utf-8")), pre_memory)
+            self.assertEqual(json.loads(paths.author_claims.read_text(encoding="utf-8")), {"claims": []})
+            self.assertEqual(json.loads(paths.canonical_cards.read_text(encoding="utf-8")), pre_cards)
+            self.assertEqual(paths.card_edit_requests.read_text(encoding="utf-8"), pre_request_text)
+            self.assertFalse((paths.stage11 / "card_redirects.json").exists())
+            self.assertFalse((paths.stage11 / "card_architecture_applied.json").exists())
+            self.assertEqual(len(load_card_agent_transactions(paths.stage11)), 2)
+
+    def test_stage_11_cardbase_agent_merges_pandoras_mother_into_izanami_before_synthesis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            write_json(
+                paths.resolved_entities,
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_pandoras_mother",
+                            "card_id": "card_pandoras_mother",
+                            "canonical_name": "Pandora's mother",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                        {
+                            "entity_id": "entity_izanami",
+                            "card_id": "card_izanami",
+                            "canonical_name": "Izanami",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                    ]
+                },
+            )
+            claim = {
+                "claim_id": "claim_pandoras_mother_threshold",
+                "target_entity_id": "entity_pandoras_mother",
+                "target_card_id": "card_pandoras_mother",
+                "target_entity_name": "Pandora's mother",
+                "knowledge_track": "lore",
+                "claim_text": "Pandora's mother guards the threshold to Yomi.",
+                "claim_type": "background",
+                "source_snippet_ids": ["snippet_mother"],
+                "confidence": 0.92,
+                "status": "draft",
+                "created_at_utc": "2026-05-20T00:00:00Z",
+            }
+            write_json(paths.claim_drafts, {"claims": [claim]})
+            write_json(paths.claim_review_decisions, {"decisions": [{"claim_id": claim["claim_id"], "decision": "accept", "reviewer": "r", "rationale": "ok"}]})
+            write_json(paths.card_review_decisions, {"decisions": []})
+            write_json(paths.author_directives, {"directives": []})
+            write_json(paths.canonical_cards, {"cards": []})
+            memory_path = root / "canon" / "review_memory.json"
+            write_json(memory_path, {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-20T00:00:00Z"})
+            write_jsonl(
+                paths.card_edit_requests,
+                [
+                    {
+                        "request_id": "req_pandoras_mother_is_izanami",
+                        "instruction_text": "Pandora's mother is Izanami",
+                        "status": "pending",
+                        "created_at_utc": "2026-05-20T00:01:00Z",
+                    }
+                ],
+            )
+            agent_calls = [
+                {"tool_name": "search_entities", "arguments": {"query": "Pandora's mother"}, "rationale": "Find source."},
+                {"tool_name": "search_entities", "arguments": {"query": "Izanami"}, "rationale": "Find target."},
+                {"tool_name": "get_claims", "arguments": {"entity_id": "entity_pandoras_mother"}, "rationale": "Read source claims."},
+                {"tool_name": "get_relationships", "arguments": {"entity_id": "entity_pandoras_mother"}, "rationale": "Read source relationships."},
+                {
+                    "tool_name": "apply_identity_merge",
+                    "arguments": {
+                        "source_entity_id": "entity_pandoras_mother",
+                        "target_entity_id": "entity_izanami",
+                        "claim_text": "Pandora's mother is Izanami",
+                        "rationale": "Direct author identity assertion.",
+                        "confidence": 1.0,
+                    },
+                    "rationale": "Merge the source into the surviving entity.",
+                },
+                {"tool_name": "rewrite_references", "arguments": {"source_entity_id": "entity_pandoras_mother", "target_entity_id": "entity_izanami"}, "rationale": "Rewrite references."},
+                {"tool_name": "check_consistency", "arguments": {"source_entity_id": "entity_pandoras_mother", "target_entity_id": "entity_izanami"}, "rationale": "Verify."},
+                {"tool_name": "finish", "arguments": {"final_response": "Done."}, "final_response": "Done.", "rationale": "Verified."},
+            ]
+            model_card = {
+                "summary": "Izanami guards the threshold to Yomi.",
+                "sections": {
+                    "background": "Izanami guards the threshold to Yomi.",
+                    "role_in_story": "",
+                    "relationships": "",
+                    "timeline": "",
+                    "inspirations": "",
+                    "open_questions": "",
+                },
+                "relationships": [],
+                "timeline": [],
+                "wiki_links": [],
+                "support_map": {
+                    "summary": ["claim_pandoras_mother_threshold"],
+                    "background": ["claim_pandoras_mother_threshold"],
+                    "role_in_story": [],
+                    "relationships": [],
+                    "timeline": [],
+                    "inspirations": [],
+                    "open_questions": [],
+                },
+            }
+            synthesis_prompts: list[str] = []
+
+            def fake_synthesis(prompt: str, **_kwargs: Any) -> dict[str, Any]:
+                synthesis_prompts.append(prompt)
+                return model_card
+
+            with patch("pipeline.cardbase_agent.call_model_chat", side_effect=agent_calls):
+                with patch("pipeline.stage_11_card_synthesis.call_model_chat", side_effect=fake_synthesis):
+                    run_stage_11(
+                        paths.resolved_entities,
+                        paths.claim_drafts,
+                        paths.claim_review_decisions,
+                        paths.card_review_decisions,
+                        paths.author_directives,
+                        memory_path,
+                        paths.card_drafts,
+                        paths.canonical_cards,
+                        paths.merge_log,
+                        None,
+                    )
+
+            draft_cards = json.loads(paths.card_drafts.read_text(encoding="utf-8"))["cards"]
+            self.assertEqual(len(draft_cards), 1)
+            self.assertEqual(draft_cards[0]["canonical_name"], "Izanami")
+            self.assertIn("Pandora's mother", draft_cards[0]["aliases"])
+            self.assertIn("claim_pandoras_mother_threshold", draft_cards[0]["details"]["accepted_claim_ids"])
+            self.assertNotIn("Pandora's mother", [card["canonical_name"] for card in draft_cards])
+            self.assertIn("Pandora's mother guards the threshold to Yomi.", synthesis_prompts[0])
+            self.assertIn("Izanami", synthesis_prompts[0])
+            memory = json.loads(memory_path.read_text(encoding="utf-8"))
+            self.assertEqual(memory["entity_merges"][0]["source_entity_name"], "Pandora's mother")
+            self.assertEqual(memory["entity_merges"][0]["target_entity_name"], "Izanami")
+            transactions = load_card_agent_transactions(paths.stage11)
+            self.assertEqual(transactions[0]["status"], "completed")
+            self.assertIn("apply_identity_merge", [step["tool_name"] for step in transactions[0]["steps"]])
 
     def test_stage_11_card_synthesis_prompt_includes_original_source_snippet_context(self) -> None:
         prompt = build_card_synthesis_prompt(
@@ -4127,6 +4619,13 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(proposal["target_entity_name"], "RUINR")
             self.assertEqual(proposal["review_status"], "pending")
             self.assertEqual(proposal["evidence_claim_ids"], ["rename_claim"])
+            preview = json.loads((root / "identity_merged_entities_preview.json").read_text(encoding="utf-8"))
+            self.assertEqual(preview["source_entity_count"], 2)
+            self.assertEqual(preview["merged_entity_count"], 1)
+            self.assertEqual(preview["pending_identity_merge_count"], 1)
+            self.assertEqual(preview["entities"][0]["canonical_name"], "RUINR")
+            self.assertIn("ACHILLES", preview["entities"][0]["aliases"])
+            self.assertEqual(preview["entities"][0]["identity_merge_preview_status"], "pending")
 
             write_json(
                 root / "identity_merge_decisions.json",
@@ -4151,6 +4650,10 @@ class PipelineV2Tests(unittest.TestCase):
                 root / "identity_merge_decisions.json",
                 None,
             )
+            approved_preview = json.loads((root / "identity_merged_entities_preview.json").read_text(encoding="utf-8"))
+            self.assertEqual(approved_preview["pending_identity_merge_count"], 0)
+            self.assertEqual(approved_preview["approved_identity_merge_count"], 1)
+            self.assertEqual(approved_preview["entities"][0]["identity_merge_preview_status"], "approve")
             model_card = {
                 "summary": "RUINR is introduced through a neurally integrated suit sequence, after beginning as ACHILLES.",
                 "sections": {
@@ -4202,6 +4705,169 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(memory["entity_merges"][0]["target_entity_name"], "RUINR")
             self.assertEqual(memory["approved_aliases"][0]["alias_text"], "ACHILLES")
 
+    def test_stage_11_reads_identity_merge_decisions_from_stage_10_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            write_json(
+                paths.resolved_entities,
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_ruinr",
+                            "card_id": "card_ruinr",
+                            "canonical_name": "RUINR",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                        {
+                            "entity_id": "entity_achilles",
+                            "card_id": "card_achilles",
+                            "canonical_name": "ACHILLES",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                    ]
+                },
+            )
+            claims = [
+                {
+                    "claim_id": "ruinr_claim",
+                    "target_entity_id": "entity_ruinr",
+                    "target_card_id": "card_ruinr",
+                    "target_entity_name": "RUINR",
+                    "knowledge_track": "lore",
+                    "claim_text": "RUINR is introduced through a neurally integrated suit sequence.",
+                    "claim_type": "background",
+                    "source_snippet_ids": ["s_ruinr"],
+                    "confidence": 0.9,
+                    "status": "draft",
+                    "created_at_utc": "2026-05-16T00:00:00Z",
+                },
+                {
+                    "claim_id": "rename_claim",
+                    "target_entity_id": "entity_achilles",
+                    "target_card_id": "card_achilles",
+                    "target_entity_name": "ACHILLES",
+                    "knowledge_track": "lore",
+                    "claim_text": "ACHILLES renames itself to RUINR during the second quest.",
+                    "claim_type": "timeline",
+                    "source_snippet_ids": ["s_rename"],
+                    "confidence": 0.95,
+                    "status": "draft",
+                    "created_at_utc": "2026-05-16T00:01:00Z",
+                },
+            ]
+            write_json(paths.claim_drafts, {"claims": claims})
+            write_json(
+                paths.claim_review_decisions,
+                {
+                    "decisions": [
+                        {"claim_id": "ruinr_claim", "decision": "accept", "reviewer": "r", "rationale": "ok"},
+                        {"claim_id": "rename_claim", "decision": "accept", "reviewer": "r", "rationale": "ok"},
+                    ]
+                },
+            )
+            write_json(paths.card_review_decisions, {"decisions": []})
+            write_json(paths.author_directives, {"directives": []})
+            memory_path = root / "canon" / "review_memory.json"
+            write_json(memory_path, {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
+            proposal = {
+                "proposal_id": "identity_cluster_ruinr_achilles",
+                "cluster_id": "identity_cluster_ruinr_achilles",
+                "proposal_kind": "identity_cluster",
+                "member_entity_ids": ["entity_achilles", "entity_ruinr"],
+                "member_entities": [
+                    {"entity_id": "entity_achilles", "card_id": "card_achilles", "canonical_name": "ACHILLES", "entity_type": "character", "aliases": []},
+                    {"entity_id": "entity_ruinr", "card_id": "card_ruinr", "canonical_name": "RUINR", "entity_type": "character", "aliases": []},
+                ],
+                "canonical_entity_id": "entity_ruinr",
+                "canonical_name": "RUINR",
+                "target_entity_id": "entity_ruinr",
+                "target_card_id": "card_ruinr",
+                "target_entity_name": "RUINR",
+                "source_entity_id": "entity_achilles",
+                "source_card_id": "card_achilles",
+                "source_entity_name": "ACHILLES",
+                "alias_texts": ["ACHILLES"],
+                "former_names": ["ACHILLES"],
+                "working_names": [],
+                "formal_names": [],
+                "merge_type": "identity_cluster",
+                "review_status": "pending",
+                "evidence_claim_ids": ["rename_claim"],
+                "source_snippet_ids": ["s_rename"],
+                "member_edges": [
+                    {
+                        "proposal_id": "edge_achilles_ruinr",
+                        "source_entity_id": "entity_achilles",
+                        "source_entity_name": "ACHILLES",
+                        "target_entity_id": "entity_ruinr",
+                        "target_entity_name": "RUINR",
+                        "evidence_claim_ids": ["rename_claim"],
+                        "source_snippet_ids": ["s_rename"],
+                    }
+                ],
+            }
+            write_json(paths.identity_merge_proposals, {"proposals": [proposal]})
+            write_json(
+                paths.identity_merge_decisions,
+                {
+                    "decisions": [
+                        {
+                            "proposal_id": "identity_cluster_ruinr_achilles",
+                            "decision": "approve",
+                            "reviewer": "r",
+                            "rationale": "same entity",
+                            "timestamp_utc": "2026-05-16T00:02:00Z",
+                        }
+                    ]
+                },
+            )
+            model_card = {
+                "summary": "RUINR is introduced through a neurally integrated suit sequence, after beginning as ACHILLES.",
+                "sections": {
+                    "background": "RUINR is introduced through a neurally integrated suit sequence.",
+                    "role_in_story": "",
+                    "relationships": "",
+                    "timeline": "ACHILLES renames itself to RUINR during the second quest.",
+                    "open_questions": "",
+                },
+                "relationships": [],
+                "timeline": [],
+                "support_map": {
+                    "summary": ["ruinr_claim", "rename_claim"],
+                    "background": ["ruinr_claim"],
+                    "role_in_story": [],
+                    "relationships": [],
+                    "timeline": ["rename_claim"],
+                    "open_questions": [],
+                },
+            }
+
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
+                run_stage_11(
+                    paths.resolved_entities,
+                    paths.claim_drafts,
+                    paths.claim_review_decisions,
+                    paths.card_review_decisions,
+                    paths.author_directives,
+                    memory_path,
+                    paths.card_drafts,
+                    paths.canonical_cards,
+                    paths.merge_log,
+                    None,
+                )
+
+            self.assertFalse((paths.stage11 / "identity_merge_decisions.json").exists())
+            draft_cards = json.loads(paths.card_drafts.read_text(encoding="utf-8"))["cards"]
+            self.assertEqual(len(draft_cards), 1)
+            self.assertEqual(draft_cards[0]["canonical_name"], "RUINR")
+            self.assertEqual(draft_cards[0]["aliases"], ["ACHILLES"])
+            self.assertEqual(draft_cards[0]["details"]["accepted_claim_ids"], ["ruinr_claim", "rename_claim"])
+
     def test_stage_11_collates_identity_chain_into_one_canonical_cluster(self) -> None:
         entities = [
             {
@@ -4251,7 +4917,7 @@ class PipelineV2Tests(unittest.TestCase):
         config = {
             "model_routing": {
                 "default_profile": "deep_reasoning",
-                "profiles": {"deep_reasoning": {"provider": "anthropic", "api_model": "claude-sonnet-4-6"}},
+                "profiles": {"deep_reasoning": {"provider": "openrouter", "api_model": "deepseek/deepseek-v4-flash"}},
                 "tasks": {"stage_10_identity_merge_cluster_judgement": {"profile": "deep_reasoning"}},
             },
             "model_provider": {"synthesis_provider_retries": 0},
@@ -4470,7 +5136,7 @@ class PipelineV2Tests(unittest.TestCase):
 
             self.assertEqual(report["status"], "skipped")
             self.assertEqual(report["reason"], "Missing NOTION_API_KEY.")
-            self.assertTrue((root / "08_notion" / "notion_draft_sync_report.json").exists())
+            self.assertTrue((ArtifactPaths(root).notion_draft_sync_report).exists())
 
     def test_notion_draft_sync_creates_database_and_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4726,6 +5392,41 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(states[10], "done")
         self.assertEqual(states[11], "failed")
 
+    def test_tauri_draft_card_viewer_reads_stage11_partial_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            root = repo / "artifacts" / "runs" / "draft_run"
+            paths = ArtifactPaths(root)
+            write_json(
+                paths.stage11 / "card_drafts.partial.json",
+                {
+                    "status": "running",
+                    "processed_count": 2,
+                    "total_count": 5,
+                    "current_entity_name": "HECTR",
+                    "cards": [draft_card_payload("Live partial summary.")],
+                },
+            )
+            write_json(
+                paths.stage11 / "card_synthesis_failures.json",
+                {"failures": [{"entity_id": "entity_x", "error": "model timeout"}]},
+            )
+
+            result = handle_request(
+                {
+                    "repo_root": str(repo),
+                    "command": "draft_cards",
+                    "payload": {"artifacts_root": str(root)},
+                }
+            )
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["metadata"]["source_kind"], "partial")
+        self.assertEqual(result["metadata"]["processed_count"], 2)
+        self.assertEqual(result["metadata"]["failure_count"], 1)
+        self.assertEqual(result["cards"][0]["summary"], "Live partial summary.")
+        self.assertGreater(result["cards"][0]["word_count"], 0)
+
     def test_ui_pipeline_progress_marks_claim_step_complete_when_review_is_bypassed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4743,7 +5444,7 @@ class PipelineV2Tests(unittest.TestCase):
                 root / "06_drafts" / "card_drafts" / "claim_drafts.json",
                 {"claims": [{"claim_id": "claim_1", "claim_text": "A pending claim."}]},
             )
-            write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": []})
+            write_json(ArtifactPaths(root).claim_review_decisions, {"decisions": []})
             write_json(root / "07_review" / "review_gate_bypass.json", {"claim_review": True})
 
             snapshot = pipeline_progress_artifact_snapshot(root)
@@ -5012,6 +5713,8 @@ class PipelineV2Tests(unittest.TestCase):
 
     def test_entity_type_ai_system_legacy_values_fold_into_character(self) -> None:
         self.assertEqual(normalize_entity_type("ai_system"), "character")
+        self.assertEqual(normalize_entity_type("ai system"), "character")
+        self.assertEqual(normalize_entity_type("ai systems"), "character")
 
     def test_uppercase_candidate_does_not_create_ai_system_vote(self) -> None:
         votes = infer_type_evidence_for_candidate(
@@ -5299,7 +6002,7 @@ class PipelineV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
-            decisions_path = root / "07_review" / "claim_review_decisions.json"
+            decisions_path = ArtifactPaths(root).claim_review_decisions
             snippets_path = root / "03_relevance" / "snippets_candidates.jsonl"
             claims = [
                 {
@@ -5402,7 +6105,7 @@ class PipelineV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
-            decisions_path = root / "07_review" / "claim_review_decisions.json"
+            decisions_path = ArtifactPaths(root).claim_review_decisions
             claims = [
                 {
                     "claim_id": "claim_story_answered",
@@ -5432,7 +6135,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(claims_path, {"claims": claims})
             write_json(decisions_path, {"decisions": []})
             write_json(
-                root / "07_review" / "story_question_session.json",
+                ArtifactPaths(root).stage09 / "story_question_session.json",
                 {
                     "version": 1,
                     "session_id": "story_session",
@@ -5455,7 +6158,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
             write_json(
-                root / "07_review" / "author_claims.json",
+                ArtifactPaths(root).author_claims,
                 {
                     "claims": [
                         {
@@ -5499,7 +6202,7 @@ class PipelineV2Tests(unittest.TestCase):
             claim = {"claim_id": "claim_attention", "claim_text": "A claim needing human eyes."}
             write_json(root / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": [claim]})
             write_json(
-                root / "07_review" / "claim_review_decisions.json",
+                ArtifactPaths(root).claim_review_decisions,
                 {
                     "decisions": [
                         {
@@ -5519,7 +6222,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(pending_review_counts_for_root(root)["claims"], 1)
 
             write_json(
-                root / "07_review" / "claim_review_decisions.json",
+                ArtifactPaths(root).claim_review_decisions,
                 {
                     "decisions": [
                         {
@@ -5554,7 +6257,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "thematic_tags": ["longevity"],
             }
             claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
-            decisions_path = root / "07_review" / "claim_review_decisions.json"
+            decisions_path = ArtifactPaths(root).claim_review_decisions
             write_json(claims_path, {"claims": [claim]})
             write_json(
                 decisions_path,
@@ -5621,7 +6324,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
             claims_path = root / "06_drafts" / "card_drafts" / "claim_drafts.json"
-            decisions_path = root / "07_review" / "claim_review_decisions.json"
+            decisions_path = ArtifactPaths(root).claim_review_decisions
             write_json(claims_path, {"claims": []})
             write_json(decisions_path, {"decisions": []})
 
@@ -5770,7 +6473,7 @@ class PipelineV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_pipeline_artifacts_through_stage9(root, [{"claim_id": "claim_a"}])
-            write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
+            write_json(ArtifactPaths(root).claim_review_decisions, {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
 
             stage, reason = determine_resume_start_stage(root)
 
@@ -5781,13 +6484,13 @@ class PipelineV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_pipeline_artifacts_through_stage9(root, [{"claim_id": "claim_a"}])
-            write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
+            write_json(ArtifactPaths(root).claim_review_decisions, {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
             write_json(root / "07_review" / "card_drafts.json", {"cards": [{"card_id": "card_a", "status": "draft"}]})
             write_json(root / "07_review" / "canonical_cards.json", {"cards": [{"card_id": "card_a", "status": "canonical"}]})
             write_jsonl(root / "07_review" / "merge_log.jsonl", [{"decision_id": "d1"}])
-            write_json(root / "07_review" / "author_claims.json", {"claims": [{"claim_id": "author_claim_a"}]})
+            write_json(ArtifactPaths(root).author_claims, {"claims": [{"claim_id": "author_claim_a"}]})
             future_mtime = max(path.stat().st_mtime for path in (root / "07_review").glob("*")) + 10
-            os.utime(root / "07_review" / "author_claims.json", (future_mtime, future_mtime))
+            os.utime(ArtifactPaths(root).author_claims, (future_mtime, future_mtime))
 
             stage, reason = determine_resume_start_stage(root)
 
@@ -5798,7 +6501,7 @@ class PipelineV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_pipeline_artifacts_through_stage9(root, [{"claim_id": "claim_a"}])
-            write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
+            write_json(ArtifactPaths(root).claim_review_decisions, {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
             write_json(root / "07_review" / "identity_merge_proposals.json", {"proposals": []})
             write_json(root / "07_review" / "card_drafts.json", {"cards": [{"card_id": "card_a", "status": "draft"}]})
             write_json(root / "07_review" / "canonical_cards.json", {"cards": []})
@@ -5813,12 +6516,40 @@ class PipelineV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_pipeline_artifacts_through_stage9(root, [{"claim_id": "claim_a"}])
-            write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
+            write_json(ArtifactPaths(root).claim_review_decisions, {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
             write_json(root / "07_review" / "card_review_decisions.json", {"decisions": [{"card_id": "card_a", "decision": "approve"}]})
             write_json(root / "07_review" / "identity_merge_proposals.json", {"proposals": []})
             write_json(root / "07_review" / "card_drafts.json", {"cards": [{"card_id": "card_a", "status": "draft"}]})
             write_json(root / "07_review" / "canonical_cards.json", {"cards": [{"card_id": "card_a", "status": "canonical"}]})
             write_jsonl(root / "07_review" / "merge_log.jsonl", [{"decision_id": "d1"}])
+
+            stage, reason = determine_resume_start_stage(root)
+
+            self.assertEqual(stage, 12)
+            self.assertIn("Stage 12", reason)
+
+    def test_pipeline_resume_ignores_applied_cardbase_agent_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            write_pipeline_artifacts_through_stage9(root, [{"claim_id": "claim_a"}])
+            write_json(paths.claim_review_decisions, {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
+            write_json(paths.card_review_decisions, {"decisions": [{"card_id": "card_a", "decision": "approve"}]})
+            write_json(paths.identity_merge_proposals, {"proposals": []})
+            write_json(paths.card_drafts, {"cards": [{"card_id": "card_a", "status": "draft"}]})
+            write_json(paths.canonical_cards, {"cards": [{"card_id": "card_a", "status": "canonical"}]})
+            write_jsonl(paths.merge_log, [{"decision_id": "d1"}])
+            write_jsonl(
+                paths.card_edit_requests,
+                [
+                    {
+                        "request_id": "req_applied",
+                        "instruction_text": "Pandora's mother is Izanami",
+                        "status": "applied",
+                        "card_agent_transaction_id": "card_agent_tx_applied",
+                    }
+                ],
+            )
 
             stage, reason = determine_resume_start_stage(root)
 
@@ -5927,85 +6658,7 @@ class PipelineV2Tests(unittest.TestCase):
                 self.assertNotIn(b"Alpha Run", response_b.data)
                 self.assertEqual(load_last_open_artifacts_root(repo), run_b.resolve())
 
-    def test_anthropic_provider_parses_strict_json_response(self) -> None:
-        class FakeResponse:
-            def __enter__(self) -> "FakeResponse":
-                return self
-
-            def __exit__(self, *_args: object) -> None:
-                return None
-
-            def read(self) -> bytes:
-                return json.dumps(
-                    {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps({"question_text": "What is Khava to Enoch?"}),
-                            }
-                        ]
-                    }
-                ).encode("utf-8")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch("urllib.request.urlopen", return_value=FakeResponse()):
-                with patch("pipeline.model_provider._NEXT_MODEL_ATTEMPT_EPOCH_S", 0.0):
-                    with patch("pipeline.model_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
-                        parsed = _call_anthropic_chat(
-                            "https://api.anthropic.com/v1",
-                            "fake-key",
-                            "claude-opus-4-1-20250805",
-                            "Return JSON.",
-                            0.0,
-                            30,
-                            retries=0,
-                            rate_state_path=Path(tmp) / "rate.json",
-                            min_interval_seconds=0.0,
-                        )
-
-        self.assertEqual(parsed, {"question_text": "What is Khava to Enoch?"})
-
-    def test_anthropic_provider_recovers_json_from_wrapped_response(self) -> None:
-        class FakeResponse:
-            def __enter__(self) -> "FakeResponse":
-                return self
-
-            def __exit__(self, *_args: object) -> None:
-                return None
-
-            def read(self) -> bytes:
-                return json.dumps(
-                    {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": "Here is the requested JSON:\n```json\n{\"summary\":\"Accepted.\",\"claim_decisions\":[],\"author_claims\":[],\"left_pending\":[]}\n```\nNo other changes.",
-                            }
-                        ],
-                        "stop_reason": "end_turn",
-                    }
-                ).encode("utf-8")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            with patch("urllib.request.urlopen", return_value=FakeResponse()):
-                with patch("pipeline.model_provider._NEXT_MODEL_ATTEMPT_EPOCH_S", 0.0):
-                    with patch("pipeline.model_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
-                        parsed = _call_anthropic_chat(
-                            "https://api.anthropic.com/v1",
-                            "fake-key",
-                            "claude-sonnet-4-6",
-                            "Return JSON.",
-                            0.0,
-                            30,
-                            retries=0,
-                            rate_state_path=Path(tmp) / "rate.json",
-                            min_interval_seconds=0.0,
-                        )
-
-        self.assertEqual(parsed["summary"], "Accepted.")
-        self.assertEqual(parsed["claim_decisions"], [])
-
-    def test_story_question_proposal_waits_for_approval_and_uses_configured_claude(self) -> None:
+    def test_story_question_proposal_waits_for_approval_and_uses_configured_openrouter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             claims = [
@@ -6049,8 +6702,8 @@ class PipelineV2Tests(unittest.TestCase):
                 {
                     "story_questions": {
                         "enabled": True,
-                        "provider": "anthropic",
-                        "model": "claude-opus-4-1-20250805",
+                        "provider": "openrouter",
+                        "model": "deepseek/deepseek-v4-flash",
                         "max_linked_claims_per_question": 1,
                         "application_policy": "moderate",
                     }
@@ -6088,7 +6741,7 @@ class PipelineV2Tests(unittest.TestCase):
                     with patch("pipeline.story_questions.save_review_memory"):
                         generate_next_question(root, config_path)
                         proposal = propose_story_answer_application(root, "Both: it is a facility and the group inside it.", config_path)
-                        decisions_path = root / "07_review" / "claim_review_decisions.json"
+                        decisions_path = ArtifactPaths(root).claim_review_decisions
                         decisions_before = (
                             json.loads(decisions_path.read_text(encoding="utf-8"))["decisions"]
                             if decisions_path.exists()
@@ -6099,14 +6752,14 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(decisions_before, [])
             self.assertEqual(len(proposal["claim_decisions"]), 1)
             self.assertEqual(story_question_display(root)["pending_application_proposal"], None)
-            decisions_after = json.loads((root / "07_review" / "claim_review_decisions.json").read_text(encoding="utf-8"))[
+            decisions_after = json.loads((ArtifactPaths(root).claim_review_decisions).read_text(encoding="utf-8"))[
                 "decisions"
             ]
             self.assertEqual(len(decisions_after), 1)
             self.assertEqual(application["claim_decisions"][0]["edited_claim_text"], "The Lab is both a physical location and an organized faction.")
             self.assertEqual(model_call.call_count, 2)
-            self.assertEqual(model_call.call_args_list[1].kwargs["provider"], "anthropic")
-            self.assertEqual(model_call.call_args_list[1].kwargs["api_model"], "claude-opus-4-1-20250805")
+            self.assertEqual(model_call.call_args_list[1].kwargs["provider"], "openrouter")
+            self.assertEqual(model_call.call_args_list[1].kwargs["api_model"], "deepseek/deepseek-v4-flash")
 
     def test_story_question_author_claims_classify_naming_history_as_meta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6131,7 +6784,7 @@ class PipelineV2Tests(unittest.TestCase):
                 {"resolved_entities": [{"entity_id": "entity_lab", "card_id": "card_lab", "canonical_name": "The Lab", "aliases": []}]},
             )
             write_json(
-                root / "07_review" / "story_question_session.json",
+                ArtifactPaths(root).stage09 / "story_question_session.json",
                 {
                     "version": 1,
                     "session_id": "story_session",
@@ -6158,7 +6811,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
             config_path = root / "config.json"
-            write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-opus-4-1-20250805"}})
+            write_json(config_path, {"story_questions": {"enabled": True, "provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}})
             model_payload = {
                 "summary": "Adds naming history as an author note.",
                 "claim_decisions": [],
@@ -6223,7 +6876,7 @@ class PipelineV2Tests(unittest.TestCase):
                 ],
             )
             write_json(
-                root / "07_review" / "story_question_session.json",
+                ArtifactPaths(root).stage09 / "story_question_session.json",
                 {
                     "version": 1,
                     "session_id": "story_session",
@@ -6250,7 +6903,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
             config_path = root / "config.json"
-            write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-sonnet-4-6"}})
+            write_json(config_path, {"story_questions": {"enabled": True, "provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}})
             model_payload = {
                 "summary": "Leonidas is confirmed as founder and current leader.",
                 "claim_decisions": [
@@ -6331,7 +6984,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
             write_json(
-                root / "07_review" / "story_question_session.json",
+                ArtifactPaths(root).stage09 / "story_question_session.json",
                 {
                     "version": 1,
                     "session_id": "story_session",
@@ -6358,7 +7011,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
             config_path = root / "config.json"
-            write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-sonnet-4-6"}})
+            write_json(config_path, {"story_questions": {"enabled": True, "provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}})
 
             with patch("pipeline.story_questions.call_model_chat", side_effect=AssertionError("confirmation should not call model")):
                 proposal = propose_story_answer_application(root, "Correct on all counts.", config_path)
@@ -6400,7 +7053,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
             write_json(
-                root / "07_review" / "story_question_session.json",
+                ArtifactPaths(root).stage09 / "story_question_session.json",
                 {
                     "version": 1,
                     "session_id": "story_session",
@@ -6427,7 +7080,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
             config_path = root / "config.json"
-            write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-sonnet-4-6"}})
+            write_json(config_path, {"story_questions": {"enabled": True, "provider": "openrouter", "model": "deepseek/deepseek-v4-flash"}})
             model_payload = {
                 "summary": "Named the character.",
                 "claim_decisions": [
@@ -6502,7 +7155,7 @@ class PipelineV2Tests(unittest.TestCase):
             ]
             write_pipeline_artifacts_through_stage9(root, claims)
             write_json(
-                root / "07_review" / "story_question_session.json",
+                ArtifactPaths(root).stage09 / "story_question_session.json",
                 {
                     "version": 1,
                     "session_id": "story_session",
@@ -6533,7 +7186,7 @@ class PipelineV2Tests(unittest.TestCase):
 
             self.assertEqual(record["discarded_claim_count"], 2)
             self.assertEqual(set(record["discarded_claim_ids"]), {"claim_bad_bundle_a", "claim_bad_bundle_b"})
-            decisions = json.loads((root / "07_review" / "claim_review_decisions.json").read_text(encoding="utf-8"))["decisions"]
+            decisions = json.loads((ArtifactPaths(root).claim_review_decisions).read_text(encoding="utf-8"))["decisions"]
             self.assertEqual({item["claim_id"] for item in decisions}, {"claim_bad_bundle_a", "claim_bad_bundle_b"})
             self.assertTrue(all(item["reviewer"] == "story_question_skip" for item in decisions))
             self.assertTrue(all(item["decision"] == "reject" for item in decisions))
@@ -6563,7 +7216,7 @@ class PipelineV2Tests(unittest.TestCase):
                 )
             write_pipeline_artifacts_through_stage9(root, claims)
             write_json(
-                root / "07_review" / "story_question_session.json",
+                ArtifactPaths(root).stage09 / "story_question_session.json",
                 {
                     "version": 1,
                     "session_id": "story_session",
@@ -6586,8 +7239,8 @@ class PipelineV2Tests(unittest.TestCase):
                 {
                     "story_questions": {
                         "enabled": True,
-                        "provider": "anthropic",
-                        "model": "claude-sonnet-4-6",
+                        "provider": "openrouter",
+                        "model": "deepseek/deepseek-v4-flash",
                         "max_linked_claims_per_question": 2,
                         "generate_all_max_questions": 10,
                     }
@@ -6628,7 +7281,7 @@ class PipelineV2Tests(unittest.TestCase):
 
             self.assertEqual(result["created_count"], 3)
             self.assertEqual(model_call.call_count, 3)
-            session = json.loads((root / "07_review" / "story_question_session.json").read_text(encoding="utf-8"))
+            session = json.loads((ArtifactPaths(root).stage09 / "story_question_session.json").read_text(encoding="utf-8"))
             linked_claims = [
                 claim_id
                 for question in session["questions"]
@@ -6678,7 +7331,7 @@ class PipelineV2Tests(unittest.TestCase):
             ]
             write_pipeline_artifacts_through_stage9(root, claims)
             write_json(
-                root / "07_review" / "claim_review_decisions.json",
+                ArtifactPaths(root).claim_review_decisions,
                 {
                     "decisions": [
                         {
@@ -6780,7 +7433,7 @@ class PipelineV2Tests(unittest.TestCase):
             ]
             write_pipeline_artifacts_through_stage9(root, claims)
             write_json(
-                root / "07_review" / "claim_review_decisions.json",
+                ArtifactPaths(root).claim_review_decisions,
                 {
                     "decisions": [
                         {
@@ -6849,7 +7502,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(model_call.call_count, 3)
             self.assertEqual(result["created_count"], 3)
             self.assertEqual(expected_order, [])
-            session = json.loads((root / "07_review" / "story_question_session.json").read_text(encoding="utf-8"))
+            session = json.loads((ArtifactPaths(root).stage09 / "story_question_session.json").read_text(encoding="utf-8"))
             linked_order = [question["linked_claim_ids"][0] for question in session["questions"]]
             self.assertEqual(linked_order, ["claim_unanswered", "claim_attention", "claim_auto"])
 
@@ -6932,8 +7585,8 @@ class PipelineV2Tests(unittest.TestCase):
                 {
                     "story_questions": {
                         "enabled": True,
-                        "provider": "anthropic",
-                        "model": "claude-opus-4-1-20250805",
+                        "provider": "openrouter",
+                        "model": "deepseek/deepseek-v4-flash",
                         "max_linked_claims_per_question": 2,
                         "application_policy": "moderate",
                     }
@@ -7001,9 +7654,9 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(second_question["unresolved_claim_count"], 1)
             self.assertEqual(second_question["linked_claim_ids"], ["claim_enoch_role"])
 
-            decisions = json.loads((root / "07_review" / "claim_review_decisions.json").read_text(encoding="utf-8"))["decisions"]
+            decisions = json.loads((ArtifactPaths(root).claim_review_decisions).read_text(encoding="utf-8"))["decisions"]
             self.assertEqual(decisions[-1]["answer_id"], application["answer_id"])
-            author_claims = json.loads((root / "07_review" / "author_claims.json").read_text(encoding="utf-8"))["claims"]
+            author_claims = json.loads((ArtifactPaths(root).author_claims).read_text(encoding="utf-8"))["claims"]
             self.assertEqual(author_claims[0]["source_priority"], "story_question_answer")
             display = story_question_display(root)
             self.assertEqual(display["pending_claim_count"], 1)

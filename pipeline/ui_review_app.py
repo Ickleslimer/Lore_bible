@@ -12,6 +12,7 @@ from typing import Any
 
 from flask import Flask, jsonify, redirect, render_template_string, request
 
+from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.author_directives import parse_author_instruction
 from pipeline.card_architecture_agent import pending_card_architecture_actions
 from pipeline.common import now_utc_iso, read_json, read_jsonl, safe_uuid, write_json
@@ -263,9 +264,11 @@ def pipeline_progress_from_logs(
 
 
 def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
+    migrate_run_artifacts_to_numbered(root)
+    paths = ArtifactPaths(root)
     logs: list[str] = []
     stage_total = len(PIPELINE_STAGES)
-    bypass_payload = _read_json_or_default(root / "07_review" / "review_gate_bypass.json", {})
+    bypass_payload = _read_json_or_default(paths.review_gate_bypass, {})
     claim_review_bypassed = isinstance(bypass_payload, dict) and bool(bypass_payload.get("claim_review"))
     worker_log_path = root / "tauri_pipeline_worker.log"
     worker_progress_logs: list[str] = []
@@ -302,8 +305,8 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
         logs.append(f"[{index}/{stage_total}] START Stage {index:02d} {name}")
 
     def mark_identity_merge_if_known() -> bool:
-        proposals_path = root / "07_review" / "identity_merge_proposals.json"
-        decisions_path = root / "07_review" / "identity_merge_decisions.json"
+        proposals_path = paths.identity_merge_proposals
+        decisions_path = paths.identity_merge_decisions
         if not proposals_path.exists() and not decisions_path.exists():
             return False
         mark_start(10, "Identity Merge")
@@ -314,16 +317,16 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
         logs.append(f"[10/{stage_total}] DONE  Stage 10 Identity Merge")
         return False
 
-    if (root / "01_bootstrap" / "entity_seed.json").exists():
+    if paths.entity_seed.exists():
         mark_done(1, "Entity Bootstrap")
-    if (root / "02_timeline" / "messages_normalized_per_thread.jsonl").exists():
+    if paths.normalized_messages.exists():
         mark_done(2, "Message Normalization")
-    if (root / "02_timeline" / "messages_global_timeline.jsonl").exists():
+    if paths.global_timeline.exists():
         mark_done(3, "Timeline Merge")
-    if (root / "02_timeline" / "conversation_segments.json").exists():
+    if paths.conversation_segments.exists():
         mark_done(4, "Conversation Segmentation")
 
-    patch_notes_path = root / "02_timeline" / "conversation_patch_notes.json"
+    patch_notes_path = paths.conversation_patch_notes
     if patch_notes_path.exists():
         mark_start(5, "Conversation Patch Notes")
         try:
@@ -338,11 +341,11 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
             if str(patch_payload.get("status", "")).strip().lower() == "complete":
                 logs.append(f"[5/{stage_total}] DONE  Stage 05 Conversation Patch Notes")
 
-    if (root / "03_relevance" / "snippets_candidates.jsonl").exists():
+    if paths.snippets.exists():
         mark_done(6, "Snippet Extraction")
 
     counts = pending_review_counts_for_root(root)
-    if (root / "05_alias" / "resolved_entities.json").exists() or (root / "05_alias" / "conversation_entity_proposals.json").exists():
+    if paths.resolved_entities.exists() or paths.conversation_entity_proposals.exists():
         mark_start(7, "Entity Resolution")
         if counts.get("conversation_entities", 0) > 0:
             worker_failure = worker_failure_snapshot_if_any()
@@ -356,10 +359,10 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
             }
         logs.append(f"[7/{stage_total}] DONE  Stage 07 Entity Resolution")
 
-    if (root / "04_grouping" / "snippet_clusters_lore.json").exists() or (root / "04_grouping" / "snippet_clusters_meta.json").exists():
+    if paths.snippet_clusters_lore.exists() or paths.snippet_clusters_meta.exists():
         mark_done(8, "Snippet Grouping")
 
-    if (root / "06_drafts" / "card_drafts" / "claim_drafts.json").exists():
+    if paths.claim_drafts.exists():
         mark_start(9, "Claim Drafting")
         if counts.get("claims", 0) > 0:
             if claim_review_bypassed:
@@ -384,7 +387,7 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
         else:
             logs.append(f"[9/{stage_total}] DONE  Stage 09 Claim Drafting")
 
-    if not claim_review_bypassed and counts.get("claims", 0) > 0 and not (root / "06_drafts" / "card_drafts" / "claim_drafts.json").exists():
+    if not claim_review_bypassed and counts.get("claims", 0) > 0 and not paths.claim_drafts.exists():
         worker_failure = worker_failure_snapshot_if_any()
         if worker_failure is not None:
             return worker_failure
@@ -416,7 +419,7 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
             "message": f"Paused for card architecture review: {counts['card_architecture']} architecture action(s) need review.",
             "logs": logs,
         }
-    if (root / "07_review" / "card_drafts.json").exists() or (root / "07_review" / "canonical_cards.json").exists():
+    if paths.card_drafts.exists() or paths.canonical_cards.exists():
         mark_start(11, "Card Synthesis")
         if counts.get("cards", 0) > 0:
             worker_failure = worker_failure_snapshot_if_any()
@@ -440,7 +443,7 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
             "message": f"Paused for card review: {counts['cards']} card draft(s) need review.",
             "logs": logs,
         }
-    if (root / "08_notion" / "notion_import.ndjson").exists():
+    if paths.notion_import.exists():
         mark_done(12, "Notion Export")
     worker_failure = worker_failure_snapshot_if_any()
     if worker_failure is not None:
@@ -1030,48 +1033,48 @@ HTML_MESSAGE = """
 
 
 DEFAULT_PATCHES_CANDIDATES = [
-    Path("artifacts/06_drafts/card_drafts/claim_drafts.json"),
-    Path("artifacts/small_batch/06_drafts/card_drafts/claim_drafts.json"),
+    Path("artifacts/09_claim_drafting/claim_drafts.json"),
+    Path("artifacts/small_batch/09_claim_drafting/claim_drafts.json"),
 ]
 
 DEFAULT_DECISIONS_CANDIDATES = [
-    Path("artifacts/07_review/claim_review_decisions.json"),
-    Path("artifacts/small_batch/07_review/claim_review_decisions.json"),
+    Path("artifacts/09_claim_drafting/claim_review_decisions.json"),
+    Path("artifacts/small_batch/09_claim_drafting/claim_review_decisions.json"),
 ]
 
 DEFAULT_CARD_DRAFTS_CANDIDATES = [
-    Path("artifacts/07_review/card_drafts.json"),
-    Path("artifacts/small_batch/07_review/card_drafts.json"),
+    Path("artifacts/11_card_synthesis/card_drafts.json"),
+    Path("artifacts/small_batch/11_card_synthesis/card_drafts.json"),
 ]
 
 DEFAULT_CARD_DECISIONS_CANDIDATES = [
-    Path("artifacts/07_review/card_review_decisions.json"),
-    Path("artifacts/small_batch/07_review/card_review_decisions.json"),
+    Path("artifacts/11_card_synthesis/card_review_decisions.json"),
+    Path("artifacts/small_batch/11_card_synthesis/card_review_decisions.json"),
 ]
 
 DEFAULT_IDENTITY_MERGE_PROPOSALS_CANDIDATES = [
-    Path("artifacts/07_review/identity_merge_proposals.json"),
-    Path("artifacts/small_batch/07_review/identity_merge_proposals.json"),
+    Path("artifacts/10_identity_merge/identity_merge_proposals.json"),
+    Path("artifacts/small_batch/10_identity_merge/identity_merge_proposals.json"),
 ]
 
 DEFAULT_IDENTITY_MERGE_DECISIONS_CANDIDATES = [
-    Path("artifacts/07_review/identity_merge_decisions.json"),
-    Path("artifacts/small_batch/07_review/identity_merge_decisions.json"),
+    Path("artifacts/10_identity_merge/identity_merge_decisions.json"),
+    Path("artifacts/small_batch/10_identity_merge/identity_merge_decisions.json"),
 ]
 
 DEFAULT_CONVERSATION_ENTITY_PROPOSALS_CANDIDATES = [
-    Path("artifacts/05_alias/conversation_entity_proposals.json"),
-    Path("artifacts/small_batch/05_alias/conversation_entity_proposals.json"),
+    Path("artifacts/07_entity_resolution/conversation_entity_proposals.json"),
+    Path("artifacts/small_batch/07_entity_resolution/conversation_entity_proposals.json"),
 ]
 
 DEFAULT_CONVERSATION_ENTITY_DECISIONS_CANDIDATES = [
-    Path("artifacts/05_alias/conversation_entity_decisions.json"),
-    Path("artifacts/small_batch/05_alias/conversation_entity_decisions.json"),
+    Path("artifacts/07_entity_resolution/conversation_entity_decisions.json"),
+    Path("artifacts/small_batch/07_entity_resolution/conversation_entity_decisions.json"),
 ]
 
 DEFAULT_DIRECTIVES_CANDIDATES = [
-    Path("artifacts/07_review/author_directives.json"),
-    Path("artifacts/small_batch/07_review/author_directives.json"),
+    Path("artifacts/11_card_synthesis/author_directives.json"),
+    Path("artifacts/small_batch/11_card_synthesis/author_directives.json"),
 ]
 
 DEFAULT_DOCX_CANDIDATES = [
@@ -1093,15 +1096,17 @@ def _resolve_input_paths(
     artifacts_root: Path | None,
 ) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path, Path, Path]:
     if artifacts_root is not None:
-        root_patches = artifacts_root / "06_drafts" / "card_drafts" / "claim_drafts.json"
-        root_decisions = artifacts_root / "07_review" / "claim_review_decisions.json"
-        root_directives = artifacts_root / "07_review" / "author_directives.json"
-        root_card_drafts = artifacts_root / "07_review" / "card_drafts.json"
-        root_card_decisions = artifacts_root / "07_review" / "card_review_decisions.json"
-        root_identity_merge_proposals = artifacts_root / "07_review" / "identity_merge_proposals.json"
-        root_identity_merge_decisions = artifacts_root / "07_review" / "identity_merge_decisions.json"
-        root_conversation_entity_proposals = artifacts_root / "05_alias" / "conversation_entity_proposals.json"
-        root_conversation_entity_decisions = artifacts_root / "05_alias" / "conversation_entity_decisions.json"
+        migrate_run_artifacts_to_numbered(artifacts_root)
+        path_map = ArtifactPaths(artifacts_root)
+        root_patches = path_map.claim_drafts
+        root_decisions = path_map.claim_review_decisions
+        root_directives = path_map.author_directives
+        root_card_drafts = path_map.card_drafts
+        root_card_decisions = path_map.card_review_decisions
+        root_identity_merge_proposals = path_map.identity_merge_proposals
+        root_identity_merge_decisions = path_map.identity_merge_decisions
+        root_conversation_entity_proposals = path_map.conversation_entity_proposals
+        root_conversation_entity_decisions = path_map.conversation_entity_decisions
         patches = patches or root_patches
         decisions = decisions or root_decisions
         directives = directives or root_directives
@@ -1125,7 +1130,7 @@ def _resolve_input_paths(
         if patches is None:
             patches = DEFAULT_PATCHES_CANDIDATES[0]
         if decisions is None and patches.parent.name == "card_drafts":
-            decisions = patches.parent.parent.parent / "07_review" / "claim_review_decisions.json"
+            decisions = patches.parent.parent.parent / "09_claim_drafting" / "claim_review_decisions.json"
         if decisions is None:
             decisions = DEFAULT_DECISIONS_CANDIDATES[0]
         if directives is None and decisions is not None:
@@ -1156,6 +1161,8 @@ def _resolve_input_paths(
             conversation_entity_decisions = DEFAULT_CONVERSATION_ENTITY_DECISIONS_CANDIDATES[0]
         if patches.parent.name == "card_drafts":
             resolved_artifacts_root = patches.parent.parent.parent
+        elif patches.parent.name == "09_claim_drafting":
+            resolved_artifacts_root = patches.parent.parent
         else:
             resolved_artifacts_root = Path("artifacts")
 
@@ -1245,7 +1252,7 @@ def source_snippet_previews_for_claim(root: Path, claim: dict[str, Any], limit: 
     source_ids = [str(item) for item in claim.get("source_snippet_ids", []) or [] if str(item).strip()]
     if not source_ids:
         return []
-    source_path = root / "03_relevance" / "snippets_candidates.jsonl"
+    source_path = ArtifactPaths(root).snippets
     if not source_path.exists():
         return []
     wanted = set(source_ids[:limit])
@@ -1393,7 +1400,7 @@ def _human_decision_ids(path: Path, id_fields: list[str]) -> set[str]:
 
 
 def _claim_attention_by_id(root: Path) -> dict[str, dict[str, Any]]:
-    payload = _read_json_or_default(root / "07_review" / "claim_auto_review_attention.json", {"items": []})
+    payload = _read_json_or_default(ArtifactPaths(root).claim_auto_review_attention, {"items": []})
     by_id: dict[str, dict[str, Any]] = {}
     for item in payload.get("items", []) if isinstance(payload, dict) else []:
         if not isinstance(item, dict):
@@ -1406,18 +1413,20 @@ def _claim_attention_by_id(root: Path) -> dict[str, dict[str, Any]]:
 
 def _pending_claim_attention_ids(root: Path) -> set[str]:
     attention_by_id = _claim_attention_by_id(root)
-    human_reviewed = _human_decision_ids(root / "07_review" / "claim_review_decisions.json", ["claim_id"])
+    human_reviewed = _human_decision_ids(ArtifactPaths(root).claim_review_decisions, ["claim_id"])
     return {claim_id for claim_id in attention_by_id if claim_id not in human_reviewed}
 
 
 def pending_review_counts_for_root(root: Path) -> dict[str, int]:
+    migrate_run_artifacts_to_numbered(root)
+    paths = ArtifactPaths(root)
     conversation_payload = _read_json_or_default(
-        root / "05_alias" / "conversation_entity_proposals.json",
+        paths.conversation_entity_proposals,
         {"proposals": [], "alias_review_groups": []},
     )
     conversation_proposals = conversation_payload.get("proposals", [])
     conversation_decisions = _decision_ids(
-        root / "05_alias" / "conversation_entity_decisions.json",
+        paths.conversation_entity_decisions,
         ["proposal_id"],
     )
     grouped_child_ids: set[str] = set()
@@ -1443,10 +1452,10 @@ def pending_review_counts_for_root(root: Path) -> dict[str, int]:
     ]
 
     claims = _read_json_or_default(
-        root / "06_drafts" / "card_drafts" / "claim_drafts.json",
+        paths.claim_drafts,
         {"claims": []},
     ).get("claims", [])
-    claim_decisions = _decision_ids(root / "07_review" / "claim_review_decisions.json", ["claim_id"])
+    claim_decisions = _decision_ids(paths.claim_review_decisions, ["claim_id"])
     claim_attention_ids = _pending_claim_attention_ids(root)
     pending_claims = [
         claim
@@ -1459,11 +1468,11 @@ def pending_review_counts_for_root(root: Path) -> dict[str, int]:
     ]
 
     merge_proposals = _read_json_or_default(
-        root / "07_review" / "identity_merge_proposals.json",
+        paths.identity_merge_proposals,
         {"proposals": []},
     ).get("proposals", [])
     merge_decisions = _decision_ids(
-        root / "07_review" / "identity_merge_decisions.json",
+        paths.identity_merge_decisions,
         ["proposal_id", "merge_id"],
     )
     pending_merges = [
@@ -1476,14 +1485,14 @@ def pending_review_counts_for_root(root: Path) -> dict[str, int]:
 
     try:
         pending_architecture = pending_card_architecture_actions(
-            root / "07_review" / "card_architecture_proposals.json",
-            root / "07_review" / "card_architecture_decisions.json",
+            paths.card_architecture_proposals,
+            paths.card_architecture_decisions,
         )
     except Exception:
         pending_architecture = []
 
-    cards = _read_json_or_default(root / "07_review" / "card_drafts.json", {"cards": []}).get("cards", [])
-    card_decisions = _decision_ids(root / "07_review" / "card_review_decisions.json", ["card_id", "target_card_id"])
+    cards = _read_json_or_default(paths.card_drafts, {"cards": []}).get("cards", [])
+    card_decisions = _decision_ids(paths.card_review_decisions, ["card_id", "target_card_id"])
     pending_cards = [
         card
         for card in cards
@@ -1516,23 +1525,29 @@ def pending_review_summary(counts: dict[str, int]) -> str:
 
 
 def _latest_review_mtime(root: Path) -> float:
+    paths = ArtifactPaths(root)
     markers = [
-        root / "05_alias" / "conversation_entity_proposals.json",
-        root / "05_alias" / "conversation_entity_decisions.json",
-        root / "06_drafts" / "card_drafts" / "claim_drafts.json",
-        root / "07_review" / "claim_review_decisions.json",
-        root / "07_review" / "identity_merge_proposals.json",
-        root / "07_review" / "identity_merge_decisions.json",
-        root / "07_review" / "card_drafts.json",
-        root / "07_review" / "card_review_decisions.json",
+        paths.conversation_entity_proposals,
+        paths.conversation_entity_decisions,
+        paths.claim_drafts,
+        paths.claim_review_decisions,
+        paths.identity_merge_proposals,
+        paths.identity_merge_decisions,
+        paths.card_drafts,
+        paths.card_review_decisions,
     ]
     existing = [path.stat().st_mtime for path in markers if path.exists()]
     return max(existing) if existing else 0.0
 
 
 def _looks_like_artifacts_root(path: Path) -> bool:
+    paths = ArtifactPaths(path)
     return (
-        (path / "05_alias").exists()
+        paths.stage07.exists()
+        or paths.stage09.exists()
+        or paths.stage11.exists()
+        or paths.stage01.exists()
+        or (path / "05_alias").exists()
         or (path / "06_drafts").exists()
         or (path / "07_review").exists()
         or (path / "01_bootstrap").exists()
@@ -1869,7 +1884,7 @@ def build_app(
                 )
                 set_pipeline_state(
                     status="succeeded",
-                    message=f"Pipeline completed successfully. Notion export path: {artifacts_root / '08_notion' / 'notion_import.ndjson'}",
+                    message=f"Pipeline completed successfully. Notion export path: {ArtifactPaths(artifacts_root).notion_import}",
                     last_exit_code=0,
                     finished_at_utc=now_utc_iso(),
                 )
@@ -2238,7 +2253,7 @@ def main() -> None:
         "--artifacts-root",
         type=Path,
         required=False,
-        help="Artifact root containing 06_drafts and 07_review (e.g. artifacts/small_batch).",
+        help="Artifact root containing numbered stage outputs (e.g. artifacts/small_batch).",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)

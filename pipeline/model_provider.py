@@ -26,8 +26,6 @@ _CACHED_API_KEY: str | None = None
 _HAS_CACHED_API_KEY = False
 _CACHED_GEMINI_API_KEY: str | None = None
 _HAS_CACHED_GEMINI_API_KEY = False
-_CACHED_ANTHROPIC_API_KEY: str | None = None
-_HAS_CACHED_ANTHROPIC_API_KEY = False
 _CACHED_OPENROUTER_API_KEY: str | None = None
 _HAS_CACHED_OPENROUTER_API_KEY = False
 _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S = 0.0
@@ -300,40 +298,6 @@ def _resolve_gemini_api_key() -> str | None:
         {"found": bool(file_value), "source": ".env", "repo_root": str(repo_root)},
     )
     return _CACHED_GEMINI_API_KEY
-
-
-def _resolve_anthropic_api_key() -> str | None:
-    global _CACHED_ANTHROPIC_API_KEY, _HAS_CACHED_ANTHROPIC_API_KEY
-    if _HAS_CACHED_ANTHROPIC_API_KEY:
-        return _CACHED_ANTHROPIC_API_KEY
-
-    env_candidates = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"]
-    for key_name in env_candidates:
-        value = os.environ.get(key_name)
-        if value and value.strip():
-            _CACHED_ANTHROPIC_API_KEY = value.strip().strip('"').strip("'")
-            _HAS_CACHED_ANTHROPIC_API_KEY = True
-            _debug_log(
-                "model-provider-debug",
-                "H12",
-                "model_provider.py:_resolve_anthropic_api_key",
-                "Resolved Anthropic API key from process env",
-                {"key_name": key_name, "source": "process_env"},
-            )
-            return _CACHED_ANTHROPIC_API_KEY
-
-    repo_root = Path(__file__).resolve().parents[1]
-    file_value = _read_env_value_from_file(repo_root, env_candidates)
-    _CACHED_ANTHROPIC_API_KEY = file_value
-    _HAS_CACHED_ANTHROPIC_API_KEY = True
-    _debug_log(
-        "model-provider-debug",
-        "H12",
-        "model_provider.py:_resolve_anthropic_api_key",
-        "Resolved Anthropic API key from .env probe",
-        {"found": bool(file_value), "source": ".env", "repo_root": str(repo_root)},
-    )
-    return _CACHED_ANTHROPIC_API_KEY
 
 
 def _resolve_openrouter_api_key() -> str | None:
@@ -1456,222 +1420,6 @@ def _call_gemini_chat(
     return parsed_content
 
 
-def _extract_anthropic_text(body: dict[str, Any]) -> str:
-    blocks = body.get("content", [])
-    if not isinstance(blocks, list):
-        return ""
-    text_parts: list[str] = []
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        if str(block.get("type", "")).strip() == "text" and str(block.get("text", "")).strip():
-            text_parts.append(str(block.get("text", "")))
-    return "\n".join(text_parts).strip()
-
-
-def _call_anthropic_chat(
-    api_base_url: str,
-    api_key: str,
-    model: str,
-    prompt: str,
-    temperature: float,
-    timeout_seconds: int,
-    retries: int = 2,
-    rate_limit_cooldown_seconds: int = 90,
-    rate_state_path: Path | None = None,
-    min_interval_seconds: float = 0.5,
-    max_interval_seconds: float = 120.0,
-    success_decay: float = 0.9,
-    rate_limit_growth: float = 1.8,
-    max_tokens: int = 4096,
-) -> dict[str, Any] | None:
-    logger = get_logger(__name__)
-    global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MODEL_ATTEMPT_EPOCH_S, _LAST_PACING_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
-    _LAST_MODEL_SKIP_REASON = ""
-    now_s = time.time()
-    if _NEXT_MODEL_ATTEMPT_EPOCH_S > now_s:
-        _LAST_MODEL_SKIP_REASON = "provider_locked"
-        return None
-
-    state = _load_rate_state(rate_state_path)
-    adaptive_interval = float(state.get("adaptive_min_interval_seconds", min_interval_seconds))
-    adaptive_interval = max(float(min_interval_seconds), min(float(max_interval_seconds), adaptive_interval))
-    last_request = float(state.get("last_request_epoch_s", 0.0))
-    elapsed_since_last = now_s - last_request if last_request > 0 else 10**9
-    if elapsed_since_last < adaptive_interval:
-        remaining = round(adaptive_interval - elapsed_since_last, 2)
-        _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, last_request + adaptive_interval)
-        _LAST_MODEL_SKIP_REASON = "adaptive_pacing"
-        if now_s - _LAST_PACING_LOG_EPOCH_S >= 1.0:
-            _LAST_PACING_LOG_EPOCH_S = now_s
-            _debug_log(
-                "model-provider-debug",
-                "H12",
-                "model_provider.py:_call_anthropic_chat",
-                "Skipping Anthropic API due to adaptive min-interval pacing",
-                {
-                    "remaining_seconds": remaining,
-                    "adaptive_interval_seconds": adaptive_interval,
-                    "last_request_epoch_s": last_request,
-                },
-            )
-        return None
-    if _RATE_LIMITED_UNTIL_EPOCH_S > now_s:
-        _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
-        _LAST_MODEL_SKIP_REASON = "rate_limit_cooldown"
-        return None
-
-    endpoint = f"{api_base_url.rstrip('/')}/messages"
-    clean_model = model.strip() or "claude-opus-4-1-20250805"
-    logger.debug(
-        "Calling Anthropic API endpoint=%s model=%s timeout=%ss temperature=%.2f prompt_chars=%d",
-        endpoint,
-        clean_model,
-        timeout_seconds,
-        temperature,
-        len(prompt),
-    )
-    _debug_log(
-        "model-provider-debug",
-        "H12",
-        "model_provider.py:_call_anthropic_chat",
-        "Attempting Anthropic API request",
-        {"model": clean_model, "timeout_seconds": timeout_seconds},
-    )
-
-    payload = {
-        "model": clean_model,
-        "max_tokens": max(256, int(max_tokens)),
-        "temperature": temperature,
-        "system": "You are a precise JSON reasoning assistant. Return strict JSON only with no markdown.",
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    data = json.dumps(payload).encode("utf-8")
-    attempts = max(1, int(retries) + 1)
-    raw_body: str | None = None
-    last_error: str | None = None
-    for attempt_idx in range(1, attempts + 1):
-        req = urllib.request.Request(
-            url=endpoint,
-            data=data,
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
-        state["last_request_epoch_s"] = time.time()
-        state["updated_at_epoch_s"] = state["last_request_epoch_s"]
-        _write_rate_state(rate_state_path, state)
-        try:
-            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-                raw_body = resp.read().decode("utf-8")
-                break
-        except urllib.error.HTTPError as exc:
-            err_body = ""
-            try:
-                err_body = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                err_body = "(unable to read HTTP error body)"
-            logger.warning(
-                "Anthropic API HTTP error status=%s reason=%s model=%s body_preview=%s",
-                exc.code,
-                exc.reason,
-                clean_model,
-                err_body[:300].replace("\n", "\\n"),
-            )
-            if int(exc.code) == 429:
-                retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                try:
-                    cooldown = int(float(retry_after)) if retry_after else int(rate_limit_cooldown_seconds)
-                except (TypeError, ValueError):
-                    cooldown = int(rate_limit_cooldown_seconds)
-                _RATE_LIMITED_UNTIL_EPOCH_S = time.time() + max(1, cooldown)
-                _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
-                state["rate_limited_count"] = int(state.get("rate_limited_count", 0)) + 1
-                grown = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(rate_limit_growth)
-                state["adaptive_min_interval_seconds"] = max(
-                    float(min_interval_seconds),
-                    min(float(max_interval_seconds), grown),
-                )
-                state["updated_at_epoch_s"] = time.time()
-                _write_rate_state(rate_state_path, state)
-                _LAST_MODEL_SKIP_REASON = "rate_limited_429"
-            else:
-                body_reason = re.sub(r"\s+", " ", err_body).strip()
-                _LAST_MODEL_SKIP_REASON = f"http_error_{int(exc.code)}"
-                if body_reason:
-                    _LAST_MODEL_SKIP_REASON += f": {body_reason[:240]}"
-            return None
-        except (urllib.error.URLError, TimeoutError) as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-            _LAST_MODEL_SKIP_REASON = "connection_error"
-            logger.warning("Anthropic API connection failure model=%s error=%s", clean_model, exc)
-            if attempt_idx < attempts:
-                time.sleep(min(8.0, 0.5 * (2 ** (attempt_idx - 1))))
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-            _LAST_MODEL_SKIP_REASON = "unexpected_error"
-            logger.warning("Anthropic API request failed unexpectedly model=%s error=%s", clean_model, exc)
-
-    if raw_body is None:
-        if not _LAST_MODEL_SKIP_REASON:
-            _LAST_MODEL_SKIP_REASON = "attempts_exhausted"
-        _debug_log(
-            "model-provider-debug",
-            "H12",
-            "model_provider.py:_call_anthropic_chat",
-            "Anthropic API attempts exhausted",
-            {"attempts": attempts, "last_error": last_error or "unknown"},
-        )
-        return None
-
-    try:
-        body = json.loads(raw_body)
-    except json.JSONDecodeError:
-        _LAST_MODEL_SKIP_REASON = "invalid_json"
-        logger.warning("Anthropic API response was not valid JSON. response_preview=%s", raw_body[:300].replace("\n", "\\n"))
-        return None
-    if not isinstance(body, dict):
-        _LAST_MODEL_SKIP_REASON = "invalid_envelope"
-        logger.warning("Anthropic API response root was %s (expected object).", type(body).__name__)
-        return None
-    content = _extract_anthropic_text(body)
-    if not content:
-        _LAST_MODEL_SKIP_REASON = "empty_content"
-        logger.warning("Anthropic API response contained no assistant text. response_keys=%s", sorted(body.keys()))
-        return None
-    parsed_content = _parse_json_content(content, logger)
-    if parsed_content is None:
-        _LAST_MODEL_SKIP_REASON = "content_parse_failed"
-        _debug_log(
-            "model-provider-debug",
-            "H12",
-            "model_provider.py:_call_anthropic_chat",
-            "Anthropic content parse failed",
-            {
-                "model": clean_model,
-                "stop_reason": body.get("stop_reason", ""),
-                "content_preview": content[:600],
-            },
-        )
-        return None
-
-    state["success_count"] = int(state.get("success_count", 0)) + 1
-    decayed = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(success_decay)
-    state["adaptive_min_interval_seconds"] = max(float(min_interval_seconds), min(float(max_interval_seconds), decayed))
-    state["updated_at_epoch_s"] = time.time()
-    _NEXT_MODEL_ATTEMPT_EPOCH_S = max(
-        _NEXT_MODEL_ATTEMPT_EPOCH_S,
-        state["last_request_epoch_s"] + state["adaptive_min_interval_seconds"],
-    )
-    _write_rate_state(rate_state_path, state)
-    _LAST_MODEL_SKIP_REASON = ""
-    logger.debug("Parsed Anthropic API content keys=%s", sorted(parsed_content.keys()))
-    return parsed_content
-
-
 def call_model_chat(
     base_url: str,
     model: str,
@@ -1698,22 +1446,24 @@ def call_model_chat(
     resolved_provider = (provider or "auto").lower()
     if resolved_provider in {"google", "google_ai", "google_ai_studio", "gemini_api"}:
         resolved_provider = "gemini"
-    if resolved_provider in {"claude", "anthropic_api"}:
-        resolved_provider = "anthropic"
     if resolved_provider in {"open_router", "openrouter_api"}:
         resolved_provider = "openrouter"
+    supported_providers = {"auto", "gemini", "openrouter", "openai_compatible", "api", "ollama"}
+    if resolved_provider not in supported_providers:
+        logger.warning("Unsupported model provider selected: %s.", resolved_provider)
+        _LAST_MODEL_SKIP_REASON = "unsupported_provider"
+        return None
     now_s = time.time()
 
-    if resolved_provider in {"openai_compatible", "api", "auto", "anthropic", "openrouter"}:
+    if resolved_provider in {"openai_compatible", "api", "auto", "openrouter"}:
         provider_locked = _NEXT_MODEL_ATTEMPT_EPOCH_S > now_s
-        if provider_locked and (resolved_provider in {"openai_compatible", "api", "anthropic", "openrouter"} or not auto_fallback_to_ollama):
+        if provider_locked and (resolved_provider in {"openai_compatible", "api", "openrouter"} or not auto_fallback_to_ollama):
             _LAST_MODEL_SKIP_REASON = "provider_locked"
             return None
 
     gemini_key = _resolve_gemini_api_key() if resolved_provider == "gemini" else None
-    anthropic_key = _resolve_anthropic_api_key() if resolved_provider == "anthropic" else None
     openrouter_key = _resolve_openrouter_api_key() if resolved_provider == "openrouter" else None
-    api_key = _resolve_generic_api_key() if resolved_provider not in {"gemini", "anthropic", "openrouter"} else None
+    api_key = _resolve_generic_api_key() if resolved_provider in {"auto", "api", "openai_compatible"} else None
     if now_s - _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S >= 1.0:
         _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S = now_s
         # region agent log
@@ -1724,7 +1474,7 @@ def call_model_chat(
             "Resolved provider mode before dispatch",
             {
                 "provider": resolved_provider,
-                "has_api_key": bool(api_key or gemini_key or anthropic_key or openrouter_key),
+                "has_api_key": bool(api_key or gemini_key or openrouter_key),
                 "api_model": api_model,
                 "ollama_model": model,
             },
@@ -1747,32 +1497,6 @@ def call_model_chat(
             prompt,
             temperature,
             timeout_seconds,
-            rate_limit_cooldown_seconds=rate_limit_cooldown_seconds,
-            rate_state_path=rate_state_path,
-            min_interval_seconds=min_interval_seconds,
-            max_interval_seconds=max_interval_seconds,
-            success_decay=success_decay,
-            rate_limit_growth=rate_limit_growth,
-            max_tokens=max_tokens,
-        )
-
-    if resolved_provider == "anthropic":
-        if not anthropic_key:
-            logger.warning("Anthropic provider selected but no ANTHROPIC_API_KEY found in environment/.env.")
-            _LAST_MODEL_SKIP_REASON = "missing_api_key"
-            return None
-        anthropic_base_url = api_base_url
-        if "anthropic.com" not in anthropic_base_url:
-            anthropic_base_url = "https://api.anthropic.com/v1"
-        anthropic_model = api_model if api_model and api_model != "qwen/qwen3.5-flash-02-23" else "claude-opus-4-1-20250805"
-        return _call_anthropic_chat(
-            anthropic_base_url,
-            anthropic_key,
-            anthropic_model,
-            prompt,
-            temperature,
-            timeout_seconds,
-            retries=api_retries,
             rate_limit_cooldown_seconds=rate_limit_cooldown_seconds,
             rate_state_path=rate_state_path,
             min_interval_seconds=min_interval_seconds,

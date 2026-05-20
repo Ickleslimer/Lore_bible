@@ -1,10 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { RefreshCcw } from "lucide-svelte";
+  import CardAgentActivityPanel from "./components/CardAgentActivityPanel.svelte";
+  import DraftCardsPanel from "./components/DraftCardsPanel.svelte";
+  import EntityInventoryPanel from "./components/EntityInventoryPanel.svelte";
   import IdentityMergePanel from "./components/IdentityMergePanel.svelte";
   import InventoryPanel from "./components/InventoryPanel.svelte";
   import PipelineControlPanel from "./components/PipelineControlPanel.svelte";
   import ProgressRail from "./components/ProgressRail.svelte";
+  import RelationshipGraphPanel from "./components/RelationshipGraphPanel.svelte";
   import RunSelector from "./components/RunSelector.svelte";
   import { loadClaimInventory, loadEntityInventory, loadIdentityClusters, loadState, selectRun } from "./lib/api";
   import type { AppState, IdentityClusterRow, InventoryRow } from "./lib/types";
@@ -13,12 +17,15 @@
   let clusters: IdentityClusterRow[] = [];
   let claimRows: InventoryRow[] = [];
   let entityRows: InventoryRow[] = [];
+  let mergedEntityRows: InventoryRow[] = [];
+  let mergedEntityMetadata: Record<string, unknown> = {};
   let loading = true;
   let busy = false;
   let clusterLoading = false;
   let inventoryLoading = false;
   let error = "";
-  let activeTab: "pipeline" | "claims" | "entities" | "identity" | "overview" = "pipeline";
+  type ActiveTab = "pipeline" | "claims" | "entities" | "identity" | "relationships" | "drafts" | "agent" | "overview";
+  let activeTab: ActiveTab = "pipeline";
 
   function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
     return Promise.race([
@@ -50,10 +57,14 @@
       ]);
       claimRows = claims.rows;
       entityRows = entities.rows;
+      mergedEntityRows = entities.merged_rows ?? [];
+      mergedEntityMetadata = entities.merged_metadata ?? {};
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
       claimRows = [];
       entityRows = [];
+      mergedEntityRows = [];
+      mergedEntityMetadata = {};
     } finally {
       inventoryLoading = false;
     }
@@ -87,6 +98,8 @@
       clusters = [];
       claimRows = [];
       entityRows = [];
+      mergedEntityRows = [];
+      mergedEntityMetadata = {};
       busy = false;
       if (nextState.active_root) {
         void refreshClusters(nextState.active_root);
@@ -129,9 +142,11 @@
     clusters = [];
     claimRows = [];
     entityRows = [];
+    mergedEntityRows = [];
+    mergedEntityMetadata = {};
   }
 
-  function setTab(tab: "pipeline" | "claims" | "entities" | "identity" | "overview") {
+  function setTab(tab: ActiveTab) {
     activeTab = tab;
   }
 
@@ -169,6 +184,9 @@
       <button class:active={activeTab === "claims"} on:click={() => setTab("claims")}>Claims</button>
       <button class:active={activeTab === "entities"} on:click={() => setTab("entities")}>Entities</button>
       <button class:active={activeTab === "identity"} on:click={() => setTab("identity")}>Identity</button>
+      <button class:active={activeTab === "relationships"} on:click={() => setTab("relationships")}>Relationships</button>
+      <button class:active={activeTab === "drafts"} on:click={() => setTab("drafts")}>Draft Cards</button>
+      <button class:active={activeTab === "agent"} on:click={() => setTab("agent")}>Agent</button>
       <button class:active={activeTab === "overview"} on:click={() => setTab("overview")}>Overview</button>
     </nav>
   </aside>
@@ -212,10 +230,11 @@
           on:changed={handleInventoryChanged}
         />
       {:else if activeTab === "entities"}
-        <InventoryPanel
+        <EntityInventoryPanel
           artifactsRoot={state.active_root}
           rows={entityRows}
-          kind="entities"
+          mergedRows={mergedEntityRows}
+          mergedMetadata={mergedEntityMetadata}
           disabled={busy || inventoryLoading}
           on:changed={handleInventoryChanged}
         />
@@ -226,6 +245,12 @@
           disabled={busy || clusterLoading}
           on:changed={handleClustersChanged}
         />
+      {:else if activeTab === "relationships"}
+        <RelationshipGraphPanel artifactsRoot={state.active_root} disabled={busy} />
+      {:else if activeTab === "drafts"}
+        <DraftCardsPanel artifactsRoot={state.active_root} disabled={busy} />
+      {:else if activeTab === "agent"}
+        <CardAgentActivityPanel artifactsRoot={state.active_root} disabled={busy} />
       {:else}
         <section class="overview-grid">
           {#each Object.entries(state.counts) as [key, value]}

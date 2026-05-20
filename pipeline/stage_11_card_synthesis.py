@@ -1,13 +1,16 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import time
 from pathlib import Path
 from typing import Any
 
+from pipeline.artifact_paths import ArtifactPaths
 from pipeline.author_directives import apply_directive_to_card, parse_author_instruction
+from pipeline.cardbase_agent import run_pending_card_agent_requests
 from pipeline.card_architecture_agent import (
     apply_card_architecture_actions,
     card_architecture_paths,
@@ -15,7 +18,7 @@ from pipeline.card_architecture_agent import (
     prepare_card_architecture_review,
 )
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json, write_jsonl
-from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalized_name_key
+from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalize_entity_type, normalized_name_key
 from pipeline.model_provider import call_model_chat, get_model_runtime_status, model_call_kwargs
 from pipeline.review_memory import (
     load_review_memory,
@@ -875,7 +878,7 @@ def _build_identity_cluster_proposals(
                 "entity_id": str(entity_by_id[entity_id].get("entity_id", "")),
                 "card_id": str(entity_by_id[entity_id].get("card_id", "")),
                 "canonical_name": str(entity_by_id[entity_id].get("canonical_name", "")),
-                "entity_type": str(entity_by_id[entity_id].get("entity_type", "")),
+                "entity_type": normalize_entity_type(entity_by_id[entity_id].get("entity_type", "term")),
                 "aliases": _clean_text_list(entity_by_id[entity_id].get("aliases", [])),
             }
             for entity_id in member_ids
@@ -1571,6 +1574,184 @@ def remember_identity_merge_decisions(
                 existing_aliases.add(alias_key)
 
 
+def identity_merge_records_from_proposals(
+    proposals: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    *,
+    include_pending: bool = True,
+) -> list[dict[str, Any]]:
+    decision_by_proposal = _latest_decision_by_identity_merge(decisions)
+    records: list[dict[str, Any]] = []
+    seen_merges: set[tuple[str, str, str]] = set()
+    for proposal in proposals:
+        proposal_id = str(proposal.get("proposal_id") or proposal.get("cluster_id") or "").strip()
+        decision = decision_by_proposal.get(proposal_id, {})
+        action = str(decision.get("decision") or proposal.get("review_status") or "pending").strip().lower()
+        if action in {"accept"}:
+            action = "approve"
+        if action in {"reject", "rejected", "defer", "deferred", "needs_more_context"}:
+            continue
+        if action == "pending" and not include_pending:
+            continue
+
+        member_entities = proposal.get("member_entities", []) if isinstance(proposal.get("member_entities", []), list) else []
+        member_by_id = {
+            str(entity.get("entity_id", "")): entity
+            for entity in member_entities
+            if isinstance(entity, dict) and str(entity.get("entity_id", "")).strip()
+        }
+        member_ids = [str(item) for item in proposal.get("member_entity_ids", []) or [] if str(item).strip()]
+        if not member_ids:
+            member_ids = [
+                str(proposal.get("source_entity_id", "")).strip(),
+                str(proposal.get("target_entity_id", "")).strip(),
+            ]
+        member_ids = [entity_id for entity_id in member_ids if entity_id]
+        if len(set(member_ids)) < 2:
+            continue
+
+        decision_canonical_name = str(decision.get("canonical_name", "")).strip()
+        target_id = str(decision.get("canonical_entity_id") or "").strip()
+        if not target_id and decision_canonical_name:
+            decision_name_key = normalized_name_key(decision_canonical_name)
+            for entity_id, entity in member_by_id.items():
+                names = [str(entity.get("canonical_name", "")), *[str(alias) for alias in entity.get("aliases", []) or []]]
+                if any(normalized_name_key(name) == decision_name_key for name in names if name.strip()):
+                    target_id = entity_id
+                    break
+        if not target_id:
+            target_id = str(proposal.get("canonical_entity_id") or proposal.get("target_entity_id") or "").strip()
+        if target_id not in set(member_ids):
+            target_id = str(proposal.get("target_entity_id", "")).strip()
+        if target_id not in set(member_ids):
+            continue
+
+        target_entity = member_by_id.get(target_id, {})
+        target_name = str(
+            decision_canonical_name
+            or proposal.get("canonical_name")
+            or proposal.get("target_entity_name")
+            or target_entity.get("canonical_name")
+            or ""
+        ).strip()
+        target_card_id = str(target_entity.get("card_id") or proposal.get("target_card_id") or card_id_for_entity(target_name))
+        rejected_edge_ids = _rejected_identity_edge_ids_for_cluster(proposal, decisions)
+        excluded_member_ids = {
+            str(entity_id)
+            for entity_id in proposal.get("suggested_split_entity_ids", []) or []
+            if str(entity_id).strip()
+        }
+        included_member_ids = _identity_cluster_connected_member_ids(proposal, target_id, rejected_edge_ids)
+        if not included_member_ids:
+            included_member_ids = set(member_ids)
+        included_member_ids = {entity_id for entity_id in included_member_ids if entity_id not in excluded_member_ids}
+        source_ids = [
+            entity_id
+            for entity_id in member_ids
+            if entity_id and entity_id != target_id and entity_id in included_member_ids
+        ]
+        source_claim_ids = _clean_text_list(proposal.get("evidence_claim_ids", []))
+        source_snippet_ids = _clean_text_list(proposal.get("source_snippet_ids", []))
+        for source_id in source_ids:
+            source_entity = member_by_id.get(source_id, {})
+            source_name = str(source_entity.get("canonical_name") or source_id).strip()
+            source_card_id = str(source_entity.get("card_id") or card_id_for_entity(source_name))
+            merge_key = (proposal_id, source_id, target_id)
+            if not source_id or not target_id or source_id == target_id or merge_key in seen_merges:
+                continue
+            seen_merges.add(merge_key)
+            records.append(
+                {
+                    "merge_id": stable_id("entity_merge_preview", proposal_id, source_id, target_id, action),
+                    "proposal_id": proposal_id,
+                    "cluster_id": str(proposal.get("cluster_id") or proposal_id),
+                    "review_status": action or "pending",
+                    "source_entity_id": source_id,
+                    "source_card_id": source_card_id,
+                    "source_entity_name": source_name,
+                    "target_entity_id": target_id,
+                    "target_card_id": target_card_id,
+                    "target_entity_name": target_name,
+                    "canonical_name": target_name,
+                    "alias_text": source_name,
+                    "merge_type": proposal.get("merge_type", "identity_cluster"),
+                    "source_claim_ids": source_claim_ids,
+                    "source_snippet_ids": source_snippet_ids,
+                    "confidence": proposal.get("confidence"),
+                    "rationale": decision.get("rationale") or proposal.get("rationale", ""),
+                    "approved_by": decision.get("reviewer", "") if action == "approve" else "",
+                    "approved_at_utc": decision.get("timestamp_utc", "") if action == "approve" else "",
+                }
+            )
+    return records
+
+
+def build_identity_merged_entities_preview(
+    entities: list[dict[str, Any]],
+    proposals: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    *,
+    include_pending: bool = True,
+) -> dict[str, Any]:
+    merge_records = identity_merge_records_from_proposals(proposals, decisions, include_pending=include_pending)
+    merged_entities, target_map, sources_by_target = apply_entity_merges_to_entities(entities, merge_records)
+    original_entity_by_id = {str(entity.get("entity_id", "")): entity for entity in entities}
+    records_by_target: dict[str, list[dict[str, Any]]] = {}
+    for record in merge_records:
+        target_id = str(record.get("target_entity_id", "")).strip()
+        if target_id:
+            records_by_target.setdefault(target_id, []).append(record)
+    enriched_entities: list[dict[str, Any]] = []
+    for entity in merged_entities:
+        entity_id = str(entity.get("entity_id", "")).strip()
+        records = records_by_target.get(entity_id, [])
+        source_ids = sources_by_target.get(entity_id, [])
+        merged_from_entities = []
+        for source_id in source_ids:
+            source = original_entity_by_id.get(source_id, {})
+            if source:
+                merged_from_entities.append(
+                    {
+                        "entity_id": source_id,
+                        "card_id": str(source.get("card_id", "")),
+                        "canonical_name": str(source.get("canonical_name", "")),
+                        "entity_type": normalize_entity_type(source.get("entity_type", "term")),
+                        "aliases": _clean_text_list(source.get("aliases", [])),
+                    }
+                )
+        statuses = _clean_text_list([record.get("review_status", "") for record in records])
+        claim_ids = _clean_text_list([claim_id for record in records for claim_id in record.get("source_claim_ids", []) or []])
+        snippet_ids = _clean_text_list([snippet_id for record in records for snippet_id in record.get("source_snippet_ids", []) or []])
+        enriched_entities.append(
+            {
+                **entity,
+                "identity_merge_preview_status": "mixed" if len(set(statuses)) > 1 else (statuses[0] if statuses else "unchanged"),
+                "identity_merge_preview_record_count": len(records),
+                "identity_merge_preview_records": records,
+                "identity_merge_proposal_ids": _clean_text_list([record.get("proposal_id", "") for record in records]),
+                "identity_merge_evidence_claim_ids": claim_ids,
+                "identity_merge_source_snippet_ids": snippet_ids,
+                "merged_from_entities": merged_from_entities,
+            }
+        )
+    pending_count = sum(1 for proposal in proposals if str(proposal.get("review_status", "pending")).lower() == "pending")
+    approved_count = sum(1 for proposal in proposals if str(proposal.get("review_status", "pending")).lower() in {"approve", "accept"})
+    return {
+        "generated_at_utc": now_utc_iso(),
+        "mode": "proposed_and_approved_identity_merge_preview" if include_pending else "approved_identity_merge_preview",
+        "source_entity_count": len(entities),
+        "merged_entity_count": len(enriched_entities),
+        "merge_record_count": len(merge_records),
+        "identity_merge_proposal_count": len(proposals),
+        "pending_identity_merge_count": pending_count,
+        "approved_identity_merge_count": approved_count,
+        "target_map": target_map,
+        "sources_by_target": sources_by_target,
+        "merge_records": merge_records,
+        "entities": sorted(enriched_entities, key=lambda entity: str(entity.get("canonical_name", "")).lower()),
+    }
+
+
 def approved_entity_merges_from_memory(memory: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in memory.get("entity_merges", []) if isinstance(item, dict)]
 
@@ -1995,7 +2176,7 @@ def build_available_wiki_link_rows(entity: dict[str, Any], entities_by_name: dic
                 "target_card_id": card_id,
                 "target_entity_id": entity_id_value,
                 "canonical_name": canonical_name,
-                "entity_type": other.get("entity_type", "term"),
+                "entity_type": normalize_entity_type(other.get("entity_type", "term")),
                 "aliases": other.get("aliases", [])[:8] if isinstance(other.get("aliases", []), list) else [],
             }
         )
@@ -2558,7 +2739,7 @@ def _build_card_from_synthesis(
     section_word_counts = synthesis_section_word_counts(synthesis)
     return {
         "card_id": card_id,
-        "entity_type": entity.get("entity_type", "term"),
+        "entity_type": normalize_entity_type(entity.get("entity_type", "term")),
         "canonical_name": canonical_name,
         "aliases": entity.get("aliases", []),
         "status": "draft",
@@ -2664,11 +2845,46 @@ def merge_canonical_cards(existing: list[dict[str, Any]], approved_revisions: li
 
 def default_source_snippets_path(in_claim_drafts_json: Path) -> Path | None:
     try:
-        run_root = in_claim_drafts_json.parents[2]
+        if in_claim_drafts_json.parent.name == "card_drafts":
+            run_root = in_claim_drafts_json.parents[2]
+        else:
+            run_root = in_claim_drafts_json.parent.parent
     except IndexError:
         return None
-    candidate = run_root / "03_relevance" / "snippets_candidates.jsonl"
-    return candidate if candidate.exists() else None
+    candidate = run_root / "06_snippet_extraction" / "snippets_candidates.jsonl"
+    legacy_candidate = run_root / "03_relevance" / "snippets_candidates.jsonl"
+    if candidate.exists():
+        return candidate
+    return legacy_candidate if legacy_candidate.exists() else None
+
+
+def default_identity_merge_paths(out_card_drafts_json: Path) -> tuple[Path, Path]:
+    """Return Stage 10 identity merge proposal/decision paths for Stage 11.
+
+    Legacy runs kept identity and card synthesis review files beside each
+    other. Numbered runs split them into 10_identity_merge and
+    11_card_synthesis, so Stage 11 must look back to Stage 10.
+    """
+
+    legacy_proposals = out_card_drafts_json.with_name("identity_merge_proposals.json")
+    legacy_decisions = out_card_drafts_json.with_name("identity_merge_decisions.json")
+    try:
+        if out_card_drafts_json.parent.name == "11_card_synthesis":
+            paths = ArtifactPaths(out_card_drafts_json.parent.parent)
+            return paths.identity_merge_proposals, paths.identity_merge_decisions
+    except IndexError:
+        pass
+    if legacy_proposals.exists() or legacy_decisions.exists():
+        return legacy_proposals, legacy_decisions
+    try:
+        paths = ArtifactPaths(out_card_drafts_json.parent.parent)
+        stage10_proposals = paths.identity_merge_proposals
+        stage10_decisions = paths.identity_merge_decisions
+        if stage10_proposals.exists() or stage10_decisions.exists():
+            return stage10_proposals, stage10_decisions
+    except IndexError:
+        pass
+    return legacy_proposals, legacy_decisions
 
 
 def load_source_snippets_by_id(path: Path | None) -> dict[str, dict[str, Any]]:
@@ -2680,6 +2896,69 @@ def load_source_snippets_by_id(path: Path | None) -> dict[str, dict[str, Any]]:
         if snippet_id:
             snippets[snippet_id] = row
     return snippets
+
+
+def _sorted_draft_cards(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(cards, key=lambda x: str(x.get("canonical_name", "")))
+
+
+def write_card_synthesis_checkpoint(
+    out_card_drafts_json: Path,
+    draft_cards: list[dict[str, Any]],
+    synthesis_failures: list[dict[str, Any]],
+    *,
+    processed_count: int,
+    total_count: int,
+    status: str,
+    current_entity_id: str = "",
+    current_entity_name: str = "",
+    directives: list[dict[str, Any]] | None = None,
+) -> None:
+    checkpoint_path = out_card_drafts_json.with_name("card_synthesis_checkpoint.json")
+    partial_cards_path = out_card_drafts_json.with_name("card_drafts.partial.json")
+    cards_for_checkpoint = copy.deepcopy(draft_cards)
+    if directives:
+        _apply_directives_to_drafts(cards_for_checkpoint, directives)
+    sorted_cards = _sorted_draft_cards(cards_for_checkpoint)
+    now = now_utc_iso()
+    base_metadata = {
+        "status": status,
+        "updated_at_utc": now,
+        "processed_count": processed_count,
+        "total_count": total_count,
+        "draft_card_count": len(sorted_cards),
+        "synthesis_failure_count": len(synthesis_failures),
+        "current_entity_id": current_entity_id,
+        "current_entity_name": current_entity_name,
+        "final_card_drafts_path": str(out_card_drafts_json),
+    }
+    write_json(
+        checkpoint_path,
+        {
+            **base_metadata,
+            "cards": sorted_cards,
+            "failures": synthesis_failures,
+            "note": "Checkpoint only. card_drafts.json is written after Stage 11 completes.",
+        },
+    )
+    write_json(
+        partial_cards_path,
+        {
+            **base_metadata,
+            "checkpoint_path": str(checkpoint_path),
+            "cards": sorted_cards,
+        },
+    )
+    write_json(
+        out_card_drafts_json.with_name("card_synthesis_failures.json"),
+        {
+            "status": status,
+            "updated_at_utc": now,
+            "processed_count": processed_count,
+            "total_count": total_count,
+            "failures": synthesis_failures,
+        },
+    )
 
 
 def run(
@@ -2696,8 +2975,7 @@ def run(
     in_source_snippets_jsonl: Path | None = None,
 ) -> None:
     logger = get_logger(__name__)
-    identity_merge_proposals_path = out_card_drafts_json.with_name("identity_merge_proposals.json")
-    identity_merge_decisions_path = out_card_drafts_json.with_name("identity_merge_decisions.json")
+    identity_merge_proposals_path, identity_merge_decisions_path = default_identity_merge_paths(out_card_drafts_json)
     if not identity_merge_decisions_path.exists():
         write_json(identity_merge_decisions_path, {"decisions": []})
     existing_canonical_cards = _load_existing_canonical_cards(out_cards_json)
@@ -2765,6 +3043,44 @@ def run(
             f"review {identity_merge_proposals_path} and save decisions to {identity_merge_decisions_path}, then rerun Stage 10 before Stage 11."
         )
 
+    review_dir = out_card_drafts_json.parent
+    ensure_card_architecture_files(review_dir)
+    save_review_memory(in_review_memory_json, memory)
+    card_agent_result = run_pending_card_agent_requests(
+        review_dir=review_dir,
+        entities=entities,
+        accepted_claims=accepted_claims,
+        review_memory_path=in_review_memory_json,
+        author_claims_path=author_claims_path,
+        card_drafts_path=out_card_drafts_json,
+        canonical_cards_path=out_cards_json,
+        config=config,
+    )
+    if card_agent_result.get("processed_count"):
+        logger.info(
+            "Stage 11 Cardbase Agent: completed=%d failed=%d",
+            len(card_agent_result.get("completed", []) or []),
+            len(card_agent_result.get("failed", []) or []),
+        )
+        existing_canonical_cards = _load_existing_canonical_cards(out_cards_json)
+        memory = load_review_memory(in_review_memory_json)
+        author_claims, author_claim_failures = load_author_claims(author_claims_path, entities)
+        write_json(
+            out_card_drafts_json.with_name("author_claim_failures.json"),
+            {"generated_at_utc": now_utc_iso(), "failures": author_claim_failures},
+        )
+        if author_claim_failures:
+            raise RuntimeError(
+                f"Stage 11 found {len(author_claim_failures)} author claim(s) requiring review because their target "
+                f"entities could not be resolved; fix {author_claims_path} and rerun Stage 11."
+            )
+        author_claim_decisions = default_author_claim_decisions(author_claims, claim_decisions)
+        all_claims = claims + author_claims
+        all_claim_decisions = claim_decisions + author_claim_decisions
+        accepted_claims, merge_log = apply_claim_decisions(all_claims, all_claim_decisions)
+        remember_claim_decisions(memory, all_claims, all_claim_decisions)
+        remember_author_directives(memory, directives)
+
     merged_entities, merge_target_map, sources_by_target = apply_entity_merges_to_entities(
         entities,
         approved_entity_merges_from_memory(memory),
@@ -2778,8 +3094,6 @@ def run(
             entities_by_name[normalized_name_key(str(alias))] = entity
     accepted_claims = remap_claims_for_entity_merges(accepted_claims, entity_by_id, merge_target_map)
 
-    review_dir = out_card_drafts_json.parent
-    ensure_card_architecture_files(review_dir)
     architecture_paths = card_architecture_paths(review_dir)
     architecture_proposals, pending_architecture_actions, architecture_failures = prepare_card_architecture_review(
         review_dir=review_dir,
@@ -2834,6 +3148,15 @@ def run(
         "Stage 11 progress: 0/%d preparing card synthesis entities",
         synthesis_total,
     )
+    write_card_synthesis_checkpoint(
+        out_card_drafts_json,
+        draft_cards,
+        synthesis_failures,
+        processed_count=0,
+        total_count=synthesis_total,
+        status="running",
+        directives=directives,
+    )
     for synthesis_index, (entity_id, entity_claims) in enumerate(accepted_by_entity.items(), start=1):
         entity = entity_by_id.get(entity_id)
         if not entity:
@@ -2844,6 +3167,17 @@ def run(
                 entity_id,
                 len(draft_cards),
                 len(synthesis_failures),
+            )
+            write_card_synthesis_checkpoint(
+                out_card_drafts_json,
+                draft_cards,
+                synthesis_failures,
+                processed_count=synthesis_index,
+                total_count=synthesis_total,
+                status="running",
+                current_entity_id=entity_id,
+                current_entity_name="",
+                directives=directives,
             )
             continue
         memory_for_entity = relevant_memory_for_merged_entity(
@@ -2896,6 +3230,17 @@ def run(
                 len(draft_cards),
                 len(synthesis_failures),
             )
+            write_card_synthesis_checkpoint(
+                out_card_drafts_json,
+                draft_cards,
+                synthesis_failures,
+                processed_count=synthesis_index,
+                total_count=synthesis_total,
+                status="running",
+                current_entity_id=entity_id,
+                current_entity_name=str(entity.get("canonical_name", "")),
+                directives=directives,
+            )
             continue
         draft_cards.append(_build_card_from_synthesis(entity, full_entity_claims, synthesis, entities_by_name))
         logger.info(
@@ -2905,9 +3250,28 @@ def run(
             len(draft_cards),
             len(synthesis_failures),
         )
+        write_card_synthesis_checkpoint(
+            out_card_drafts_json,
+            draft_cards,
+            synthesis_failures,
+            processed_count=synthesis_index,
+            total_count=synthesis_total,
+            status="running",
+            current_entity_id=entity_id,
+            current_entity_name=str(entity.get("canonical_name", "")),
+            directives=directives,
+        )
 
     if accepted_by_entity and not draft_cards:
-        write_json(out_card_drafts_json.with_name("card_synthesis_failures.json"), {"failures": synthesis_failures})
+        write_card_synthesis_checkpoint(
+            out_card_drafts_json,
+            draft_cards,
+            synthesis_failures,
+            processed_count=synthesis_total,
+            total_count=synthesis_total,
+            status="failed",
+            directives=directives,
+        )
         first_error = str(synthesis_failures[0].get("error", "")) if synthesis_failures else ""
         raise RuntimeError(f"Stage 11 produced no draft cards; see card_synthesis_failures.json. First failure: {first_error}")
 
@@ -2917,9 +3281,17 @@ def run(
     remember_approved_cards(memory, approved_revisions, card_decisions)
     save_review_memory(in_review_memory_json, memory)
 
-    write_json(out_card_drafts_json, {"cards": sorted(draft_cards, key=lambda x: x.get("canonical_name", ""))})
+    sorted_draft_cards = _sorted_draft_cards(draft_cards)
+    write_json(out_card_drafts_json, {"cards": sorted_draft_cards})
     write_json(out_cards_json, {"cards": sorted(canonical_cards, key=lambda x: x.get("canonical_name", ""))})
-    write_json(out_card_drafts_json.with_name("card_synthesis_failures.json"), {"failures": synthesis_failures})
+    write_card_synthesis_checkpoint(
+        out_card_drafts_json,
+        draft_cards,
+        synthesis_failures,
+        processed_count=synthesis_total,
+        total_count=synthesis_total,
+        status="complete",
+    )
     write_jsonl(out_merge_log_jsonl, merge_log)
     logger.info(
         "Stage 11 complete: accepted_claims=%d draft_cards=%d synthesis_failures=%d canonical_cards=%d merge_log=%d",
