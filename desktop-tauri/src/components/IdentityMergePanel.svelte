@@ -167,7 +167,7 @@
             <section>
               <h4>Rationale</h4>
               <p>{row.triage_reason || row.item.rationale || "No rationale recorded."}</p>
-              <textarea bind:value={rationale} placeholder="Decision rationale" />
+              <textarea bind:value={rationale} placeholder="Decision rationale"></textarea>
             </section>
           </div>
         {/if}

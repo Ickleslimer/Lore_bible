@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -26,7 +26,7 @@ from pipeline.mixtral_anchor_provider import (
     model_batch_max_requests,
     model_call_kwargs,
 )
-from pipeline.stage_c_extract import LORE_KEYWORDS, META_KEYWORDS, meta_intent_hits
+from pipeline.stage_06_snippet_extraction import LORE_KEYWORDS, META_KEYWORDS, meta_intent_hits
 
 
 VALID_TRACKS = {"lore", "meta", "both"}
@@ -481,7 +481,7 @@ If the window contains no THERIAC-relevant material, return {{"segments":[]}}.
 
 
 def _call_model(prompt: str, provider_config: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any] | None:
-    call_kwargs = model_call_kwargs(provider_config, "stage_b3_segmentation")
+    call_kwargs = model_call_kwargs(provider_config, "stage_04_conversation_segmentation")
     if cfg.get("provider"):
         call_kwargs["provider"] = str(cfg["provider"])
     if cfg.get("api_retries") is not None:
@@ -887,10 +887,10 @@ def segment_windows_with_batch(
     if batch_status_log_path is not None:
         batch_provider_config = provider_config_with_task_overrides(
             provider_config,
-            "stage_b3_segmentation",
+            "stage_04_conversation_segmentation",
             {"batch_status_log_path": str(batch_status_log_path)},
         )
-    batch_results = call_gemini_batch_json(batch_provider_config, "stage_b3_segmentation", requests)
+    batch_results = call_gemini_batch_json(batch_provider_config, "stage_04_conversation_segmentation", requests)
     normalized_by_window: dict[str, dict[str, Any]] = {}
     for window in windows:
         key = str(window.get("model_window_id", window.get("coarse_window_id", "")))
@@ -1183,7 +1183,7 @@ def run(
     completed_coarse_windows = 0
     planned_model_windows: int | None = None
     progress_every = max(1, len(coarse_windows) // 10)
-    batch_enabled = model_batch_enabled(provider_config, "stage_b3_segmentation")
+    batch_enabled = model_batch_enabled(provider_config, "stage_04_conversation_segmentation")
     batch_status_log_path = out_index_json.parent / "gemini_batch_status.jsonl" if batch_enabled else None
     if batch_status_log_path and batch_status_log_path.exists():
         batch_status_log_path.unlink()
@@ -1227,14 +1227,14 @@ def run(
                 model_jobs.append((coarse_window, model_window, window_idx))
 
         planned_model_windows = len(model_jobs)
-        max_batch_requests = model_batch_max_requests(provider_config, "stage_b3_segmentation", default=100)
+        max_batch_requests = model_batch_max_requests(provider_config, "stage_04_conversation_segmentation", default=100)
         initial_batch_requests = min(
             max_batch_requests,
-            model_batch_initial_max_requests(provider_config, "stage_b3_segmentation", default=max_batch_requests),
+            model_batch_initial_max_requests(provider_config, "stage_04_conversation_segmentation", default=max_batch_requests),
         )
         routing_cfg = provider_config.get("model_routing", {}) if isinstance(provider_config, dict) else {}
         tasks_cfg = routing_cfg.get("tasks", {}) if isinstance(routing_cfg, dict) else {}
-        task_cfg = tasks_cfg.get("stage_b3_segmentation", {}) if isinstance(tasks_cfg, dict) else {}
+        task_cfg = tasks_cfg.get("stage_04_conversation_segmentation", {}) if isinstance(tasks_cfg, dict) else {}
         abort_on_chunk_failure = bool(task_cfg.get("batch_abort_on_chunk_failure", True)) if isinstance(task_cfg, dict) else True
         write_stage_outputs(
             out_jsonl=out_jsonl,

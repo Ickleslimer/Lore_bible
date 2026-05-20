@@ -48,7 +48,7 @@ button:hover:not(:disabled) {
 }
 
 button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.56;
 }
 
@@ -170,6 +170,18 @@ textarea {
   color: #1d4ed8;
 }
 
+.debug-strip {
+  margin-top: auto;
+  border-top: 1px solid #d7dee9;
+  padding-top: 12px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.debug-strip p {
+  margin: 4px 0 0;
+}
+
 .workspace {
   min-width: 0;
   padding: 22px;
@@ -209,18 +221,55 @@ textarea {
 
 .stage-rail {
   display: grid;
-  grid-template-columns: repeat(11, minmax(72px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 10px;
 }
 
 .stage-node {
+  position: relative;
   display: grid;
-  gap: 7px;
-  align-content: start;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
   min-width: 0;
+  min-height: 58px;
+  border: 1px solid #d7dee9;
+  border-radius: 12px;
+  background: #fff;
+  padding: 9px;
   color: #64748b;
   font-size: 11px;
-  text-align: center;
+  text-align: left;
+}
+
+.stage-node:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -10px;
+  width: 10px;
+  height: 2px;
+  background: #cbd5e1;
+}
+
+.stage-node:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: calc(50% - 4px);
+  right: -12px;
+  width: 8px;
+  height: 8px;
+  border-top: 2px solid #cbd5e1;
+  border-right: 2px solid #cbd5e1;
+  transform: rotate(45deg);
+}
+
+.stage-node.done:not(:last-child)::after {
+  background: #16803c;
+}
+
+.stage-node.done:not(:last-child)::before {
+  border-color: #16803c;
 }
 
 .stage-node .dot {
@@ -228,7 +277,6 @@ textarea {
   place-items: center;
   width: 34px;
   height: 34px;
-  margin: 0 auto;
   border: 2px solid #cbd5e1;
   border-radius: 999px;
   background: #fff;
@@ -236,10 +284,27 @@ textarea {
   font-weight: 800;
 }
 
+.stage-node span:last-child {
+  overflow-wrap: anywhere;
+  color: #334155;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.stage-node.done {
+  border-color: rgba(22, 128, 60, 0.28);
+  background: #f6fdf8;
+}
+
 .stage-node.done .dot {
   border-color: #16803c;
   background: #16803c;
   color: #fff;
+}
+
+.stage-node.current {
+  border-color: rgba(37, 99, 235, 0.35);
+  background: #eff6ff;
 }
 
 .stage-node.current .dot {
@@ -249,11 +314,21 @@ textarea {
   box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.14);
 }
 
+.stage-node.attention {
+  border-color: rgba(183, 121, 31, 0.38);
+  background: #fffbeb;
+}
+
 .stage-node.attention .dot {
   border-color: #b7791f;
   background: #b7791f;
   color: #fff;
   box-shadow: 0 0 0 5px rgba(183, 121, 31, 0.16);
+}
+
+.stage-node.failed {
+  border-color: rgba(220, 38, 38, 0.34);
+  background: #fff5f5;
 }
 
 .stage-node.failed .dot {
@@ -453,6 +528,144 @@ button.compact {
   border-left-color: #b7791f;
 }
 
+.inventory-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.inventory-toolbar {
+  grid-template-columns: minmax(260px, 1fr) 150px 150px 150px auto;
+  align-items: center;
+}
+
+.inventory-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.inventory-summary strong {
+  color: #172033;
+  font-size: 22px;
+}
+
+.inventory-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.inventory-card {
+  border: 1px solid #d7dee9;
+  border-left: 4px solid #94a3b8;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+  padding: 14px;
+}
+
+.inventory-card.accepted,
+.inventory-card.approved,
+.inventory-card.promoted {
+  border-left-color: #16803c;
+}
+
+.inventory-card.rejected,
+.inventory-card.suppressed {
+  border-left-color: #dc2626;
+}
+
+.inventory-card.attention,
+.inventory-card.pending,
+.inventory-card.deferred {
+  border-left-color: #b7791f;
+}
+
+.inventory-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.inventory-card-header h3 {
+  margin: 3px 0 0;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.status-pill {
+  flex: 0 0 auto;
+  max-width: 220px;
+  border: 1px solid #d7dee9;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inventory-text {
+  margin: 12px 0;
+  color: #172033;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.inventory-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.inventory-meta span {
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inventory-reason {
+  margin: 0 0 10px;
+  border-left: 3px solid #cbd5e1;
+  padding-left: 10px;
+  color: #475569;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.entity-edit-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.35fr);
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.inventory-card textarea {
+  min-height: 58px;
+}
+
+.inventory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.load-more {
+  justify-self: center;
+}
+
 .overview-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -471,6 +684,7 @@ button.compact {
 }
 
 .control-card,
+.progress-feed,
 .log-panel {
   border: 1px solid #d7dee9;
   border-radius: 14px;
@@ -553,6 +767,45 @@ button.compact {
   white-space: pre-wrap;
 }
 
+.log-summary {
+  margin: 0 0 10px;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.progress-feed p {
+  margin: 0;
+  color: #334155;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.progress-lines {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.progress-lines code {
+  display: block;
+  max-height: 46px;
+  overflow: hidden;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #172033;
+  padding: 7px 9px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.quiet-meta {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .metric-card {
   padding: 16px;
 }
@@ -581,7 +834,7 @@ button.compact {
   }
 
   .stage-rail {
-    grid-template-columns: repeat(6, minmax(72px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(124px, 1fr));
   }
 
   .details-grid {

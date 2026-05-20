@@ -1,7 +1,14 @@
 <script lang="ts">
-  import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import { Play, RotateCcw, Square, Sparkles } from "lucide-svelte";
-  import { cancelPipeline, createRun, pipelineLogTail, pipelineStatus, startPipeline } from "../lib/api";
+  import {
+    cancelPipeline,
+    createRun,
+    pipelineLogTail,
+    pipelineProgressTail,
+    pipelineStatus,
+    startPipeline,
+  } from "../lib/api";
   import type { AppState, PipelineRuntimeStatus } from "../lib/types";
 
   export let state: AppState;
@@ -13,35 +20,76 @@
   let busy = false;
   let error = "";
   let pollTimer: number | undefined;
-  let logEl: HTMLPreElement | null = null;
+  let progressTimer: number | undefined;
   let polling = false;
+  let progressPolling = false;
   let loadingLogs = false;
   let logLines: string[] = [];
+  let logRequestId = 0;
+  let logSummary = "";
+  let progressLines: string[] = [];
+  let progressLatest = "";
+  let progressUpdated = "";
+
+  function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        window.setTimeout(() => reject(new Error(`${label} timed out.`)), milliseconds);
+      }),
+    ]);
+  }
 
   $: running = runtime.status === "running" || runtime.status === "starting";
-  $: identityBypassBlocked = ignorePending && (state.counts.identity_merges ?? 0) > 0;
-  $: startDisabled = disabled || busy || running || identityBypassBlocked;
-  $: logText = logLines.join("\n");
+  $: pendingBypassBlocked = ignorePending && state.pending_total > 0;
+  $: startDisabled = disabled || busy || running;
+  $: logText = logLines.slice(-30).join("\n");
 
   async function refreshRuntime() {
     if (polling) return;
     polling = true;
     try {
-      runtime = await pipelineStatus();
+      runtime = await withTimeout(pipelineStatus(), 2500, "Pipeline status refresh");
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
     } finally {
       polling = false;
     }
   }
 
   async function refreshLogs() {
+    const requestId = ++logRequestId;
     loadingLogs = true;
+    error = "";
     try {
-      const result = await pipelineLogTail(state.active_root, 300);
-      logLines = result.logs ?? [];
+      const result = await withTimeout(pipelineLogTail(state.active_root, 300), 2500, "Worker log refresh");
+      if (requestId !== logRequestId) return;
+      const rawLines = result.logs ?? [];
+      logSummary = `${rawLines.length} log line(s) loaded. Showing the latest ${Math.min(rawLines.length, 30)}.`;
+      logLines = rawLines.slice(-30).map((line) => (line.length > 360 ? `${line.slice(0, 360)}...` : line));
     } catch (err) {
+      if (requestId !== logRequestId) return;
       error = err instanceof Error ? err.message : String(err);
     } finally {
-      loadingLogs = false;
+      if (requestId === logRequestId) {
+        loadingLogs = false;
+      }
+    }
+  }
+
+  async function refreshProgress() {
+    if (progressPolling || !state.active_root) return;
+    progressPolling = true;
+    try {
+      const result = await withTimeout(pipelineProgressTail(state.active_root, 120), 1800, "Progress refresh");
+      progressLines = result.lines ?? [];
+      progressLatest = result.latest_progress_line || result.latest_line || "";
+      const epoch = Number(result.updated_at_epoch || 0);
+      progressUpdated = epoch > 0 ? new Date(epoch * 1000).toLocaleTimeString() : "";
+    } catch {
+      // Keep this deliberately quiet; progress polling should never interrupt review work.
+    } finally {
+      progressPolling = false;
     }
   }
 
@@ -57,13 +105,25 @@
       last_exit_code: null,
     };
     logLines = ["Start request sent to Tauri. Worker output is written to the run log."];
+    logSummary = "";
+    progressLines = [];
+    progressLatest = "Start request sent.";
+    progressUpdated = new Date().toLocaleTimeString();
   }
 
   function start(resume: boolean) {
+    if (
+      pendingBypassBlocked &&
+      !window.confirm(
+        `Force past ${state.pending_total} pending review item(s)? This can spend model calls and may skip human review gates.`,
+      )
+    ) {
+      return;
+    }
     busy = true;
     error = "";
     optimisticStart(resume, state.active_root);
-    startPipeline(state.active_root, { resume, ignorePending })
+    withTimeout(startPipeline(state.active_root, { resume, ignorePending }), 3500, "Pipeline start")
       .then((status) => {
         runtime = status;
         logLines = status.logs?.length ? status.logs : logLines;
@@ -77,6 +137,8 @@
     window.setTimeout(() => {
       busy = false;
       refreshRuntime().catch(() => undefined);
+      refreshProgress().catch(() => undefined);
+      dispatch("refresh");
     }, 1200);
   }
 
@@ -87,7 +149,7 @@
       const newState = await createRun();
       dispatch("stateChanged", newState);
       optimisticStart(false, newState.active_root);
-      startPipeline(newState.active_root, { resume: false, ignorePending })
+      withTimeout(startPipeline(newState.active_root, { resume: false, ignorePending }), 3500, "Pipeline start")
         .then((status) => {
           runtime = status;
           logLines = status.logs?.length ? status.logs : logLines;
@@ -99,7 +161,11 @@
       error = err instanceof Error ? err.message : String(err);
     } finally {
       busy = false;
-      window.setTimeout(() => refreshRuntime().catch(() => undefined), 1200);
+      window.setTimeout(() => {
+        refreshRuntime().catch(() => undefined);
+        refreshProgress().catch(() => undefined);
+        dispatch("refresh");
+      }, 1200);
     }
   }
 
@@ -117,22 +183,20 @@
     }
   }
 
-  $: if (logEl && logText) {
-    tick().then(() => {
-      if (logEl) logEl.scrollTop = logEl.scrollHeight;
-    });
-  }
-
   onMount(() => {
     refreshRuntime().catch((err) => (error = err instanceof Error ? err.message : String(err)));
-    refreshLogs().catch(() => undefined);
+    refreshProgress().catch(() => undefined);
     pollTimer = window.setInterval(() => {
       refreshRuntime().catch(() => undefined);
     }, 6000);
+    progressTimer = window.setInterval(() => {
+      refreshProgress().catch(() => undefined);
+    }, 3500);
   });
 
   onDestroy(() => {
     if (pollTimer !== undefined) window.clearInterval(pollTimer);
+    if (progressTimer !== undefined) window.clearInterval(progressTimer);
   });
 </script>
 
@@ -160,11 +224,11 @@
 
       <label class="check-line">
         <input type="checkbox" bind:checked={ignorePending} />
-        <span>Ignore pending review gates</span>
+        <span>Force past pending review gates</span>
       </label>
-      {#if identityBypassBlocked}
+      {#if pendingBypassBlocked}
         <p class="soft-warning">
-          Identity clusters need explicit review before this gate can be ignored. Refresh after approving or rejecting them.
+          This will bypass {state.pending_total} pending review item(s) after confirmation.
         </p>
       {/if}
     </article>
@@ -185,6 +249,23 @@
     <div class="error-banner">{error}</div>
   {/if}
 
+  <section class="progress-feed">
+    <div class="panel-heading">
+      <span class="caption">Live Progress</span>
+      {#if progressUpdated}
+        <span class="quiet-meta">Updated {progressUpdated}</span>
+      {/if}
+    </div>
+    <p>{progressLatest || runtime.message || "Waiting for pipeline progress."}</p>
+    {#if progressLines.length}
+      <div class="progress-lines" aria-live="polite">
+        {#each progressLines as line}
+          <code>{line}</code>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
   <section class="log-panel">
     <div class="panel-heading">
       <span class="caption">Worker Output</span>
@@ -192,6 +273,9 @@
         {loadingLogs ? "Loading..." : "Refresh Logs"}
       </button>
     </div>
-    <pre bind:this={logEl}>{logText || "No worker output yet."}</pre>
+    {#if logSummary}
+      <p class="log-summary">{logSummary}</p>
+    {/if}
+    <pre>{logText || "No worker output loaded. Click Refresh Logs to show a bounded preview."}</pre>
   </section>
 </section>

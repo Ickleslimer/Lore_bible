@@ -59,7 +59,7 @@ python -m pipeline.run_pipeline --docx "theriac-coda---lore-bible.docx" --conver
 Resume an existing run after completed Stage 04 segmentation, regenerating Stage 05-09 artifacts without rerunning normalization or segmentation:
 
 ```bash
-python -m pipeline.run_from_b4 --artifacts-root "artifacts/runs/<run_folder>"
+python -m pipeline.run_from_stage_05 --artifacts-root "artifacts/runs/<run_folder>"
 ```
 
 Start the desktop review app:
@@ -68,15 +68,15 @@ Start the desktop review app:
 desktop-tauri\src-tauri\target\release\theriac-lore-tauri.exe
 ```
 
-The Tauri/Svelte desktop app is the primary review surface. It includes the run selector for previous CLI-generated batches, pipeline run controls, cancellation, progress tracking, identity-cluster review, and candidate browsing. Select `New Run` before starting a full run to create a fresh timestamped artifact folder under `artifacts/runs/`. During claim review, use `Story Questions` for the optional guided review session. `Propose Updates` calls the configured story model; `Approve Proposal` only commits the already proposed decisions and does not make another model call. Use `Card Agent` for freeform card-base commissions such as moving a standalone draft into another card section; resume Stage 10 to generate proposed architecture actions, then approve/reject those actions before card writing.
+The Tauri/Svelte desktop app is the primary review surface. It includes the run selector for previous CLI-generated batches, pipeline run controls, cancellation, progress tracking, identity-cluster review, and candidate browsing. Select `New Run` before starting a full run to create a fresh timestamped artifact folder under `artifacts/runs/`. During claim review, use `Story Questions` for the optional guided review session. `Propose Updates` calls the configured story model; `Approve Proposal` only commits the already proposed decisions and does not make another model call. Use `Card Agent` for freeform card-base commissions such as moving a standalone draft into another card section; resume Stage 11 to generate proposed architecture actions, then approve/reject those actions before card writing.
 
-For Stage 10 draft-card reading in Notion, add these to `.env`:
+For Stage 11 draft-card reading in Notion, add these to `.env`:
 
 - `NOTION_ACCESS_TOKEN` or `NOTION_API_KEY`: Notion integration token.
 - `NOTION_PAGE_ID` or `NOTION_DRAFT_PARENT_PAGE_ID`: parent page where the pipeline can create the draft-card database.
 - Optional `NOTION_DRAFT_CARDS_DATABASE_ID`: reuse a specific existing database instead of creating one.
 
-The Notion integration must be shared with the parent page or existing database. Stage 10 automatically writes `08_notion/notion_draft_sync_report.json`; the desktop app also has a `Sync Drafts to Notion` button for rerunning the live sync without rerunning synthesis. Existing pages are updated in place by card ID and run ID.
+The Notion integration must be shared with the parent page or existing database. Stage 11 automatically writes `08_notion/notion_draft_sync_report.json`; the desktop app also has a `Sync Drafts to Notion` button for rerunning the live sync without rerunning synthesis. Existing pages are updated in place by card ID and run ID.
 
 Start the new Tauri/Svelte desktop app during development:
 
@@ -94,29 +94,35 @@ build_tauri_app.bat
 
 The Tauri app uses a Svelte UI and a small Python JSON bridge (`pipeline.tauri_bridge`) so the pipeline remains the source of truth. Building Tauri on Windows requires the Rust stable toolchain and Microsoft Visual C++ Build Tools (`link.exe`); `build_tauri_app.bat` loads the Visual Studio developer environment automatically when Build Tools are installed.
 
-After claim review, synthesize card drafts:
+After claim review, generate identity merge proposals:
 
 ```bash
-python -m pipeline.stage_g_merge_engine --in-entities-json "artifacts/05_alias/resolved_entities.json" --in-claim-drafts-json "artifacts/06_drafts/card_drafts/claim_drafts.json" --in-claim-decisions-json "artifacts/07_review/claim_review_decisions.json" --in-card-review-decisions-json "artifacts/07_review/card_review_decisions.json" --in-author-directives-json "artifacts/07_review/author_directives.json" --in-review-memory-json "canon/review_memory.json" --out-card-drafts-json "artifacts/07_review/card_drafts.json" --out-cards-json "artifacts/07_review/canonical_cards.json" --out-merge-log-jsonl "artifacts/07_review/merge_log.jsonl" --in-pipeline-config-json "config/pipeline_config.json"
+python -m pipeline.stage_10_identity_merge --in-entities-json "artifacts/05_alias/resolved_entities.json" --in-claim-drafts-json "artifacts/06_drafts/card_drafts/claim_drafts.json" --in-claim-decisions-json "artifacts/07_review/claim_review_decisions.json" --in-review-memory-json "canon/review_memory.json" --out-identity-merge-proposals-json "artifacts/07_review/identity_merge_proposals.json" --in-identity-merge-decisions-json "artifacts/07_review/identity_merge_decisions.json" --in-pipeline-config-json "config/pipeline_config.json"
 ```
 
-If Stage 10 reports pending identity cluster proposals, review `artifacts/07_review/identity_merge_proposals.json`, optionally edit the canonical name in the GUI, save decisions to `artifacts/07_review/identity_merge_decisions.json`, and rerun the same Stage 10 command. If it reports pending card architecture proposals, review `artifacts/07_review/card_architecture_proposals.json`, save decisions to `artifacts/07_review/card_architecture_decisions.json`, and rerun Stage 10. Then approve card drafts in the UI and rerun Stage 10 to promote approved cards to canon.
+If Stage 10 reports pending identity cluster proposals, review `artifacts/07_review/identity_merge_proposals.json`, optionally edit the canonical name in the GUI, save decisions to `artifacts/07_review/identity_merge_decisions.json`, and rerun Stage 10. Then synthesize card drafts:
+
+```bash
+python -m pipeline.stage_11_card_synthesis --in-entities-json "artifacts/05_alias/resolved_entities.json" --in-claim-drafts-json "artifacts/06_drafts/card_drafts/claim_drafts.json" --in-claim-decisions-json "artifacts/07_review/claim_review_decisions.json" --in-card-review-decisions-json "artifacts/07_review/card_review_decisions.json" --in-author-directives-json "artifacts/07_review/author_directives.json" --in-review-memory-json "canon/review_memory.json" --out-card-drafts-json "artifacts/07_review/card_drafts.json" --out-cards-json "artifacts/07_review/canonical_cards.json" --out-merge-log-jsonl "artifacts/07_review/merge_log.jsonl" --in-pipeline-config-json "config/pipeline_config.json"
+```
+
+If Stage 11 reports pending card architecture proposals, review `artifacts/07_review/card_architecture_proposals.json`, save decisions to `artifacts/07_review/card_architecture_decisions.json`, and rerun Stage 11. Then approve card drafts in the UI and rerun Stage 11 to promote approved cards to canon.
 
 Export approved canon:
 
 ```bash
-python -m pipeline.stage_h_notion_export --in-cards-json "artifacts/07_review/canonical_cards.json" --in-meta-cards-json "artifacts/06_drafts/card_drafts/meta_cards_draft.json" --in-alias-json "artifacts/05_alias/alias_map.json" --in-snippets-jsonl "artifacts/03_relevance/snippets_candidates.jsonl" --in-profiles-json "artifacts/03_relevance/dm_source_profiles.json" --in-merge-log-jsonl "artifacts/07_review/merge_log.jsonl" --out-ndjson "artifacts/08_notion/notion_import.ndjson"
+python -m pipeline.stage_12_notion_export --in-cards-json "artifacts/07_review/canonical_cards.json" --in-meta-cards-json "artifacts/06_drafts/card_drafts/meta_cards_draft.json" --in-alias-json "artifacts/05_alias/alias_map.json" --in-snippets-jsonl "artifacts/03_relevance/snippets_candidates.jsonl" --in-profiles-json "artifacts/03_relevance/dm_source_profiles.json" --in-merge-log-jsonl "artifacts/07_review/merge_log.jsonl" --out-ndjson "artifacts/08_notion/notion_import.ndjson"
 ```
 
 ## Model Requirement
 
-Stages 04, 05, 09, and 10 require a valid model response. If the configured provider is unavailable or returns invalid JSON, the pipeline records the failed conversation window/note or stops rather than producing low-quality fallback prose.
+Stages 04, 05, 09, 10, and 11 require a valid model response for their model-backed paths. If the configured provider is unavailable or returns invalid JSON, the pipeline records the failed conversation window/note or stops rather than producing low-quality fallback prose.
 
 Configure providers in `config/pipeline_config.json`:
 
 - `anchor_provider`: `heuristic|mixtral|hybrid` for legacy Stage 06 relevance routing when Stage 04 metadata is unavailable.
-- `stage_c_anchor_provider`: defaults to `conversation_metadata`, which trusts Stage 04's model-approved conversation segments and avoids per-message model calls.
-- `stage_a_anchor_provider`: `heuristic|mixtral|hybrid` for ontology seed extraction.
+- `stage_06_anchor_provider`: defaults to `conversation_metadata`, which trusts Stage 04's model-approved conversation segments and avoids per-message model calls.
+- `stage_01_anchor_provider`: `heuristic|mixtral|hybrid` for ontology seed extraction.
 - `mixtral.provider`: `openrouter|gemini|anthropic|auto|mistral_api|ollama`. The setting name is historical; `openrouter` dispatches through OpenRouter's OpenAI-compatible chat API using `mixtral.api_model`.
 - `mixtral.api_model`: defaults here to `qwen/qwen3.5-flash-02-23` for low-cost/high-volume batch work.
 - `mixtral.adaptive_min_interval_seconds`: currently `0.5`; the runtime file will increase this automatically if rate limits appear.
@@ -124,14 +130,14 @@ Configure providers in `config/pipeline_config.json`:
 - `model_routing.profiles.flash_regular`: routes reasoning-sensitive Gemini-replacement work to `qwen/qwen3.5-flash-02-23`.
 - `model_routing.profiles.claude_opus`: routes low-volume work to Anthropic Claude Opus.
 - `model_routing.profiles.claude_sonnet`: routes low-volume reasoning work to Anthropic Claude Sonnet 4.6.
-- `model_routing.tasks.stage_b3_segmentation`: currently uses synchronous Flash-Lite so segmentation progress remains visible.
-- `model_routing.tasks.stage_b4_patch_notes`: currently uses synchronous Flash-Lite for chronological conversation development notes.
-- `model_routing.tasks.stage_f_claim_extraction`: currently uses synchronous Flash-Lite.
-- `model_routing.tasks.stage_g_card_architecture_agent`: currently uses synchronous Claude Sonnet for low-volume structural card-base reasoning before final drafting.
-- `model_routing.tasks.stage_g_identity_merge_proposals`: currently uses synchronous Claude Sonnet for identity/alias merge proposal detection.
-- `model_routing.tasks.stage_g_identity_merge_cluster_judgement`: currently uses synchronous Claude Sonnet to choose canonical names and aliases for collated identity clusters.
-- `model_routing.tasks.stage_g_card_synthesis`: currently uses synchronous Claude Sonnet for final card drafting, with validation retries to keep synthesis stateful and evidence-bound.
-- `model_routing.tasks.stage_09q_story_questions`: currently uses Claude Sonnet for iterative question generation and answer-application proposals.
+- `model_routing.tasks.stage_04_conversation_segmentation`: currently uses synchronous Flash-Lite so segmentation progress remains visible.
+- `model_routing.tasks.stage_05_conversation_patch_notes`: currently uses synchronous Flash-Lite for chronological conversation development notes.
+- `model_routing.tasks.stage_09_claim_drafting`: currently uses synchronous Flash-Lite.
+- `model_routing.tasks.stage_10_identity_merge_proposals`: currently uses synchronous Claude Sonnet for identity/alias merge proposal detection.
+- `model_routing.tasks.stage_10_identity_merge_cluster_judgement`: currently uses synchronous Claude Sonnet to choose canonical names and aliases for collated identity clusters.
+- `model_routing.tasks.stage_11_card_architecture_agent`: currently uses synchronous Claude Sonnet for low-volume structural card-base reasoning before final drafting.
+- `model_routing.tasks.stage_11_card_synthesis`: currently uses synchronous Claude Sonnet for final card drafting, with validation retries to keep synthesis stateful and evidence-bound.
+- `model_routing.tasks.stage_09_story_questions`: currently uses Claude Sonnet for iterative question generation and answer-application proposals.
 - `story_questions`: controls the optional guided claim-review flow and writes `07_review/story_question_session.json`, `story_questions.jsonl`, `story_question_answers.jsonl`, `story_question_application_proposals.jsonl`, `story_question_applications.jsonl`, and `story_question_failures.json`.
 - `conversation_segmentation.max_gap_hours`: coarse DM window boundary before model topic segmentation; defaults to `12`.
 - `conversation_segmentation.self_user_id`: optional account override for 1:1 DM pair detection.

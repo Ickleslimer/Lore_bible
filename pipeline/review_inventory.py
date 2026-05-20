@@ -269,8 +269,8 @@ def extract_artifacts_root_from_command_line(command_line: str) -> Path | None:
 def classify_pipeline_command(command_line: str) -> str:
     if "--pipeline-worker" in command_line:
         return "full_pipeline"
-    if "pipeline.run_from_b4" in command_line or "run_from_b4" in command_line:
-        return "run_from_b4"
+    if "pipeline.run_from_stage_05" in command_line or "run_from_stage_05" in command_line:
+        return "run_from_stage_05"
     return "pipeline"
 
 
@@ -280,7 +280,7 @@ def discover_running_pipeline_processes() -> list[dict[str, Any]]:
     script = (
         "$rows = Get-CimInstance Win32_Process | "
         "Where-Object { $_.CommandLine -and ($_.CommandLine -match '--artifacts-root') "
-        "-and ($_.CommandLine -match 'pipeline\\.run_from_b4|--pipeline-worker') "
+        "-and ($_.CommandLine -match 'pipeline\\.run_from_stage_05|--pipeline-worker') "
         "-and ($_.Name -notmatch 'powershell') }; "
         "$rows | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Depth 3"
     )
@@ -325,10 +325,10 @@ def attach_log_paths_for_run(artifacts_root: Path, kind: str) -> list[Path]:
         [
             "run_from_stage05_*.err.log",
             "run_from_stage05_*.log",
-            "run_from_b4_*.err.log",
-            "run_from_b4_*.log",
+            "run_from_stage_05_*.err.log",
+            "run_from_stage_05_*.log",
         ]
-        if kind == "run_from_b4"
+        if kind == "run_from_stage_05"
         else ["*.log", "*.err.log"]
     )
     for pattern in patterns:
@@ -1266,7 +1266,7 @@ def claim_inventory_browser_rows(claims_path: Path, decisions_path: Path, artifa
         attention_reason = str(attention.get("human_review_reason", "")).strip()
         reason = attention_reason or "; ".join(warnings) or notes
         if bool(claim.get("manual_claim") or claim.get("author_claim")) and not reason:
-            reason = "Author-supplied claim for Stage 10 card refactoring."
+            reason = "Author-supplied claim for Stage 11 card refactoring."
         target = str(claim.get("target_entity_name") or claim.get("target_entity_id") or "(unknown entity)").strip()
         claim_text = str(claim.get("claim_text", "")).strip()
         display_text = claim_text[:120] + ("..." if len(claim_text) > 120 else "")

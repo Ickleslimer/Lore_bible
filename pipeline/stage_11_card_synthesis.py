@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -190,6 +190,23 @@ def _load_identity_merge_decisions(path: Path) -> list[dict[str, Any]]:
     payload = read_json(path)
     rows = payload.get("decisions", []) if isinstance(payload, dict) else []
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _load_identity_merge_proposals(path: Path) -> list[dict[str, Any]] | None:
+    if not path.exists():
+        return None
+    payload = read_json(path)
+    rows = payload.get("proposals", []) if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return None
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _identity_merge_proposals_are_fresh(proposals_path: Path, input_paths: list[Path]) -> bool:
+    if not proposals_path.exists():
+        return False
+    proposal_mtime = proposals_path.stat().st_mtime
+    return all(not path.exists() or path.stat().st_mtime <= proposal_mtime for path in input_paths)
 
 
 def _latest_decision_by_claim(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -921,11 +938,11 @@ def _refine_identity_clusters_with_model(clusters: list[dict[str, Any]], config:
     if not clusters:
         return []
     tasks = config.get("model_routing", {}).get("tasks", {}) if isinstance(config.get("model_routing", {}), dict) else {}
-    if "stage_g_identity_merge_cluster_judgement" not in tasks:
+    if "stage_10_identity_merge_cluster_judgement" not in tasks:
         return clusters
 
-    logger = get_logger(__name__)
-    call_kwargs = model_call_kwargs(config, "stage_g_identity_merge_cluster_judgement")
+    logger = get_logger("pipeline.stage_10_identity_merge")
+    call_kwargs = model_call_kwargs(config, "stage_10_identity_merge_cluster_judgement")
     mixtral_cfg = config.get("mixtral", {}) if isinstance(config, dict) else {}
     provider_retries = max(0, int(mixtral_cfg.get("identity_merge_provider_retries", mixtral_cfg.get("synthesis_provider_retries", 2))))
     provider_retry_sleep_seconds = max(
@@ -1125,7 +1142,7 @@ def _refine_identity_clusters_with_model(clusters: list[dict[str, Any]], config:
                         "cluster_review_flags": flags,
                         "confidence": normalized_judgement.get("confidence", cluster.get("confidence", 0.65)),
                         "rationale": str(normalized_judgement.get("rationale") or cluster.get("rationale") or ""),
-                        "canonical_judgement_model_task": "stage_g_identity_merge_cluster_judgement",
+                        "canonical_judgement_model_task": "stage_10_identity_merge_cluster_judgement",
                     }
                 )
             break
@@ -1140,16 +1157,16 @@ def detect_identity_merge_proposals(
     entities: list[dict[str, Any]],
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    logger = get_logger(__name__)
+    logger = get_logger("pipeline.stage_10_identity_merge")
 
     # Determine whether to use the heuristic or LLM-based approach.
     # We use LLM only if a pipeline config is present AND routes
-    # "stage_g_identity_merge_proposals" to a model.  In unit tests the
+    # "stage_10_identity_merge_proposals" to a model.  In unit tests the
     # config is empty / absent, so the fast heuristic path runs instead.
     use_llm = False
     if config:
         task_routing = config.get("model_routing", {}).get("tasks", {})
-        if "stage_g_identity_merge_proposals" in task_routing:
+        if "stage_10_identity_merge_proposals" in task_routing:
             use_llm = True
 
     if not use_llm:
@@ -1213,7 +1230,7 @@ def detect_identity_merge_proposals(
     # Cluster the claims greedily by entity overlap so similar entities end up in the same batch
     candidate_claims = _cluster_claims_by_entity_overlap(candidate_claims_with_entities, max_cluster_size=50)
     
-    call_kwargs = model_call_kwargs(config, "stage_g_identity_merge_proposals")
+    call_kwargs = model_call_kwargs(config, "stage_10_identity_merge_proposals")
     batch_size = 50
     batch_failures = 0
     mixtral_cfg = config.get("mixtral", {}) if isinstance(config, dict) else {}
@@ -1750,7 +1767,7 @@ def synthesize_card_with_model(
             source_snippets_by_id,
             entities_by_name,
         )
-        call_kwargs = model_call_kwargs(config, "stage_g_card_synthesis")
+        call_kwargs = model_call_kwargs(config, "stage_11_card_synthesis")
         response = call_mixtral_chat(
             prompt=prompt,
             **call_kwargs,
@@ -1762,7 +1779,7 @@ def synthesize_card_with_model(
             if reason in PACING_SKIP_REASONS:
                 if sleep_s:
                     logger.info(
-                        "Stage 10 provider pacing for entity=%s; retrying in %.1fs (%s).",
+                        "Stage 11 provider pacing for entity=%s; retrying in %.1fs (%s).",
                         entity.get("canonical_name"),
                         sleep_s,
                         reason,
@@ -1770,12 +1787,12 @@ def synthesize_card_with_model(
                     time.sleep(sleep_s)
                 continue
             provider_failures += 1
-            last_error = RuntimeError(f"Stage 10 requires model card synthesis; provider returned no response ({reason}).")
+            last_error = RuntimeError(f"Stage 11 requires model card synthesis; provider returned no response ({reason}).")
             if provider_failures > provider_retries:
                 break
             if sleep_s:
                 logger.info(
-                    "Stage 10 waiting %.1fs before retrying card synthesis for entity=%s after provider returned no response (%s).",
+                    "Stage 11 waiting %.1fs before retrying card synthesis for entity=%s after provider returned no response (%s).",
                     sleep_s,
                     entity.get("canonical_name"),
                     reason,
@@ -1785,7 +1802,7 @@ def synthesize_card_with_model(
             continue
         try:
             if not isinstance(response, dict) or not isinstance(response.get("summary"), str):
-                raise RuntimeError("Stage 10 requires model card synthesis; provider returned no valid card JSON.")
+                raise RuntimeError("Stage 11 requires model card synthesis; provider returned no valid card JSON.")
             sanitize_optional_synthesis_fields(response, claims, memory_for_entity)
             validate_synthesis_support(entity, claims, memory_for_entity, response)
             if provider_failures or validation_failures:
@@ -1799,12 +1816,12 @@ def synthesize_card_with_model(
             validation_feedback = str(exc)
             if validation_retry_sleep_seconds:
                 logger.info(
-                    "Stage 10 waiting %.1fs before retrying card synthesis for entity=%s after validation failure.",
+                    "Stage 11 waiting %.1fs before retrying card synthesis for entity=%s after validation failure.",
                     validation_retry_sleep_seconds,
                     entity.get("canonical_name"),
                 )
                 time.sleep(validation_retry_sleep_seconds)
-    raise last_error or RuntimeError("Stage 10 synthesis failed validation.")
+    raise last_error or RuntimeError("Stage 11 synthesis failed validation.")
 
 
 def _truncate_source_text(value: Any, max_chars: int = MAX_SYNTHESIS_SOURCE_TEXT_CHARS) -> str:
@@ -2099,7 +2116,7 @@ def validate_synthesis_support(
     valid_claim_ids = {str(claim.get("claim_id")) for claim in claims if str(claim.get("claim_id", "")).strip()}
     support_map = synthesis.get("support_map")
     if not isinstance(support_map, dict):
-        raise RuntimeError("Stage 10 synthesis rejected: missing support_map for generated card prose.")
+        raise RuntimeError("Stage 11 synthesis rejected: missing support_map for generated card prose.")
 
     sections = synthesis.get("sections", {})
     if not isinstance(sections, dict):
@@ -2113,34 +2130,34 @@ def validate_synthesis_support(
             continue
         support_ids = support_map.get(field_name)
         if not isinstance(support_ids, list):
-            raise RuntimeError(f"Stage 10 synthesis rejected: `{field_name}` lacks support_map claim IDs.")
+            raise RuntimeError(f"Stage 11 synthesis rejected: `{field_name}` lacks support_map claim IDs.")
         invalid_ids = [str(item) for item in support_ids if str(item) not in valid_claim_ids]
         valid_ids = [str(item) for item in support_ids if str(item) in valid_claim_ids]
         if invalid_ids:
-            raise RuntimeError(f"Stage 10 synthesis rejected: `{field_name}` cites unknown claim IDs: {invalid_ids}.")
+            raise RuntimeError(f"Stage 11 synthesis rejected: `{field_name}` cites unknown claim IDs: {invalid_ids}.")
         if not valid_ids:
-            raise RuntimeError(f"Stage 10 synthesis rejected: `{field_name}` has no accepted claim support.")
+            raise RuntimeError(f"Stage 11 synthesis rejected: `{field_name}` has no accepted claim support.")
 
     for idx, rel in enumerate(synthesis.get("relationships", []) or []):
         if not isinstance(rel, dict) or not str(rel.get("target_entity_name", "")).strip():
             continue
         support_ids = rel.get("support_claim_ids")
         if not isinstance(support_ids, list) or not any(str(item) in valid_claim_ids for item in support_ids):
-            raise RuntimeError(f"Stage 10 synthesis rejected: relationship #{idx + 1} has no accepted claim support.")
+            raise RuntimeError(f"Stage 11 synthesis rejected: relationship #{idx + 1} has no accepted claim support.")
 
     for idx, item in enumerate(synthesis.get("timeline", []) or []):
         if not isinstance(item, dict) or not str(item.get("description", "")).strip():
             continue
         support_ids = item.get("support_claim_ids")
         if not isinstance(support_ids, list) or not any(str(claim_id) in valid_claim_ids for claim_id in support_ids):
-            raise RuntimeError(f"Stage 10 synthesis rejected: timeline item #{idx + 1} has no accepted claim support.")
+            raise RuntimeError(f"Stage 11 synthesis rejected: timeline item #{idx + 1} has no accepted claim support.")
 
     for idx, item in enumerate(synthesis.get("wiki_links", []) or []):
         if not isinstance(item, dict) or not str(item.get("target_card_id") or item.get("target_entity_name") or "").strip():
             continue
         support_ids = item.get("support_claim_ids")
         if not isinstance(support_ids, list) or not any(str(claim_id) in valid_claim_ids for claim_id in support_ids):
-            raise RuntimeError(f"Stage 10 synthesis rejected: wiki_links item #{idx + 1} has no accepted claim support.")
+            raise RuntimeError(f"Stage 11 synthesis rejected: wiki_links item #{idx + 1} has no accepted claim support.")
 
     for field_name in ["resolved_conflicts", "unresolved_conflicts"]:
         for idx, item in enumerate(synthesis.get(field_name, []) or []):
@@ -2148,24 +2165,24 @@ def validate_synthesis_support(
                 continue
             claim_ids = item.get("claim_ids")
             if not isinstance(claim_ids, list) or not any(str(claim_id) in valid_claim_ids for claim_id in claim_ids):
-                raise RuntimeError(f"Stage 10 synthesis rejected: {field_name} item #{idx + 1} has no accepted claim support.")
+                raise RuntimeError(f"Stage 11 synthesis rejected: {field_name} item #{idx + 1} has no accepted claim support.")
 
     unsupported_expansions = find_unsupported_acronym_expansions(entity, claims, memory_for_entity, synthesis)
     if unsupported_expansions:
         raise RuntimeError(
-            "Stage 10 synthesis rejected: unsupported acronym expansion(s): "
+            "Stage 11 synthesis rejected: unsupported acronym expansion(s): "
             + ", ".join(f"{name} ({expansion})" for name, expansion in unsupported_expansions)
         )
     unsupported_speculation = find_unsupported_speculation(claims, memory_for_entity, synthesis)
     if unsupported_speculation:
         raise RuntimeError(
-            "Stage 10 synthesis rejected: unsupported speculative phrase(s): "
+            "Stage 11 synthesis rejected: unsupported speculative phrase(s): "
             + ", ".join(sorted(unsupported_speculation))
         )
     verbatim_claim_ids = find_verbatim_claim_reuse(claims, synthesis)
     if verbatim_claim_ids:
         raise RuntimeError(
-            "Stage 10 synthesis rejected: card prose copied accepted claim_text verbatim for claim(s): "
+            "Stage 11 synthesis rejected: card prose copied accepted claim_text verbatim for claim(s): "
             + ", ".join(verbatim_claim_ids)
             + ". Synthesize and paraphrase accepted claims instead."
         )
@@ -2175,12 +2192,12 @@ def validate_synthesis_support(
     target_max = int(word_targets.get("total_word_target", {}).get("max", 650) or 650)
     if len(claims) >= 5 and generated_word_count < target_min:
         raise RuntimeError(
-            f"Stage 10 synthesis rejected: draft is too short for wiki-card target "
+            f"Stage 11 synthesis rejected: draft is too short for wiki-card target "
             f"({generated_word_count} words from {len(claims)} accepted claims; target {target_min}-{target_max})."
         )
     if generated_word_count > target_max + 80:
         raise RuntimeError(
-            f"Stage 10 synthesis rejected: draft is too long for wiki-card target "
+            f"Stage 11 synthesis rejected: draft is too long for wiki-card target "
             f"({generated_word_count} words; target {target_min}-{target_max})."
         )
 
@@ -2189,7 +2206,7 @@ def validate_synthesis_support(
     claim_text = support_source_text(claims, memory_for_entity)
     uncertainty_claimed = any(word in claim_text for word in ["unknown", "unclear", "unresolved", "question", "uncertain"])
     if open_questions and not (has_open_question_claim or uncertainty_claimed):
-        raise RuntimeError("Stage 10 synthesis rejected: open_questions were generated without accepted uncertainty claims.")
+        raise RuntimeError("Stage 11 synthesis rejected: open_questions were generated without accepted uncertainty claims.")
 
 
 def sanitize_optional_synthesis_fields(
@@ -2567,7 +2584,7 @@ def _build_card_from_synthesis(
             {
                 "timestamp_utc": now_utc_iso(),
                 "action": "card_synthesized_from_claims",
-                "actor": "stage_g_merge_engine",
+                "actor": "stage_11_card_synthesis",
             }
         ],
     }
@@ -2698,8 +2715,8 @@ def run(
     )
     if author_claim_failures:
         raise RuntimeError(
-            f"Stage 10 found {len(author_claim_failures)} author claim(s) requiring review because their target "
-            f"entities could not be resolved; fix {author_claims_path} and rerun Stage 10."
+            f"Stage 11 found {len(author_claim_failures)} author claim(s) requiring review because their target "
+            f"entities could not be resolved; fix {author_claims_path} and rerun Stage 11."
         )
     author_claim_decisions = default_author_claim_decisions(author_claims, claim_decisions)
     all_claims = claims + author_claims
@@ -2714,7 +2731,7 @@ def run(
     source_snippets_by_id = load_source_snippets_by_id(source_snippets_path)
 
     logger.info(
-        "Stage 10: claims=%d author_claims=%d claim_decisions=%d synthetic_author_decisions=%d card_decisions=%d directives=%d source_snippets=%d",
+        "Stage 11: claims=%d author_claims=%d claim_decisions=%d synthetic_author_decisions=%d card_decisions=%d directives=%d source_snippets=%d",
         len(claims),
         len(author_claims),
         len(all_claim_decisions),
@@ -2727,7 +2744,7 @@ def run(
     remember_claim_decisions(memory, all_claims, all_claim_decisions)
     remember_author_directives(memory, directives)
     identity_merge_decisions = _load_identity_merge_decisions(identity_merge_decisions_path)
-    identity_merge_proposals = detect_identity_merge_proposals(accepted_claims, entities, config)
+    identity_merge_proposals = _load_identity_merge_proposals(identity_merge_proposals_path) or []
     remember_identity_merge_decisions(memory, identity_merge_proposals, identity_merge_decisions)
     identity_merge_proposals = annotate_identity_merge_proposals(identity_merge_proposals, identity_merge_decisions)
     write_json(
@@ -2745,7 +2762,7 @@ def run(
         save_review_memory(in_review_memory_json, memory)
         raise RuntimeError(
             f"Stage 10 found {len(pending_identity_merges)} identity cluster proposal(s) requiring review; "
-            f"review {identity_merge_proposals_path} and save decisions to {identity_merge_decisions_path}, then rerun Stage 10."
+            f"review {identity_merge_proposals_path} and save decisions to {identity_merge_decisions_path}, then rerun Stage 10 before Stage 11."
         )
 
     merged_entities, merge_target_map, sources_by_target = apply_entity_merges_to_entities(
@@ -2774,7 +2791,7 @@ def run(
         config=config,
     )
     logger.info(
-        "Stage 10A Card Architecture Agent: proposals=%d pending_actions=%d validation_failures=%d",
+        "Stage 11A Card Architecture Agent: proposals=%d pending_actions=%d validation_failures=%d",
         len(architecture_proposals),
         len(pending_architecture_actions),
         len(architecture_failures),
@@ -2782,8 +2799,8 @@ def run(
     if pending_architecture_actions:
         save_review_memory(in_review_memory_json, memory)
         raise RuntimeError(
-            f"Stage 10 found {len(pending_architecture_actions)} card architecture proposal action(s) requiring review; "
-            f"review {architecture_paths['proposals']} and save decisions to {architecture_paths['decisions']}, then rerun Stage 10."
+            f"Stage 11 found {len(pending_architecture_actions)} card architecture proposal action(s) requiring review; "
+            f"review {architecture_paths['proposals']} and save decisions to {architecture_paths['decisions']}, then rerun Stage 11."
         )
 
     architecture_result = apply_card_architecture_actions(
@@ -2814,14 +2831,14 @@ def run(
     synthesis_failures: list[dict[str, Any]] = []
     synthesis_total = len(accepted_by_entity)
     logger.info(
-        "Stage 10 progress: 0/%d preparing card synthesis entities",
+        "Stage 11 progress: 0/%d preparing card synthesis entities",
         synthesis_total,
     )
     for synthesis_index, (entity_id, entity_claims) in enumerate(accepted_by_entity.items(), start=1):
         entity = entity_by_id.get(entity_id)
         if not entity:
             logger.info(
-                "Stage 10 progress: %d/%d skipping missing entity=%s draft_cards=%d failures=%d",
+                "Stage 11 progress: %d/%d skipping missing entity=%s draft_cards=%d failures=%d",
                 synthesis_index,
                 synthesis_total,
                 entity_id,
@@ -2838,7 +2855,7 @@ def run(
         )
         full_entity_claims = accepted_claim_history_for_entity(memory_for_entity, entity_claims)
         logger.info(
-            "Stage 10 model call: %d/%d entity=%s claims=%d",
+            "Stage 11 model call: %d/%d entity=%s claims=%d",
             synthesis_index,
             synthesis_total,
             entity.get("canonical_name"),
@@ -2867,13 +2884,13 @@ def run(
                 }
             )
             logger.warning(
-                "Stage 10 card synthesis failed entity=%s claims=%d error=%s",
+                "Stage 11 card synthesis failed entity=%s claims=%d error=%s",
                 entity.get("canonical_name"),
                 len(full_entity_claims),
                 exc,
             )
             logger.info(
-                "Stage 10 progress: %d/%d synthesizing cards draft_cards=%d failures=%d",
+                "Stage 11 progress: %d/%d synthesizing cards draft_cards=%d failures=%d",
                 synthesis_index,
                 synthesis_total,
                 len(draft_cards),
@@ -2882,7 +2899,7 @@ def run(
             continue
         draft_cards.append(_build_card_from_synthesis(entity, full_entity_claims, synthesis, entities_by_name))
         logger.info(
-            "Stage 10 progress: %d/%d synthesizing cards draft_cards=%d failures=%d",
+            "Stage 11 progress: %d/%d synthesizing cards draft_cards=%d failures=%d",
             synthesis_index,
             synthesis_total,
             len(draft_cards),
@@ -2892,7 +2909,7 @@ def run(
     if accepted_by_entity and not draft_cards:
         write_json(out_card_drafts_json.with_name("card_synthesis_failures.json"), {"failures": synthesis_failures})
         first_error = str(synthesis_failures[0].get("error", "")) if synthesis_failures else ""
-        raise RuntimeError(f"Stage 10 produced no draft cards; see card_synthesis_failures.json. First failure: {first_error}")
+        raise RuntimeError(f"Stage 11 produced no draft cards; see card_synthesis_failures.json. First failure: {first_error}")
 
     _apply_directives_to_drafts(draft_cards, directives)
     approved_revisions = _promote_approved_cards(draft_cards, card_decisions)
@@ -2905,7 +2922,7 @@ def run(
     write_json(out_card_drafts_json.with_name("card_synthesis_failures.json"), {"failures": synthesis_failures})
     write_jsonl(out_merge_log_jsonl, merge_log)
     logger.info(
-        "Stage 10 complete: accepted_claims=%d draft_cards=%d synthesis_failures=%d canonical_cards=%d merge_log=%d",
+        "Stage 11 complete: accepted_claims=%d draft_cards=%d synthesis_failures=%d canonical_cards=%d merge_log=%d",
         len(accepted_claims),
         len(draft_cards),
         len(synthesis_failures),

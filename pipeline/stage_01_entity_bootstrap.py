@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import re
@@ -15,7 +15,7 @@ from pipeline.entity_resolution import (
     is_blocked_seed_name,
     normalized_name_key,
 )
-from pipeline.mixtral_anchor_provider import build_stage_a_prompt, call_mixtral_chat, model_call_kwargs
+from pipeline.mixtral_anchor_provider import build_stage_01_prompt, call_mixtral_chat, model_call_kwargs
 from pipeline.thematic_profile import update_runtime_profile
 
 
@@ -84,9 +84,9 @@ def infer_entities(text: str) -> list[dict[str, Any]]:
 
 def infer_entities_mixtral(text: str, config: dict[str, Any]) -> dict[str, Any] | None:
     logger = get_logger(__name__)
-    excerpt_chars = int(config.get("stage_a_mixtral_excerpt_chars", 24000))
-    prompt = build_stage_a_prompt(text[:excerpt_chars])
-    call_kwargs = model_call_kwargs(config, "stage_a_bootstrap")
+    excerpt_chars = int(config.get("stage_01_model_excerpt_chars", 24000))
+    prompt = build_stage_01_prompt(text[:excerpt_chars])
+    call_kwargs = model_call_kwargs(config, "stage_01_entity_bootstrap")
     response = call_mixtral_chat(
         prompt=prompt,
         **call_kwargs,
@@ -196,17 +196,17 @@ def run(
     config: dict[str, Any] = {}
     if in_pipeline_config_json and in_pipeline_config_json.exists():
         config = read_json(in_pipeline_config_json)
-    stage_a_provider = str(config.get("stage_a_anchor_provider", "heuristic")).lower()
-    logger.info("Stage 01: provider mode is '%s'.", stage_a_provider)
+    stage_01_provider = str(config.get("stage_01_anchor_provider", "heuristic")).lower()
+    logger.info("Stage 01: provider mode is '%s'.", stage_01_provider)
     entities = infer_entities(text)
     logger.debug("Stage 01: heuristic extraction produced %d entity seed(s).", len(entities))
-    if stage_a_provider in {"mixtral", "hybrid"}:
+    if stage_01_provider in {"mixtral", "hybrid"}:
         logger.info("Stage 01: requesting model bootstrap extraction...")
         model_result = infer_entities_mixtral(text, config)
         if model_result and isinstance(model_result, dict):
             model_cards = list(model_result.get("entities", model_result.get("cards", [])))
             logger.info("Stage 01: model extraction produced %d entity seed(s).", len(model_cards))
-            if stage_a_provider == "mixtral":
+            if stage_01_provider == "mixtral":
                 entities = model_cards
             else:
                 merged: dict[str, dict[str, Any]] = {normalized_name_key(c["canonical_name"]): c for c in entities}
@@ -220,7 +220,7 @@ def run(
                 min_support = int(thematic_cfg.get("runtime_min_support", 2))
                 update_runtime_profile(
                     thematic_runtime_path,
-                    "stage_a",
+                    "stage_01",
                     list(model_result.get("suggested_historical_markers", [])),
                     list(model_result.get("suggested_music_markers", [])),
                     min_support=min_support,
@@ -230,7 +230,7 @@ def run(
     payload = {
         "source": str(docx_path),
         "entity_count": len(entities),
-        "provider_mode": stage_a_provider,
+        "provider_mode": stage_01_provider,
         "entities": entities,
     }
     write_json(out_seed, payload)

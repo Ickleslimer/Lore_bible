@@ -1,21 +1,23 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from time import perf_counter
 from pathlib import Path
 
-from pipeline.common import get_logger, read_json, read_jsonl, setup_logging
-from pipeline.stage_a_bootstrap import run as run_stage_a
-from pipeline.stage_b_normalize import run as run_stage_b
-from pipeline.stage_b2_global_merge import run as run_stage_b2
-from pipeline.stage_b3_segment_conversations import run as run_stage_b3
-from pipeline.stage_b4_conversation_patch_notes import run as run_stage_b4
-from pipeline.stage_c_extract import run as run_stage_c
-from pipeline.stage_d_group import run as run_stage_d
-from pipeline.stage_e_alias import run as run_stage_e
-from pipeline.stage_f_draft import run as run_stage_f
-from pipeline.stage_g_merge_engine import run as run_stage_g
-from pipeline.stage_h_notion_export import run as run_stage_h
+from pipeline.common import get_logger, read_json, read_jsonl, setup_logging, write_json
+from pipeline.stage_01_entity_bootstrap import run as run_stage_01
+from pipeline.stage_02_message_normalization import run as run_stage_02
+from pipeline.stage_03_timeline_merge import run as run_stage_03
+from pipeline.stage_04_conversation_segmentation import run as run_stage_04
+from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
+from pipeline.stage_06_snippet_extraction import run as run_stage_06
+from pipeline.stage_08_snippet_grouping import run as run_stage_08
+from pipeline.stage_07_entity_resolution import run as run_stage_07
+from pipeline.stage_09_claim_drafting import run as run_stage_09
+from pipeline.stage_10_identity_merge import run as run_stage_10
+from pipeline.stage_11_card_synthesis import run as run_stage_11
+from pipeline.stage_12_notion_export import run as run_stage_12
 from pipeline.notion_draft_sync import sync_draft_cards_to_notion
 from pipeline.card_architecture_agent import load_card_edit_requests, load_card_architecture_proposals, pending_card_architecture_actions
 
@@ -31,7 +33,7 @@ REVIEW_GATE_MARKERS = (
 )
 
 
-STAGE_TOTAL = 11
+STAGE_TOTAL = 12
 
 
 def _count_jsonl(path: Path) -> int:
@@ -195,7 +197,7 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     """Return the earliest stage that must run for an existing artifact root.
 
     A return value of 0 means the current artifacts are up to date through
-    Stage 11, or the run is paused for human review and no pipeline stage
+    Stage 12, or the run is paused for human review and no pipeline stage
     should be started yet.
     """
     stage1 = [root / "01_bootstrap" / "entity_seed.json"]
@@ -216,12 +218,13 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     ]
     stage8 = [root / "04_grouping" / "snippet_clusters_lore.json", root / "04_grouping" / "snippet_clusters_meta.json"]
     stage9 = [root / "06_drafts" / "card_drafts" / "claim_drafts.json"]
-    stage10 = [
+    stage10 = [root / "07_review" / "identity_merge_proposals.json"]
+    stage11 = [
         root / "07_review" / "card_drafts.json",
         root / "07_review" / "canonical_cards.json",
         root / "07_review" / "merge_log.jsonl",
     ]
-    stage11 = [root / "08_notion" / "notion_import.ndjson"]
+    stage12 = [root / "08_notion" / "notion_import.ndjson"]
 
     if _missing(stage1):
         return 1, "Stage 01 bootstrap artifacts are missing."
@@ -248,7 +251,7 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
         return 9, "Stage 09 claim drafts are missing or stale."
 
     if not ignore_pending and _pending_claim_count(root) > 0:
-        return 0, "Paused for claim review; approve/reject draft claims before Stage 10 card synthesis."
+        return 0, "Paused for claim review; approve/reject draft claims before Stage 10 identity merge."
 
     claim_decisions = root / "07_review" / "claim_review_decisions.json"
     author_claims = root / "07_review" / "author_claims.json"
@@ -259,14 +262,22 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     card_edit_requests = root / "07_review" / "card_edit_requests.jsonl"
     card_architecture_proposals = root / "07_review" / "card_architecture_proposals.json"
     card_architecture_decisions = root / "07_review" / "card_architecture_decisions.json"
+    identity_merge_inputs = [
+        stage9[0],
+        root / "05_alias" / "resolved_entities.json",
+        claim_decisions,
+        author_claims,
+    ]
+    if _missing(stage10) or _newer_than_outputs(identity_merge_inputs, stage10):
+        return 10, "Stage 10 identity merge proposals are missing or stale."
     if not ignore_pending and _pending_identity_merge_count(root) > 0:
-        return 0, "Paused for identity cluster review; approve/reject identity clusters before rerunning Stage 10."
+        return 0, "Paused for identity cluster review; approve/reject identity clusters before Stage 11 card synthesis."
     if not ignore_pending and _pending_card_architecture_count(root) > 0:
-        return 0, "Paused for card architecture review; approve/reject card architecture proposals before rerunning Stage 10."
+        return 0, "Paused for card architecture review; approve/reject card architecture proposals before Stage 11 card synthesis."
     if _unproposed_card_edit_request_count(root) > 0:
-        return 10, "Card Agent edit requests need Stage 10 architecture proposals."
-    if _missing(stage10):
-        return 10, "Stage 10 card synthesis/canon merge artifacts are missing."
+        return 11, "Card Agent edit requests need Stage 11 architecture proposals."
+    if _missing(stage11):
+        return 11, "Stage 11 card synthesis/canon merge artifacts are missing."
     if _newer_than_outputs(
         [
             stage9[0],
@@ -280,16 +291,15 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
             card_edit_requests,
             card_architecture_proposals,
             card_architecture_decisions,
+            identity_merge_proposals,
         ],
-        stage10,
+        stage11,
     ):
-        return 10, "Stage 10 card synthesis/canon merge artifacts are stale after review decisions."
-    if identity_merge_proposals.exists() and _newer_than_outputs([identity_merge_proposals], stage10):
-        return 10, "Stage 10 identity merge proposals changed after card synthesis."
+        return 11, "Stage 11 card synthesis/canon merge artifacts are stale after review decisions."
     if not ignore_pending and _pending_card_count(root) > 0:
-        return 0, "Paused for card review; approve/reject synthesized card drafts before canonical merge."
+        return 0, "Paused for card review; approve/reject synthesized card drafts before Stage 12 export."
 
-    if _missing(stage11) or _newer_than_outputs(
+    if _missing(stage12) or _newer_than_outputs(
         [
             root / "07_review" / "canonical_cards.json",
             root / "06_drafts" / "card_drafts" / "meta_cards_draft.json",
@@ -298,11 +308,11 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
             root / "03_relevance" / "dm_source_profiles.json",
             root / "07_review" / "merge_log.jsonl",
         ],
-        stage11,
+        stage12,
     ):
-        return 11, "Stage 11 Notion export is missing or stale."
+        return 12, "Stage 12 Notion export is missing or stale."
 
-    return 0, "Artifacts are current through Stage 11; no pipeline stage needs to run."
+    return 0, "Artifacts are current through Stage 12; no pipeline stage needs to run."
 
 
 def _is_review_gate_error(exc: BaseException) -> bool:
@@ -341,13 +351,26 @@ def main() -> None:
     parser.add_argument("--log-level", type=str, default=None, help="Logging level (DEBUG, INFO, WARNING, ERROR).")
     parser.add_argument("--resume", action="store_true", help="Resume an existing artifact folder from the earliest stale stage.")
     parser.add_argument("--ignore-pending", action="store_true", help="Ignore pending review items and force continuation.")
-    parser.add_argument("--start-stage", type=int, default=1, help="Expert override: first stage to run, 1-11.")
+    parser.add_argument("--start-stage", type=int, default=1, help="Expert override: first stage to run, 1-12.")
     args = parser.parse_args()
     setup_logging(args.log_level)
     logger = get_logger(__name__)
 
     root = args.artifacts_root
     thematic_runtime_path = root / "learning" / "thematic_profile_runtime.json"
+    if args.ignore_pending:
+        bypass_path = root / "07_review" / "review_gate_bypass.json"
+        existing_bypass = read_json(bypass_path) if bypass_path.exists() else {}
+        if not isinstance(existing_bypass, dict):
+            existing_bypass = {}
+        existing_bypass.update(
+            {
+                "claim_review": True,
+                "claim_review_bypassed_at_utc": datetime.now(timezone.utc).isoformat(),
+                "reason": "User selected --ignore-pending / force past pending review gates.",
+            }
+        )
+        write_json(bypass_path, existing_bypass)
     total_stages = STAGE_TOTAL
     start_stage = max(1, min(total_stages, int(args.start_stage or 1)))
     if args.resume:
@@ -366,7 +389,7 @@ def main() -> None:
             1,
             total_stages,
             "Stage 01 Entity Bootstrap",
-            run_stage_a,
+            run_stage_01,
             args.docx,
             root / "01_bootstrap" / "entity_seed.json",
             root / "01_bootstrap" / "schema_descriptor.json",
@@ -388,17 +411,17 @@ def main() -> None:
             2,
             total_stages,
             "Stage 02 Message Normalization",
-            run_stage_b,
+            run_stage_02,
             args.conversations_root,
             root / "02_timeline" / "messages_normalized_per_thread.jsonl",
             root / "02_timeline" / "summary.json",
         )
-        stage_b_summary = read_json(root / "02_timeline" / "summary.json")
+        stage_02_summary = read_json(root / "02_timeline" / "summary.json")
         logger.info(
             "Stage 02 summary: files=%d, normalized_messages=%d, rejected=%d",
-            int(stage_b_summary.get("input_files", 0)),
-            int(stage_b_summary.get("normalized_messages", 0)),
-            int(stage_b_summary.get("rejected_before_cutoff_or_invalid", 0)),
+            int(stage_02_summary.get("input_files", 0)),
+            int(stage_02_summary.get("normalized_messages", 0)),
+            int(stage_02_summary.get("rejected_before_cutoff_or_invalid", 0)),
         )
     else:
         logger.info("[2/%d] SKIP  Stage 02 Message Normalization (resume starts at Stage %02d)", total_stages, start_stage)
@@ -409,16 +432,16 @@ def main() -> None:
             3,
             total_stages,
             "Stage 03 Timeline Merge",
-            run_stage_b2,
+            run_stage_03,
             root / "02_timeline" / "messages_normalized_per_thread.jsonl",
             root / "02_timeline" / "messages_global_timeline.jsonl",
             root / "02_timeline" / "global_index.json",
         )
-        stage_b2_index = read_json(root / "02_timeline" / "global_index.json")
+        stage_03_index = read_json(root / "02_timeline" / "global_index.json")
         logger.info(
             "Stage 03 summary: global_messages=%d, threads=%d",
-            int(stage_b2_index.get("message_count", 0)),
-            len(stage_b2_index.get("thread_counts", {})),
+            int(stage_03_index.get("message_count", 0)),
+            len(stage_03_index.get("thread_counts", {})),
         )
     else:
         logger.info("[3/%d] SKIP  Stage 03 Timeline Merge (resume starts at Stage %02d)", total_stages, start_stage)
@@ -429,7 +452,7 @@ def main() -> None:
             4,
             total_stages,
             "Stage 04 Relevant Conversation Segmentation",
-            run_stage_b3,
+            run_stage_04,
             root / "02_timeline" / "messages_global_timeline.jsonl",
             root / "02_timeline" / "messages_relevant_conversations.jsonl",
             root / "02_timeline" / "conversation_segments.json",
@@ -438,13 +461,13 @@ def main() -> None:
             Path("config/pipeline_config.json"),
             root / "01_bootstrap" / "entity_seed.json",
         )
-        stage_b3_index = read_json(root / "02_timeline" / "conversation_index.json")
+        stage_04_index = read_json(root / "02_timeline" / "conversation_index.json")
         logger.info(
             "Stage 04 summary: relevant_segments=%d, relevant_messages=%d, dropped=%d, failures=%d",
-            int(stage_b3_index.get("relevant_segments", 0)),
-            int(stage_b3_index.get("messages_out", 0)),
-            int(stage_b3_index.get("dropped_prefilter_windows", 0)),
-            int(stage_b3_index.get("failed_model_windows", 0)),
+            int(stage_04_index.get("relevant_segments", 0)),
+            int(stage_04_index.get("messages_out", 0)),
+            int(stage_04_index.get("dropped_prefilter_windows", 0)),
+            int(stage_04_index.get("failed_model_windows", 0)),
         )
     else:
         logger.info("[4/%d] SKIP  Stage 04 Relevant Conversation Segmentation (resume starts at Stage %02d)", total_stages, start_stage)
@@ -455,7 +478,7 @@ def main() -> None:
             5,
             total_stages,
             "Stage 05 Conversation Patch Notes",
-            run_stage_b4,
+            run_stage_05,
             root / "02_timeline" / "messages_relevant_conversations.jsonl",
             root / "02_timeline" / "conversation_segments.json",
             root / "02_timeline" / "conversation_patch_notes.json",
@@ -463,12 +486,12 @@ def main() -> None:
             root / "02_timeline" / "conversation_patch_note_failures.json",
             Path("config/pipeline_config.json"),
         )
-        stage_b4_index = read_json(root / "02_timeline" / "conversation_patch_notes.json")
+        stage_05_index = read_json(root / "02_timeline" / "conversation_patch_notes.json")
         logger.info(
             "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
-            int(stage_b4_index.get("notes_count", 0)),
-            int(stage_b4_index.get("conversation_count", 0)),
-            int(stage_b4_index.get("failure_count", 0)),
+            int(stage_05_index.get("notes_count", 0)),
+            int(stage_05_index.get("conversation_count", 0)),
+            int(stage_05_index.get("failure_count", 0)),
         )
     else:
         logger.info("[5/%d] SKIP  Stage 05 Conversation Patch Notes (resume starts at Stage %02d)", total_stages, start_stage)
@@ -479,7 +502,7 @@ def main() -> None:
             6,
             total_stages,
             "Stage 06 Snippet Extraction",
-            run_stage_c,
+            run_stage_06,
             root / "02_timeline" / "messages_relevant_conversations.jsonl",
             root / "03_relevance" / "dm_source_profiles.json",
             root / "03_relevance" / "snippets_candidates.jsonl",
@@ -505,7 +528,7 @@ def main() -> None:
             7,
             total_stages,
             "Stage 07 Entity Resolution",
-            run_stage_e,
+            run_stage_07,
             root / "03_relevance" / "snippets_candidates.jsonl",
             root / "01_bootstrap" / "entity_seed.json",
             root / "05_alias" / "alias_map.json",
@@ -533,7 +556,7 @@ def main() -> None:
             8,
             total_stages,
             "Stage 08 Snippet Grouping",
-            run_stage_d,
+            run_stage_08,
             root / "03_relevance" / "snippets_candidates.jsonl",
             root / "05_alias" / "resolved_entities.json",
             root / "04_grouping" / "snippet_clusters_lore.json",
@@ -555,7 +578,7 @@ def main() -> None:
             9,
             total_stages,
             "Stage 09 Claim Drafting",
-            run_stage_f,
+            run_stage_09,
             root / "05_alias" / "resolved_entities.json",
             root / "04_grouping" / "snippet_clusters_lore.json",
             root / "04_grouping" / "snippet_clusters_meta.json",
@@ -588,8 +611,41 @@ def main() -> None:
             logger,
             10,
             total_stages,
-            "Stage 10 Card Synthesis",
-            run_stage_g,
+            "Stage 10 Identity Merge",
+            run_stage_10,
+            root / "05_alias" / "resolved_entities.json",
+            root / "06_drafts" / "card_drafts" / "claim_drafts.json",
+            root / "07_review" / "claim_review_decisions.json",
+            Path("canon/review_memory.json"),
+            root / "07_review" / "identity_merge_proposals.json",
+            root / "07_review" / "identity_merge_decisions.json",
+            Path("config/pipeline_config.json"),
+        )
+        logger.info(
+            "Stage 10 summary: identity_merge_proposals=%d pending_identity_merges=%d",
+            len(read_json(root / "07_review" / "identity_merge_proposals.json").get("proposals", [])),
+            _pending_identity_merge_count(root),
+        )
+    else:
+        logger.info("[10/%d] SKIP  Stage 10 Identity Merge (resume starts at Stage %02d)", total_stages, start_stage)
+
+    pending_identity_merges = _pending_identity_merge_count(root)
+    if pending_identity_merges and not args.ignore_pending:
+        _pause_for_review(
+            logger,
+            10,
+            total_stages,
+            "Stage 10 Identity Merge",
+            f"Stage 10 produced {pending_identity_merges} identity cluster proposal(s) requiring review before Stage 11.",
+        )
+
+    if start_stage <= 11:
+        _run_stage(
+            logger,
+            11,
+            total_stages,
+            "Stage 11 Card Synthesis",
+            run_stage_11,
             root / "05_alias" / "resolved_entities.json",
             root / "06_drafts" / "card_drafts" / "claim_drafts.json",
             root / "07_review" / "claim_review_decisions.json",
@@ -603,7 +659,7 @@ def main() -> None:
             root / "03_relevance" / "snippets_candidates.jsonl",
         )
         logger.info(
-            "Stage 10 summary: card_drafts=%d canonical_cards=%d merge_log=%d",
+            "Stage 11 summary: card_drafts=%d canonical_cards=%d merge_log=%d",
             len(read_json(root / "07_review" / "card_drafts.json").get("cards", [])),
             len(read_json(root / "07_review" / "canonical_cards.json").get("cards", [])),
             _count_jsonl(root / "07_review" / "merge_log.jsonl"),
@@ -615,7 +671,7 @@ def main() -> None:
             progress_callback=lambda message: logger.info(message),
         )
         logger.info(
-            "Stage 10 Notion draft sync: status=%s created=%d updated=%d failed=%d report=%s reason=%s",
+            "Stage 11 Notion draft sync: status=%s created=%d updated=%d failed=%d report=%s reason=%s",
             draft_sync_report.get("status", "unknown"),
             int(draft_sync_report.get("created_pages", 0) or 0),
             int(draft_sync_report.get("updated_pages", 0) or 0),
@@ -624,25 +680,25 @@ def main() -> None:
             draft_sync_report.get("reason", ""),
         )
     else:
-        logger.info("[10/%d] SKIP  Stage 10 Card Synthesis (resume starts at Stage %02d)", total_stages, start_stage)
+        logger.info("[11/%d] SKIP  Stage 11 Card Synthesis (resume starts at Stage %02d)", total_stages, start_stage)
 
     pending_cards = _pending_card_count(root)
     if pending_cards and not args.ignore_pending:
         _pause_for_review(
             logger,
-            10,
-            total_stages,
-            "Stage 10 Card Synthesis",
-            f"Stage 10 produced {pending_cards} card draft(s) requiring card review before Stage 11 export.",
-        )
-
-    if start_stage <= 11:
-        _run_stage(
-            logger,
             11,
             total_stages,
-            "Stage 11 Notion Export",
-            run_stage_h,
+            "Stage 11 Card Synthesis",
+            f"Stage 11 produced {pending_cards} card draft(s) requiring card review before Stage 12 export.",
+        )
+
+    if start_stage <= 12:
+        _run_stage(
+            logger,
+            12,
+            total_stages,
+            "Stage 12 Notion Export",
+            run_stage_12,
             root / "07_review" / "canonical_cards.json",
             root / "06_drafts" / "card_drafts" / "meta_cards_draft.json",
             root / "05_alias" / "alias_map.json",
@@ -652,11 +708,11 @@ def main() -> None:
             root / "08_notion" / "notion_import.ndjson",
         )
         logger.info(
-            "Stage 11 summary: notion_records=%d",
+            "Stage 12 summary: notion_records=%d",
             _count_jsonl(root / "08_notion" / "notion_import.ndjson"),
         )
     else:
-        logger.info("[11/%d] SKIP  Stage 11 Notion Export (resume starts at Stage %02d)", total_stages, start_stage)
+        logger.info("[12/%d] SKIP  Stage 12 Notion Export (resume starts at Stage %02d)", total_stages, start_stage)
     logger.info("Pipeline complete. Notion export written under: %s", root / "08_notion")
 
 

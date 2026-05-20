@@ -1,4 +1,4 @@
-{
+﻿{
   "cutoff_utc": "2025-01-08T01:05:00Z",
   "paths": {
     "docx_lore_bible": "theriac-coda---lore-bible.docx",
@@ -46,11 +46,11 @@
       }
     },
     "tasks": {
-      "stage_a_bootstrap": {
+      "stage_01_entity_bootstrap": {
         "profile": "flash_regular",
         "batch_enabled": false
       },
-      "stage_b3_segmentation": {
+      "stage_04_conversation_segmentation": {
         "profile": "flash_lite",
         "batch_enabled": false,
         "batch_initial_max_requests": 10,
@@ -59,44 +59,44 @@
         "batch_status_log_min_interval_seconds": 30,
         "batch_timeout_seconds": 1800,
         "batch_abort_on_chunk_failure": true,
-        "batch_display_name": "theriac-b3-segmentation"
+        "batch_display_name": "theriac-stage-04-segmentation"
       },
-      "stage_b4_patch_notes": {
+      "stage_05_conversation_patch_notes": {
         "profile": "flash_lite",
         "batch_enabled": false
       },
-      "stage_e_alias_resolution": {
+      "stage_07_entity_resolution": {
         "profile": "flash_regular",
         "batch_enabled": false,
         "enabled": true,
         "max_evidence_per_call": 24,
         "max_candidates_per_call": 80
       },
-      "stage_f_claim_extraction": {
+      "stage_09_claim_drafting": {
         "profile": "flash_lite",
         "batch_enabled": false,
         "batch_max_requests": 75,
         "batch_poll_interval_seconds": 30,
         "batch_timeout_seconds": 86400,
-        "batch_display_name": "theriac-f-claim-extraction"
+        "batch_display_name": "theriac-stage-09-claim-drafting"
       },
-      "stage_g_card_synthesis": {
+      "stage_11_card_synthesis": {
         "profile": "claude_sonnet",
         "batch_enabled": false
       },
-      "stage_g_card_architecture_agent": {
+      "stage_11_card_architecture_agent": {
         "profile": "claude_sonnet",
         "batch_enabled": false
       },
-      "stage_g_identity_merge_proposals": {
+      "stage_10_identity_merge_proposals": {
         "profile": "claude_sonnet",
         "batch_enabled": false
       },
-      "stage_g_identity_merge_cluster_judgement": {
+      "stage_10_identity_merge_cluster_judgement": {
         "profile": "claude_sonnet",
         "batch_enabled": false
       },
-      "stage_09q_story_questions": {
+      "stage_09_story_questions": {
         "profile": "claude_sonnet",
         "batch_enabled": false
       }
@@ -110,9 +110,9 @@
     "application_policy": "moderate"
   },
   "anchor_provider": "hybrid",
-  "stage_c_anchor_provider": "conversation_metadata",
-  "stage_a_anchor_provider": "hybrid",
-  "stage_a_mixtral_excerpt_chars": 24000,
+  "stage_06_anchor_provider": "conversation_metadata",
+  "stage_01_anchor_provider": "hybrid",
+  "stage_01_model_excerpt_chars": 24000,
   "mixtral": {
     "provider": "openrouter",
     "base_url": "http://127.0.0.1:11434",

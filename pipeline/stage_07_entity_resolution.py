@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -679,7 +679,7 @@ def promote_band_grouped_quest_candidates(
     """
     snippets_by_id = {str(s.get("snippet_id", "")): s for s in snippets}
 
-    # Map each proposal → set of artist names found in its evidence.
+    # Map each proposal â†’ set of artist names found in its evidence.
     proposal_artists: dict[str, set[str]] = {}
     for proposal in proposals:
         if str(proposal.get("review_status", "pending")) != "pending":
@@ -709,7 +709,7 @@ def promote_band_grouped_quest_candidates(
     if not proposal_artists:
         return
 
-    # Build artist → list of proposal keys that reference it.
+    # Build artist â†’ list of proposal keys that reference it.
     artist_groups: dict[str, list[str]] = {}
     for key, artists in proposal_artists.items():
         for artist in artists:
@@ -991,7 +991,7 @@ def add_model_alias_resolution_proposals(
     provider_config: dict[str, Any],
     logger: Any,
 ) -> list[dict[str, Any]]:
-    task_cfg = provider_config.get("model_routing", {}).get("tasks", {}).get("stage_e_alias_resolution", {})
+    task_cfg = provider_config.get("model_routing", {}).get("tasks", {}).get("stage_07_entity_resolution", {})
     if provider_config and not bool(task_cfg.get("enabled", True)):
         return []
     if not provider_config:
@@ -1029,7 +1029,7 @@ def add_model_alias_resolution_proposals(
             offset,
         )
         try:
-            response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(provider_config, "stage_e_alias_resolution"))
+            response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(provider_config, "stage_07_entity_resolution"))
         except Exception as exc:
             failures.append(
                 {
@@ -1073,7 +1073,7 @@ def add_model_alias_resolution_proposals(
             offset,
         )
         try:
-            response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(provider_config, "stage_e_alias_resolution"))
+            response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(provider_config, "stage_07_entity_resolution"))
         except Exception as exc:
             failures.append(
                 {

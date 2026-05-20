@@ -126,9 +126,9 @@ def run(conversations_root: Path, out_jsonl: Path, out_summary_json: Path) -> No
     files = iter_json_pages(conversations_root)
     # region agent log
     _debug_log(
-        "stageb-debug",
+        "stage02-debug",
         "H4",
-        "stage_b_normalize.py:run",
+        "stage_02_message_normalization.py:run",
         "Stage 02 run inputs",
         {
             "conversations_root": str(conversations_root),
@@ -194,9 +194,9 @@ def run(conversations_root: Path, out_jsonl: Path, out_summary_json: Path) -> No
         if sample_file_logs < 5:
             # region agent log
             _debug_log(
-                "stageb-debug",
+                "stage02-debug",
                 "H1",
-                "stage_b_normalize.py:run",
+                "stage_02_message_normalization.py:run",
                 "Per-file timestamp and keep/reject stats",
                 {
                     "file": str(json_path),
@@ -234,9 +234,9 @@ def run(conversations_root: Path, out_jsonl: Path, out_summary_json: Path) -> No
     )
     # region agent log
     _debug_log(
-        "stageb-debug",
+        "stage02-debug",
         "H2",
-        "stage_b_normalize.py:run",
+        "stage_02_message_normalization.py:run",
         "Stage 02 global timestamp summary",
         {
             "global_min_timestamp_seen": isoformat_utc(global_min_ts) if global_min_ts is not None else None,

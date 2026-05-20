@@ -32,22 +32,35 @@ def _looks_like_project_root(path: Path) -> bool:
     )
 
 
+def _plain_windows_path(path: Path | str) -> Path:
+    raw = str(path)
+    if raw.startswith("\\\\?\\UNC\\"):
+        raw = "\\" + raw[7:]
+    elif raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    return Path(raw)
+
+
+def _resolve_plain(path: Path | str) -> Path:
+    return _plain_windows_path(path).expanduser().resolve()
+
+
 def find_repo_root(explicit: str | None = None) -> Path:
     if explicit:
-        path = Path(explicit).expanduser()
+        path = _plain_windows_path(explicit).expanduser()
         if path.exists():
-            return path.resolve()
+            return _resolve_plain(path)
     env_root = os.environ.get("THERIAC_LORE_ROOT")
     if env_root:
-        path = Path(env_root).expanduser()
+        path = _plain_windows_path(env_root).expanduser()
         if path.exists():
-            return path.resolve()
+            return _resolve_plain(path)
     starts = [Path.cwd(), Path(__file__).resolve().parents[1]]
     for start in starts:
         for candidate in (start, *start.parents):
             if _looks_like_project_root(candidate):
-                return candidate.resolve()
-    return Path.cwd().resolve()
+                return _resolve_plain(candidate)
+    return _resolve_plain(Path.cwd())
 
 
 def _json_safe(value: Any) -> Any:
@@ -65,22 +78,24 @@ def _json_safe(value: Any) -> Any:
 def _active_root(repo_root: Path, payload: dict[str, Any]) -> Path:
     raw = str(payload.get("artifacts_root") or "").strip()
     if raw and raw != NEW_RUN_SELECTOR_VALUE:
-        path = Path(raw)
+        path = _plain_windows_path(raw)
         if not path.is_absolute():
             path = repo_root / path
-        return path.resolve()
+        return _resolve_plain(path)
     last = load_last_open_artifacts_root(repo_root)
     if last is not None:
-        return last.resolve()
+        return _resolve_plain(last)
     runs_base = repo_root / "artifacts" / "runs"
     if runs_base.exists():
         runs = [path for path in runs_base.iterdir() if path.is_dir()]
         if runs:
-            return max(runs, key=lambda path: path.stat().st_mtime).resolve()
+            return _resolve_plain(max(runs, key=lambda path: path.stat().st_mtime))
     return repo_root / "artifacts"
 
 
 def _run_state(repo_root: Path, active_root: Path) -> dict[str, Any]:
+    repo_root = _resolve_plain(repo_root)
+    active_root = _resolve_plain(active_root)
     counts = pending_review_counts_for_root(active_root) if active_root.exists() else {}
     runs = discover_review_runs(repo_root, active_root) if active_root.exists() else []
     snapshot = pipeline_progress_artifact_snapshot(active_root) if active_root.exists() else {}
@@ -100,7 +115,9 @@ def _run_state(repo_root: Path, active_root: Path) -> dict[str, Any]:
         "runs": [
             {
                 **run,
-                "artifacts_root": str(run["artifacts_root"]),
+                "artifacts_root": str(_resolve_plain(run["artifacts_root"])),
+                "label": _display_path(_resolve_plain(run["artifacts_root"]), repo_root),
+                "is_active": _resolve_plain(run["artifacts_root"]) == active_root,
                 "latest_mtime": float(run.get("latest_mtime", 0) or 0),
             }
             for run in runs
@@ -138,6 +155,27 @@ def _identity_clusters(root: Path) -> list[dict[str, Any]]:
     return _json_safe(clusters)
 
 
+def _claim_rows(root: Path) -> list[dict[str, Any]]:
+    from pipeline.review_inventory import claim_inventory_browser_rows, sort_candidate_inventory_rows
+
+    rows = claim_inventory_browser_rows(
+        root / "06_drafts" / "card_drafts" / "claim_drafts.json",
+        root / "07_review" / "claim_review_decisions.json",
+        root,
+    )
+    return _json_safe(sort_candidate_inventory_rows(rows, "bucket", False))
+
+
+def _entity_rows(root: Path) -> list[dict[str, Any]]:
+    from pipeline.review_inventory import candidate_inventory_browser_rows, sort_candidate_inventory_rows
+
+    rows = candidate_inventory_browser_rows(
+        root / "05_alias" / "conversation_entity_proposals.json",
+        root / "05_alias" / "conversation_entity_decisions.json",
+    )
+    return _json_safe(sort_candidate_inventory_rows(rows, "bucket", False))
+
+
 def handle_state(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     active = _active_root(repo_root, payload)
     return _run_state(repo_root, active)
@@ -152,6 +190,7 @@ def handle_select_run(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any
 
 def handle_create_run(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     active = new_run_artifacts_root(repo_root)
+    active = _resolve_plain(active)
     save_last_open_artifacts_root(repo_root, active)
     return _run_state(repo_root, active)
 
@@ -162,6 +201,18 @@ def handle_identity_clusters(repo_root: Path, payload: dict[str, Any]) -> dict[s
         "active_root": str(active),
         "clusters": _identity_clusters(active) if active.exists() else [],
     }
+
+
+def handle_claim_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    active = _active_root(repo_root, payload)
+    rows = _claim_rows(active) if active.exists() else []
+    return {"active_root": str(active), "rows": rows, "total": len(rows)}
+
+
+def handle_entity_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    active = _active_root(repo_root, payload)
+    rows = _entity_rows(active) if active.exists() else []
+    return {"active_root": str(active), "rows": rows, "total": len(rows)}
 
 
 def handle_identity_cluster_decision(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
@@ -243,6 +294,58 @@ def handle_identity_edge_decision(repo_root: Path, payload: dict[str, Any]) -> d
     return handle_identity_clusters(repo_root, {"artifacts_root": str(active)})
 
 
+def handle_claim_decision(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    from pipeline.review_inventory import write_claim_inventory_override_decision
+
+    active = _active_root(repo_root, payload)
+    row_id = str(payload.get("row_id") or "").strip()
+    if not row_id:
+        raise ValueError("Missing row_id.")
+    rows = _claim_rows(active)
+    row = next((item for item in rows if str(item.get("row_id") or "") == row_id), None)
+    if row is None:
+        raise ValueError(f"Unknown claim row: {row_id}")
+    decision = str(payload.get("decision") or "defer").strip().lower()
+    if decision not in {"approve", "accept", "reject", "defer", "needs_more_context"}:
+        raise ValueError(f"Unsupported decision: {decision}")
+    write_claim_inventory_override_decision(
+        active / "07_review" / "claim_review_decisions.json",
+        row,
+        decision,
+        str(payload.get("reviewer") or "tauri_user"),
+        str(payload.get("rationale") or ""),
+    )
+    return handle_claim_inventory(repo_root, {"artifacts_root": str(active)})
+
+
+def handle_entity_decision(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    from pipeline.review_inventory import write_candidate_inventory_override_decision
+
+    active = _active_root(repo_root, payload)
+    row_id = str(payload.get("row_id") or "").strip()
+    if not row_id:
+        raise ValueError("Missing row_id.")
+    rows = _entity_rows(active)
+    row = next((item for item in rows if str(item.get("row_id") or "") == row_id), None)
+    if row is None:
+        raise ValueError(f"Unknown entity row: {row_id}")
+    decision = str(payload.get("decision") or "defer").strip().lower()
+    if decision not in {"approve", "accept", "reject", "defer", "needs_more_context"}:
+        raise ValueError(f"Unsupported decision: {decision}")
+    canonical_name = str(payload.get("canonical_name") or row.get("canonical_name") or row.get("raw_candidate_name") or "").strip()
+    entity_type = str(payload.get("entity_type") or row.get("proposed_entity_type") or "term").strip()
+    write_candidate_inventory_override_decision(
+        active / "05_alias" / "conversation_entity_decisions.json",
+        row,
+        decision,
+        canonical_name,
+        entity_type,
+        str(payload.get("reviewer") or "tauri_user"),
+        str(payload.get("rationale") or ""),
+    )
+    return handle_entity_inventory(repo_root, {"artifacts_root": str(active)})
+
+
 COMMANDS = {
     "state": handle_state,
     "select_run": handle_select_run,
@@ -250,6 +353,10 @@ COMMANDS = {
     "identity_clusters": handle_identity_clusters,
     "identity_cluster_decision": handle_identity_cluster_decision,
     "identity_edge_decision": handle_identity_edge_decision,
+    "claim_inventory": handle_claim_inventory,
+    "claim_decision": handle_claim_decision,
+    "entity_inventory": handle_entity_inventory,
+    "entity_decision": handle_entity_decision,
 }
 
 

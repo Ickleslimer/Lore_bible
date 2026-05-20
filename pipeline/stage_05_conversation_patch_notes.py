@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -482,7 +482,7 @@ def extract_patch_note_with_model(
         )
         response = call_mixtral_chat(
             prompt=prompt,
-            **model_call_kwargs(provider_config, "stage_b4_patch_notes"),
+            **model_call_kwargs(provider_config, "stage_05_conversation_patch_notes"),
         )
         if isinstance(response, dict):
             try:

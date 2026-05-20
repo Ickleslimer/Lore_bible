@@ -63,6 +63,15 @@ export interface PipelineRuntimeStatus {
 
 export interface PipelineLogTail {
   logs: string[];
+  total_lines?: number;
+}
+
+export interface PipelineProgressTail {
+  latest_line: string;
+  latest_progress_line: string;
+  lines: string[];
+  total_scanned: number;
+  updated_at_epoch: string;
 }
 
 export interface IdentityEntity {
@@ -123,4 +132,30 @@ export interface IdentityClusterRow {
 export interface IdentityClustersResponse {
   active_root: string;
   clusters: IdentityClusterRow[];
+}
+
+export interface InventoryRow {
+  row_id: string;
+  row_kind?: string;
+  bucket: string;
+  source_bucket?: string;
+  category: string;
+  candidate_name: string;
+  raw_candidate_name?: string;
+  canonical_name?: string;
+  proposed_entity_type?: string;
+  evidence_count?: number;
+  topics?: string[];
+  tracks?: string[];
+  triage_reason?: string;
+  review_priority?: string;
+  decision?: string;
+  latest_decision?: Record<string, unknown>;
+  item: Record<string, unknown>;
+}
+
+export interface InventoryResponse {
+  active_root: string;
+  rows: InventoryRow[];
+  total: number;
 }

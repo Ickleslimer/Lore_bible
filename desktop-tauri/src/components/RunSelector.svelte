@@ -15,7 +15,7 @@
 
 <label class="run-select">
   <span class="caption">Run</span>
-  <select bind:value={activeRoot} on:change={onChange}>
+  <select value={activeRoot} on:change={onChange}>
     {#each runs as run}
       <option value={run.artifacts_root}>{run.label} · {run.pending_total} pending</option>
     {/each}

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import re
@@ -424,8 +424,8 @@ def materialize_patch_note_snippets(
     return snippets, review, skipped_no_durable, skipped_empty_items
 
 
-def stage_c_provider_mode(provider_config: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-    explicit = str(provider_config.get("stage_c_anchor_provider", "")).strip().lower()
+def stage_06_provider_mode(provider_config: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    explicit = str(provider_config.get("stage_06_anchor_provider", "")).strip().lower()
     if explicit:
         return explicit
     if any(str(row.get("conversation_id", "")).strip() for row in rows):
@@ -757,9 +757,9 @@ def run(
         for note in patch_notes
         if str(note.get("conversation_id", "")).strip()
     }
-    effective_provider = stage_c_provider_mode(provider_config, rows)
-    stage_c_provider_config = dict(provider_config)
-    stage_c_provider_config["anchor_provider"] = effective_provider
+    effective_provider = stage_06_provider_mode(provider_config, rows)
+    stage_06_provider_config = dict(provider_config)
+    stage_06_provider_config["anchor_provider"] = effective_provider
     seed_entities = load_seed_entities(in_seed_json)
     logger.info(
         "Stage 06: provider=%s, configured_anchor_provider=%s, seed_entities=%d, existing_profiles=%d, patch_notes=%d",
@@ -775,7 +775,7 @@ def run(
             rows=rows,
             patch_notes=patch_notes,
             profiles=profiles,
-            provider_config=stage_c_provider_config,
+            provider_config=stage_06_provider_config,
         )
         write_jsonl(out_snippets_jsonl, snippets)
         write_jsonl(out_needs_review_jsonl, review)
@@ -793,8 +793,8 @@ def run(
     snippets: list[dict[str, Any]] = []
     review: list[dict[str, Any]] = []
     progress_every = max(1, len(rows) // 10)
-    stage_hist_markers: list[str] = []
-    stage_music_markers: list[str] = []
+    stage_06_hist_markers: list[str] = []
+    stage_06_music_markers: list[str] = []
     skipped_no_durable = 0
 
     for row_index, row in enumerate(rows, start=1):
@@ -802,7 +802,7 @@ def run(
         profile_key = source_profile_key_for_row(row)
         profile = profiles.get(profile_key)
         if profile is None:
-            profile = default_profile(profile_key, row["partner_id"], row["partner_label"], stage_c_provider_config)
+            profile = default_profile(profile_key, row["partner_id"], row["partner_label"], stage_06_provider_config)
             profiles[profile_key] = profile
         context_window = int(profile.get("context_window_messages", 1))
         window_rows = context_rows_for_message(row, grouped_rows, row_positions, context_window)
@@ -829,12 +829,12 @@ def run(
         score, reason, track, topics, anchor_candidates, suggested_hist, suggested_music = classify_with_provider(
             context_normalized,
             profile,
-            stage_c_provider_config,
+            stage_06_provider_config,
             seed_entities,
             row,
         )
-        stage_hist_markers.extend(suggested_hist)
-        stage_music_markers.extend(suggested_music)
+        stage_06_hist_markers.extend(suggested_hist)
+        stage_06_music_markers.extend(suggested_music)
         threshold = float(profile["base_thresholds"]["theriac_relevance_min"])
         snippet = {
             "snippet_id": stable_id("snippet", row["message_id"], context_key_for_row(row)),
@@ -905,9 +905,9 @@ def run(
     if runtime_updates_enabled and thematic_runtime_path is not None:
         update_runtime_profile(
             thematic_runtime_path,
-            "stage_c",
-            stage_hist_markers,
-            stage_music_markers,
+            "stage_06",
+            stage_06_hist_markers,
+            stage_06_music_markers,
             min_support=int(thematic_cfg.get("runtime_min_support", 2)),
         )
     logger.info(

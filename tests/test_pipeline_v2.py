@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -19,7 +19,7 @@ from pipeline.mixtral_anchor_provider import (
     _extract_inline_responses,
     _gemini_batch_state,
     _inline_response_payload,
-    build_stage_a_prompt,
+    build_stage_01_prompt,
     model_call_kwargs,
 )
 from pipeline.review_memory import relevant_memory_for_entity
@@ -34,23 +34,24 @@ from pipeline.story_questions import (
     skip_current_question,
     story_question_display,
 )
-from pipeline.stage_a_bootstrap import infer_entities
-from pipeline.stage_b3_segment_conversations import normalize_model_segments, run as run_stage_b3
-from pipeline.stage_b4_conversation_patch_notes import run as run_stage_b4
-from pipeline.stage_c_extract import run as run_stage_c
-from pipeline.stage_d_group import run as run_stage_d
-from pipeline.stage_e_alias import annotate_conversation_entity_proposals, infer_type_evidence_for_candidate, normalize_entity_type, run as run_stage_e
-from pipeline.stage_f_draft import build_claim_extraction_prompt, run as run_stage_f
-from pipeline.stage_g_merge_engine import (
+from pipeline.stage_01_entity_bootstrap import infer_entities
+from pipeline.stage_04_conversation_segmentation import normalize_model_segments, run as run_stage_04
+from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
+from pipeline.stage_06_snippet_extraction import run as run_stage_06
+from pipeline.stage_08_snippet_grouping import run as run_stage_08
+from pipeline.stage_07_entity_resolution import annotate_conversation_entity_proposals, infer_type_evidence_for_candidate, normalize_entity_type, run as run_stage_07
+from pipeline.stage_09_claim_drafting import build_claim_extraction_prompt, run as run_stage_09
+from pipeline.stage_10_identity_merge import run as run_stage_10
+from pipeline.stage_11_card_synthesis import (
     _build_identity_cluster_proposals,
     apply_entity_merges_to_entities,
     build_card_synthesis_prompt,
     find_unsupported_acronym_expansions,
     find_verbatim_claim_reuse,
     remember_identity_merge_decisions,
-    run as run_stage_g,
+    run as run_stage_11,
 )
-from pipeline.stage_h_notion_export import run as run_stage_h
+from pipeline.stage_12_notion_export import run as run_stage_12
 from pipeline.notion_draft_sync import notion_draft_config, sync_draft_cards_to_notion
 from pipeline.review_inventory import (
     append_author_claim,
@@ -288,8 +289,8 @@ def run_b3_for_test(
                 ]
             },
         )
-    with patch("pipeline.stage_b3_segment_conversations.call_mixtral_chat", side_effect=model_payloads):
-        run_stage_b3(
+    with patch("pipeline.stage_04_conversation_segmentation.call_mixtral_chat", side_effect=model_payloads):
+        run_stage_04(
             root / "messages.jsonl",
             root / "relevant.jsonl",
             root / "segments.json",
@@ -306,7 +307,7 @@ def run_b3_for_test(
 
 
 class PipelineV2Tests(unittest.TestCase):
-    def test_stage_b4_patch_notes_preserve_global_chronological_order(self) -> None:
+    def test_stage_05_conversation_patch_notes_preserve_global_chronological_order(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             early = msg_row("m1", "2025-01-10T10:00:00Z", thread_id="thread_b", partner_id="partner_b", partner_label="Beta")
@@ -428,8 +429,8 @@ class PipelineV2Tests(unittest.TestCase):
                     "confidence": 0.85,
                 }
 
-            with patch("pipeline.stage_b4_conversation_patch_notes.call_mixtral_chat", side_effect=fake_patch_note):
-                run_stage_b4(
+            with patch("pipeline.stage_05_conversation_patch_notes.call_mixtral_chat", side_effect=fake_patch_note):
+                run_stage_05(
                     root / "messages.jsonl",
                     root / "segments.json",
                     root / "patch_notes.json",
@@ -446,7 +447,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertNotIn("Later HECTR role communicated to Alpha.", prompts[0])
             self.assertEqual(notes[1]["reinforces_prior_patch_note_ids"], [stable_id("conversation_patch_note", "conv_early")])
 
-    def test_stage_b4_resumes_existing_checkpoint_without_restarting(self) -> None:
+    def test_stage_05_resumes_existing_checkpoint_without_restarting(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             first = msg_row("m1", "2025-01-10T10:00:00Z", partner_label="Beta")
@@ -559,8 +560,8 @@ class PipelineV2Tests(unittest.TestCase):
                     "confidence": 0.85,
                 }
 
-            with patch("pipeline.stage_b4_conversation_patch_notes.call_mixtral_chat", side_effect=fake_patch_note):
-                run_stage_b4(
+            with patch("pipeline.stage_05_conversation_patch_notes.call_mixtral_chat", side_effect=fake_patch_note):
+                run_stage_05(
                     root / "messages.jsonl",
                     root / "segments.json",
                     root / "patch_notes.json",
@@ -574,7 +575,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual([note["conversation_id"] for note in payload["notes"]], ["conv_first", "conv_second"])
             self.assertEqual(payload["status"], "complete")
 
-    def test_stage_b4_demotes_tiny_indirect_reference_to_no_durable_development(self) -> None:
+    def test_stage_05_demotes_tiny_indirect_reference_to_no_durable_development(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             first = msg_row("m1", "2025-01-10T10:00:00Z", content="https://youtu.be/example")
@@ -608,7 +609,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(root / "config.json", {"conversation_patch_notes": {"retry_sleep_seconds": 0, "provider_retry_sleep_seconds": 0}})
 
             with patch(
-                "pipeline.stage_b4_conversation_patch_notes.call_mixtral_chat",
+                "pipeline.stage_05_conversation_patch_notes.call_mixtral_chat",
                 return_value={
                     "status": "draft",
                     "summary": "The segment suggests Alternate Reality Florida as a possible location.",
@@ -631,7 +632,7 @@ class PipelineV2Tests(unittest.TestCase):
                     "confidence": 0.8,
                 },
             ):
-                run_stage_b4(
+                run_stage_05(
                     root / "messages.jsonl",
                     root / "segments.json",
                     root / "patch_notes.json",
@@ -646,7 +647,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(note["lore_developments"], [])
             self.assertEqual(note["entity_updates"], [])
 
-    def test_stage_c_attaches_conversation_patch_note_context(self) -> None:
+    def test_stage_06_attaches_conversation_patch_note_context(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             row = msg_row("m1", "2025-01-10T10:00:00Z", content="HECTR coordinates the lab.")
@@ -665,7 +666,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_jsonl(root / "messages.jsonl", [row])
             write_json(root / "profiles.json", {"profiles": []})
             write_json(root / "seed.json", {"entities": [{"canonical_name": "HECTR", "entity_type": "character", "aliases": []}]})
-            write_json(root / "config.json", {"stage_c_anchor_provider": "conversation_metadata"})
+            write_json(root / "config.json", {"stage_06_anchor_provider": "conversation_metadata"})
             write_json(
                 root / "patch_notes.json",
                 {
@@ -685,7 +686,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            run_stage_c(
+            run_stage_06(
                 root / "messages.jsonl",
                 root / "profiles.json",
                 root / "snippets.jsonl",
@@ -714,7 +715,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("Patch note item:", snippet["display_text_normalized"])
             self.assertEqual(by_type["open_question"]["patch_item_text"], "How autonomous is HECTR?")
 
-    def test_stage_c_materializes_patch_note_items_as_evidence_snippets(self) -> None:
+    def test_stage_06_materializes_patch_note_items_as_evidence_snippets(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             first = msg_row("m1", "2025-01-10T10:00:00Z", content="HECTR coordinates the lab.")
@@ -723,7 +724,7 @@ class PipelineV2Tests(unittest.TestCase):
             second.update({"conversation_id": "conv_1", "dm_pair_id": "pair_1", "conversation_message_index": 1})
             write_jsonl(root / "messages.jsonl", [first, second])
             write_json(root / "profiles.json", {"profiles": []})
-            write_json(root / "config.json", {"stage_c_anchor_provider": "conversation_metadata"})
+            write_json(root / "config.json", {"stage_06_anchor_provider": "conversation_metadata"})
             write_json(
                 root / "patch_notes.json",
                 {
@@ -772,7 +773,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            run_stage_c(
+            run_stage_06(
                 root / "messages.jsonl",
                 root / "profiles.json",
                 root / "snippets.jsonl",
@@ -793,7 +794,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(snippets[1]["knowledge_track"], "lore")
             self.assertEqual((root / "review.jsonl").read_text(encoding="utf-8"), "")
 
-    def test_stage_c_skips_no_durable_patch_note_conversations(self) -> None:
+    def test_stage_06_skips_no_durable_patch_note_conversations(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             row = msg_row("m1", "2025-01-10T10:00:00Z", content="literally alternate reality florida")
@@ -812,7 +813,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_jsonl(root / "messages.jsonl", [row])
             write_json(root / "profiles.json", {"profiles": []})
             write_json(root / "seed.json", {"entities": []})
-            write_json(root / "config.json", {"stage_c_anchor_provider": "conversation_metadata"})
+            write_json(root / "config.json", {"stage_06_anchor_provider": "conversation_metadata"})
             write_json(
                 root / "patch_notes.json",
                 {
@@ -832,7 +833,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            run_stage_c(
+            run_stage_06(
                 root / "messages.jsonl",
                 root / "profiles.json",
                 root / "snippets.jsonl",
@@ -974,14 +975,14 @@ class PipelineV2Tests(unittest.TestCase):
                     },
                 },
                 "tasks": {
-                    "stage_f_claim_extraction": {"profile": "cheap", "batch_enabled": True},
-                    "stage_g_card_synthesis": {"profile": "claude_sonnet", "batch_enabled": False},
+                    "stage_09_claim_drafting": {"profile": "cheap", "batch_enabled": True},
+                    "stage_11_card_synthesis": {"profile": "claude_sonnet", "batch_enabled": False},
                 },
             },
         }
 
-        claim_kwargs = model_call_kwargs(config, "stage_f_claim_extraction")
-        synthesis_kwargs = model_call_kwargs(config, "stage_g_card_synthesis")
+        claim_kwargs = model_call_kwargs(config, "stage_09_claim_drafting")
+        synthesis_kwargs = model_call_kwargs(config, "stage_11_card_synthesis")
 
         self.assertEqual(claim_kwargs["api_model"], "qwen/qwen3.5-flash-02-23")
         self.assertEqual(synthesis_kwargs["provider"], "openrouter")
@@ -1022,7 +1023,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(error, "")
 
     def test_song_title_quest_domain_rule_is_in_bootstrap_prompt(self) -> None:
-        prompt = build_stage_a_prompt("Exit Music (For A Film) is the destructive path conclusion.")
+        prompt = build_stage_01_prompt("Exit Music (For A Film) is the destructive path conclusion.")
 
         self.assertIn("quest titles may be named after songs", prompt.lower())
         self.assertIn("classify it as quest", prompt.lower())
@@ -1051,7 +1052,7 @@ class PipelineV2Tests(unittest.TestCase):
             "directive_song_title_quest_names",
         )
 
-    def test_stage_b3_splits_only_after_more_than_12_hour_gap(self) -> None:
+    def test_stage_04_splits_only_after_more_than_12_hour_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             start = datetime(2026, 4, 1, 0, 0, tzinfo=timezone.utc)
@@ -1074,7 +1075,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(len(segments_payload["segments"]), 2)
             self.assertEqual(len(relevant), 4)
 
-    def test_stage_b3_uses_batch_mode_for_model_windows_when_enabled(self) -> None:
+    def test_stage_04_uses_batch_mode_for_model_windows_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1095,7 +1096,7 @@ class PipelineV2Tests(unittest.TestCase):
                     },
                     "model_routing": {
                         "profiles": {"cheap": {"provider": "gemini", "api_model": "gemini-2.5-flash-lite"}},
-                        "tasks": {"stage_b3_segmentation": {"profile": "cheap", "batch_enabled": True, "batch_max_requests": 10}},
+                        "tasks": {"stage_04_conversation_segmentation": {"profile": "cheap", "batch_enabled": True, "batch_max_requests": 10}},
                     },
                 },
             )
@@ -1123,9 +1124,9 @@ class PipelineV2Tests(unittest.TestCase):
                     }
                 }
 
-            with patch("pipeline.stage_b3_segment_conversations.call_gemini_batch_json", side_effect=fake_batch) as batch:
-                with patch("pipeline.stage_b3_segment_conversations.call_mixtral_chat", side_effect=AssertionError("sync model should not be used")):
-                    run_stage_b3(
+            with patch("pipeline.stage_04_conversation_segmentation.call_gemini_batch_json", side_effect=fake_batch) as batch:
+                with patch("pipeline.stage_04_conversation_segmentation.call_mixtral_chat", side_effect=AssertionError("sync model should not be used")):
+                    run_stage_04(
                         root / "messages.jsonl",
                         root / "relevant.jsonl",
                         root / "segments.json",
@@ -1141,7 +1142,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(index["relevant_segments"], 1)
             self.assertEqual(index["failed_model_windows"], 0)
 
-    def test_stage_b3_drops_irrelevant_model_returned_spans(self) -> None:
+    def test_stage_04_drops_irrelevant_model_returned_spans(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [msg_row("m1", "2026-04-01T00:00:00Z", content="HECTR aside in otherwise irrelevant chatter.")]
@@ -1155,7 +1156,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(segments_payload["segments"], [])
             self.assertEqual(index["failed_model_windows"], 0)
 
-    def test_stage_b3_generic_seed_tokens_do_not_create_direct_signal(self) -> None:
+    def test_stage_04_generic_seed_tokens_do_not_create_direct_signal(self) -> None:
         rows = [
             msg_row(
                 "m1",
@@ -1191,7 +1192,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(segments, [])
         self.assertEqual(relevance_events[0]["reason"], "missing_direct_theriac_signal")
 
-    def test_stage_b3_keeps_lore_and_meta_topic_shift_segments(self) -> None:
+    def test_stage_04_keeps_lore_and_meta_topic_shift_segments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1217,7 +1218,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(tracks, ["lore", "meta"])
             self.assertEqual(len({segment["conversation_id"] for segment in segments_payload["segments"]}), 2)
 
-    def test_stage_b3_different_dm_pairs_never_merge(self) -> None:
+    def test_stage_04_different_dm_pairs_never_merge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1238,7 +1239,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(len({segment["dm_pair_id"] for segment in segments_payload["segments"]}), 2)
             self.assertEqual({segment["partner_label"] for segment in segments_payload["segments"]}, {"Alice", "Bob"})
 
-    def test_stage_b3_bot_author_does_not_change_dm_pair(self) -> None:
+    def test_stage_04_bot_author_does_not_change_dm_pair(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1256,7 +1257,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertNotIn("bot", set(segments_payload["segments"][0]["participant_ids"]))
             self.assertEqual(len({row["dm_pair_id"] for row in relevant}), 1)
 
-    def test_stage_b3_accepts_model_returned_message_indexes(self) -> None:
+    def test_stage_04_accepts_model_returned_message_indexes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1288,7 +1289,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual([row["message_id"] for row in relevant], ["m1", "m2"])
             self.assertEqual(segments_payload["segments"][0]["message_ids"], ["m1", "m2"])
 
-    def test_stage_b3_accepts_numeric_message_id_fields_as_indexes(self) -> None:
+    def test_stage_04_accepts_numeric_message_id_fields_as_indexes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1319,7 +1320,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual([row["message_id"] for row in relevant], ["m1", "m2"])
             self.assertEqual(segments_payload["segments"][0]["message_ids"], ["m1", "m2"])
 
-    def test_stage_b3_reports_and_handles_overlapping_model_segments(self) -> None:
+    def test_stage_04_reports_and_handles_overlapping_model_segments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1393,7 +1394,7 @@ class PipelineV2Tests(unittest.TestCase):
             )
             self.assertEqual(segments_payload["overlap_diagnostics"][-1]["materialized_message_ids"], ["m4"])
 
-    def test_stage_b3_relevance_gate_drops_external_media_without_theriac_tie(self) -> None:
+    def test_stage_04_relevance_gate_drops_external_media_without_theriac_tie(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1437,7 +1438,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "Evangelion Discussion",
             )
 
-    def test_stage_b3_relevance_gate_keeps_external_inspiration_with_seed_anchor(self) -> None:
+    def test_stage_04_relevance_gate_keeps_external_inspiration_with_seed_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1473,7 +1474,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(segments_payload["segments"][0]["relevance_type"], "direct_inspiration")
             self.assertEqual(index["model_segments_dropped_by_relevance"], 0)
 
-    def test_stage_b3_relevance_gate_accepts_distinctive_seed_name_token(self) -> None:
+    def test_stage_04_relevance_gate_accepts_distinctive_seed_name_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1509,7 +1510,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(segments_payload["segments"][0]["anchor_entities"], ["Enoch Faust Ersetzen"])
             self.assertEqual(index["model_segments_dropped_by_relevance"], 0)
 
-    def test_stage_b3_failure_records_model_window_count_and_payload_preview(self) -> None:
+    def test_stage_04_failure_records_model_window_count_and_payload_preview(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1547,9 +1548,9 @@ class PipelineV2Tests(unittest.TestCase):
                 ]
             }
 
-            with patch("pipeline.stage_b3_segment_conversations.call_mixtral_chat", side_effect=[invalid_payload, {"segments": []}]):
+            with patch("pipeline.stage_04_conversation_segmentation.call_mixtral_chat", side_effect=[invalid_payload, {"segments": []}]):
                 with self.assertRaises(RuntimeError):
-                    run_stage_b3(
+                    run_stage_04(
                         root / "messages.jsonl",
                         root / "relevant.jsonl",
                         root / "segments.json",
@@ -1568,7 +1569,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("outside", failure["error"])
             self.assertIn("payload_preview", failure["error"])
 
-    def test_stage_b3_checkpoints_completed_model_windows_before_interrupt(self) -> None:
+    def test_stage_04_checkpoints_completed_model_windows_before_interrupt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             rows = [
@@ -1592,9 +1593,9 @@ class PipelineV2Tests(unittest.TestCase):
                 ]
             }
 
-            with patch("pipeline.stage_b3_segment_conversations.call_mixtral_chat", side_effect=[first_payload, KeyboardInterrupt]):
+            with patch("pipeline.stage_04_conversation_segmentation.call_mixtral_chat", side_effect=[first_payload, KeyboardInterrupt]):
                 with self.assertRaises(KeyboardInterrupt):
-                    run_stage_b3(
+                    run_stage_04(
                         root / "messages.jsonl",
                         root / "relevant.jsonl",
                         root / "segments.json",
@@ -1612,7 +1613,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(relevant[0]["conversation_anchor_entities"], ["HECTR"])
             self.assertEqual(index["relevant_segments"], 1)
 
-    def test_stage_c_context_windows_do_not_cross_conversation_id(self) -> None:
+    def test_stage_06_context_windows_do_not_cross_conversation_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_jsonl(
@@ -1637,7 +1638,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            run_stage_c(
+            run_stage_06(
                 root / "messages.jsonl",
                 root / "profiles.json",
                 root / "snippets.jsonl",
@@ -1655,7 +1656,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(by_id["m1"]["conversation_id"], "conv_1")
             self.assertEqual(by_id["m2"]["conversation_id"], "conv_2")
 
-    def test_stage_c_uses_conversation_metadata_without_per_message_model_call(self) -> None:
+    def test_stage_06_uses_conversation_metadata_without_per_message_model_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_jsonl(
@@ -1688,8 +1689,8 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            with patch("pipeline.stage_c_extract.call_mixtral_chat", side_effect=AssertionError("Stage 06 should not call the model")) as mocked_model:
-                run_stage_c(
+            with patch("pipeline.stage_06_snippet_extraction.call_mixtral_chat", side_effect=AssertionError("Stage 06 should not call the model")) as mocked_model:
+                run_stage_06(
                     root / "messages.jsonl",
                     root / "profiles.json",
                     root / "snippets.jsonl",
@@ -1707,7 +1708,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("provider=conversation_metadata", snippets[0]["relevance_reason"])
             self.assertIn("HECTR", snippets[0]["candidate_entities"])
 
-    def test_stage_a_outputs_entity_seeds_not_canonical_cards(self) -> None:
+    def test_stage_01_outputs_entity_seeds_not_canonical_cards(self) -> None:
         entities = infer_entities("HECTR. PROJECT OVERVIEW. REMAINING QUESTIONS. JOY ROBERTS.")
         names = {entity["canonical_name"] for entity in entities}
 
@@ -1793,7 +1794,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(entities[0]["entity_type"], "character")
         self.assertEqual(entities[0]["aliases"], ["Enoch Faust Ersetzen"])
 
-    def test_stage_e_promotes_only_currently_observed_seed_entities(self) -> None:
+    def test_stage_07_promotes_only_currently_observed_seed_entities(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -1820,7 +1821,7 @@ class PipelineV2Tests(unittest.TestCase):
                 ],
             )
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -1836,7 +1837,7 @@ class PipelineV2Tests(unittest.TestCase):
                 {"Late Development Entity", "RUINR"},
             )
 
-    def test_stage_e_candidate_metadata_can_map_literal_concise_entity_anchor(self) -> None:
+    def test_stage_07_candidate_metadata_can_map_literal_concise_entity_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -1868,7 +1869,7 @@ class PipelineV2Tests(unittest.TestCase):
                 ],
             )
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -1884,7 +1885,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(timelines[entity_id][0]["match_type"], "candidate_entity_metadata")
             self.assertEqual(json.loads((root / "aliases.json").read_text(encoding="utf-8"))["aliases"], [])
 
-    def test_stage_e_ignores_unbacked_candidate_metadata_anchor(self) -> None:
+    def test_stage_07_ignores_unbacked_candidate_metadata_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -1915,7 +1916,7 @@ class PipelineV2Tests(unittest.TestCase):
                 ],
             )
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -1928,7 +1929,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(payload["resolved_entities"], [])
             self.assertEqual(payload["seed_only_entities"][0]["canonical_name"], "Path A: Destructive Path")
 
-    def test_stage_e_proposes_text_observed_conversation_entity_not_in_seed(self) -> None:
+    def test_stage_07_proposes_text_observed_conversation_entity_not_in_seed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -1956,7 +1957,7 @@ class PipelineV2Tests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                run_stage_e(
+                run_stage_07(
                     root / "snippets.jsonl",
                     root / "entity_seed.json",
                     root / "aliases.json",
@@ -1974,7 +1975,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(proposals[0]["proposed_entity_type"], "quest")
             self.assertEqual(proposals[0]["review_status"], "pending")
 
-    def test_stage_e_proposes_entity_from_patch_note_evidence_text(self) -> None:
+    def test_stage_07_proposes_entity_from_patch_note_evidence_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2002,7 +2003,7 @@ class PipelineV2Tests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                run_stage_e(
+                run_stage_07(
                     root / "snippets.jsonl",
                     root / "entity_seed.json",
                     root / "aliases.json",
@@ -2018,7 +2019,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(proposal["proposed_entity_type"], "character")
             self.assertIn("Loss / classification_change", proposal["sample_texts"][0])
 
-    def test_stage_e_triages_low_evidence_phrase_to_candidate_inventory(self) -> None:
+    def test_stage_07_triages_low_evidence_phrase_to_candidate_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2038,7 +2039,7 @@ class PipelineV2Tests(unittest.TestCase):
                 ],
             )
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -2054,7 +2055,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(payload["candidate_inventory"][0]["candidate_name"], "Impactful Consequences")
             self.assertEqual(payload["candidate_inventory"][0]["triage_status"], "candidate_inventory")
 
-    def test_stage_e_triages_team_contributor_to_meta_inventory(self) -> None:
+    def test_stage_07_triages_team_contributor_to_meta_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2082,7 +2083,7 @@ class PipelineV2Tests(unittest.TestCase):
                 )
             write_jsonl(root / "snippets.jsonl", rows)
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -2100,7 +2101,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("project/team contributor", payload["candidate_inventory"][0]["triage_reason"])
             self.assertEqual(payload["candidate_inventory"][0]["knowledge_track_counts"], {"lore": 5})
 
-    def test_stage_e_triages_external_media_characters_to_inventory(self) -> None:
+    def test_stage_07_triages_external_media_characters_to_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2139,7 +2140,7 @@ class PipelineV2Tests(unittest.TestCase):
                     )
             write_jsonl(root / "snippets.jsonl", rows)
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -2159,7 +2160,7 @@ class PipelineV2Tests(unittest.TestCase):
                 self.assertEqual(item["triage_status"], "candidate_inventory")
                 self.assertIn("external-media", item["triage_reason"])
 
-    def test_stage_e_keeps_external_name_for_review_when_adopted_into_theriac(self) -> None:
+    def test_stage_07_keeps_external_name_for_review_when_adopted_into_theriac(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2186,7 +2187,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_jsonl(root / "snippets.jsonl", rows)
 
             with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                run_stage_e(
+                run_stage_07(
                     root / "snippets.jsonl",
                     root / "entity_seed.json",
                     root / "aliases.json",
@@ -2201,7 +2202,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(payload["proposals"][0]["candidate_name"], "Erra")
             self.assertEqual(payload["proposals"][0]["triage_status"], "review_required")
 
-    def test_stage_e_triages_reference_inspirations_to_inventory(self) -> None:
+    def test_stage_07_triages_reference_inspirations_to_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2234,7 +2235,7 @@ class PipelineV2Tests(unittest.TestCase):
                     )
             write_jsonl(root / "snippets.jsonl", rows)
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -2254,7 +2255,7 @@ class PipelineV2Tests(unittest.TestCase):
                 self.assertEqual(item["triage_status"], "candidate_inventory")
                 self.assertIn("reference/inspiration", item["triage_reason"])
 
-    def test_stage_e_keeps_reference_name_for_review_when_adopted_into_theriac(self) -> None:
+    def test_stage_07_keeps_reference_name_for_review_when_adopted_into_theriac(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2284,7 +2285,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_jsonl(root / "snippets.jsonl", rows)
 
             with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                run_stage_e(
+                run_stage_07(
                     root / "snippets.jsonl",
                     root / "entity_seed.json",
                     root / "aliases.json",
@@ -2299,7 +2300,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(payload["proposals"][0]["candidate_name"], "Adam Smasher")
             self.assertEqual(payload["proposals"][0]["triage_status"], "review_required")
 
-    def test_stage_e_approved_candidate_alias_attaches_to_existing_entity(self) -> None:
+    def test_stage_07_approved_candidate_alias_attaches_to_existing_entity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -2352,7 +2353,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -2372,7 +2373,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(memory["approved_conversation_entities"][0]["candidate_name"], "Fear")
             self.assertEqual(memory["approved_conversation_entities"][0]["canonical_name"], "Oyuun")
 
-    def test_stage_e_model_alias_resolution_prefills_review_proposal(self) -> None:
+    def test_stage_07_model_alias_resolution_prefills_review_proposal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -2414,7 +2415,7 @@ class PipelineV2Tests(unittest.TestCase):
                     "model_routing": {
                         "profiles": {"flash_regular": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
                         "tasks": {
-                            "stage_e_alias_resolution": {
+                            "stage_07_entity_resolution": {
                                 "profile": "flash_regular",
                                 "enabled": True,
                                 "max_evidence_per_call": 10,
@@ -2425,7 +2426,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            with patch("pipeline.stage_e_alias.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
                 mock_model.return_value = {
                     "alias_mappings": [
                         {
@@ -2440,7 +2441,7 @@ class PipelineV2Tests(unittest.TestCase):
                     ]
                 }
                 with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                    run_stage_e(
+                    run_stage_07(
                         root / "snippets.jsonl",
                         root / "entity_seed.json",
                         root / "aliases.json",
@@ -2468,7 +2469,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(rows[0]["raw_candidate_name"], "Loss")
             self.assertEqual(rows[0]["canonical_name"], "Enoch")
 
-    def test_stage_e_decision_rerun_skips_prior_alias_grouping(self) -> None:
+    def test_stage_07_decision_rerun_skips_prior_alias_grouping(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -2544,15 +2545,15 @@ class PipelineV2Tests(unittest.TestCase):
                 {
                     "model_routing": {
                         "profiles": {"flash_regular": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
-                        "tasks": {"stage_e_alias_resolution": {"profile": "flash_regular", "enabled": True}},
+                        "tasks": {"stage_07_entity_resolution": {"profile": "flash_regular", "enabled": True}},
                     },
                     "mixtral": {"provider": "gemini", "timeout_seconds": 60},
                 },
             )
 
-            with patch("pipeline.stage_e_alias.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
                 mock_model.side_effect = AssertionError("alias grouping should not rerun after decisions")
-                run_stage_e(
+                run_stage_07(
                     root / "snippets.jsonl",
                     root / "entity_seed.json",
                     root / "aliases.json",
@@ -2571,7 +2572,7 @@ class PipelineV2Tests(unittest.TestCase):
             aliases = json.loads((root / "aliases.json").read_text(encoding="utf-8"))["aliases"]
             self.assertTrue(any(alias["alias_text"] == "Loss" for alias in aliases))
 
-    def test_stage_e_model_candidate_alias_resolution_handles_name_variants(self) -> None:
+    def test_stage_07_model_candidate_alias_resolution_handles_name_variants(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -2613,7 +2614,7 @@ class PipelineV2Tests(unittest.TestCase):
                     "model_routing": {
                         "profiles": {"flash_regular": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
                         "tasks": {
-                            "stage_e_alias_resolution": {
+                            "stage_07_entity_resolution": {
                                 "profile": "flash_regular",
                                 "enabled": True,
                                 "max_evidence_per_call": 10,
@@ -2625,7 +2626,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            with patch("pipeline.stage_e_alias.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
                 mock_model.return_value = {
                     "alias_mappings": [
                         {
@@ -2640,7 +2641,7 @@ class PipelineV2Tests(unittest.TestCase):
                     ]
                 }
                 with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                    run_stage_e(
+                    run_stage_07(
                         root / "snippets.jsonl",
                         root / "entity_seed.json",
                         root / "aliases.json",
@@ -2660,7 +2661,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("llm_candidate_alias_resolution", proposal["proposal_kinds"])
             self.assertIn("alias/rename evidence", proposal["triage_reason"])
 
-    def test_stage_e_model_candidate_alias_resolution_accepts_list_response(self) -> None:
+    def test_stage_07_model_candidate_alias_resolution_accepts_list_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -2701,7 +2702,7 @@ class PipelineV2Tests(unittest.TestCase):
                 {
                     "model_routing": {
                         "tasks": {
-                            "stage_e_alias_resolution": {
+                            "stage_07_entity_resolution": {
                                 "enabled": True,
                                 "max_candidates_per_call": 10,
                             }
@@ -2711,7 +2712,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            with patch("pipeline.stage_e_alias.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
                 mock_model.return_value = [
                     {
                         "alias_text": "Enoch Faust Ersatzen",
@@ -2724,7 +2725,7 @@ class PipelineV2Tests(unittest.TestCase):
                     }
                 ]
                 with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                    run_stage_e(
+                    run_stage_07(
                         root / "snippets.jsonl",
                         root / "entity_seed.json",
                         root / "aliases.json",
@@ -2740,7 +2741,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(payload["triage_summary"]["alias_resolution_failures"], 0)
             self.assertEqual(payload["proposals"][0]["suggested_canonical_name"], "Enoch")
 
-    def test_stage_e_model_candidate_alias_resolution_accepts_provider_list_wrapper(self) -> None:
+    def test_stage_07_model_candidate_alias_resolution_accepts_provider_list_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -2776,9 +2777,9 @@ class PipelineV2Tests(unittest.TestCase):
                     }
                 ],
             )
-            write_json(root / "config.json", {"model_routing": {"tasks": {"stage_e_alias_resolution": {"enabled": True}}}})
+            write_json(root / "config.json", {"model_routing": {"tasks": {"stage_07_entity_resolution": {"enabled": True}}}})
 
-            with patch("pipeline.stage_e_alias.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
                 mock_model.return_value = {
                     "_json_root": [
                         {
@@ -2791,7 +2792,7 @@ class PipelineV2Tests(unittest.TestCase):
                     ]
                 }
                 with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                    run_stage_e(
+                    run_stage_07(
                         root / "snippets.jsonl",
                         root / "entity_seed.json",
                         root / "aliases.json",
@@ -2807,7 +2808,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(payload["triage_summary"]["alias_resolution_failures"], 0)
             self.assertEqual(payload["proposals"][0]["suggested_canonical_name"], "Enoch")
 
-    def test_stage_e_reconsiders_candidate_type_from_aggregated_usage(self) -> None:
+    def test_stage_07_reconsiders_candidate_type_from_aggregated_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2868,7 +2869,7 @@ class PipelineV2Tests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                run_stage_e(
+                run_stage_07(
                     root / "snippets.jsonl",
                     root / "entity_seed.json",
                     root / "aliases.json",
@@ -2886,7 +2887,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("theme", {item["entity_type"] for item in proposal["type_conflicts"]})
             self.assertIn("reconsidered", proposal["type_review_notes"])
 
-    def test_stage_e_recent_specific_character_evidence_reaches_review_with_four_mentions(self) -> None:
+    def test_stage_07_recent_specific_character_evidence_reaches_review_with_four_mentions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2927,7 +2928,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_jsonl(root / "snippets.jsonl", rows)
 
             with self.assertRaisesRegex(RuntimeError, "conversation entity proposal"):
-                run_stage_e(
+                run_stage_07(
                     root / "snippets.jsonl",
                     root / "entity_seed.json",
                     root / "aliases.json",
@@ -2947,7 +2948,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("Old General", inventory_by_name)
             self.assertEqual(inventory_by_name["Old General"]["recency_evidence_multiplier"], 1.0)
 
-    def test_stage_e_approved_conversation_entity_promotes_to_resolved_and_groups(self) -> None:
+    def test_stage_07_approved_conversation_entity_promotes_to_resolved_and_groups(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -2984,7 +2985,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -2994,7 +2995,7 @@ class PipelineV2Tests(unittest.TestCase):
                 root / "conversation_entity_proposals.json",
                 root / "conversation_entity_decisions.json",
             )
-            run_stage_d(
+            run_stage_08(
                 root / "snippets.jsonl",
                 root / "resolved_entities.json",
                 root / "lore_clusters.json",
@@ -3009,7 +3010,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(payload["resolved_entities"][0]["resolution_status"], "conversation_candidate_approved")
             self.assertEqual(clusters[0]["cluster_key"], "The Glass Orchard")
 
-    def test_stage_e_persists_conversation_entity_decisions_to_memory(self) -> None:
+    def test_stage_07_persists_conversation_entity_decisions_to_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -3070,7 +3071,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -3085,7 +3086,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(memory["approved_conversation_entities"][0]["canonical_name"], "The Glass Orchard")
 
             write_json(root / "conversation_entity_decisions.json", {"decisions": []})
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases_2.json",
@@ -3100,7 +3101,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual([entity["canonical_name"] for entity in payload["resolved_entities"]], ["The Glass Orchard"])
             self.assertEqual(proposals, [])
 
-    def test_stage_e_persists_rejected_conversation_entity_and_suppresses_future_proposal(self) -> None:
+    def test_stage_07_persists_rejected_conversation_entity_and_suppresses_future_proposal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "entity_seed.json", {"entities": []})
@@ -3149,7 +3150,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases.json",
@@ -3163,7 +3164,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(memory["rejected_conversation_entities"][0]["candidate_name"], "Moodboard Alpha")
 
             write_json(root / "conversation_entity_decisions.json", {"decisions": []})
-            run_stage_e(
+            run_stage_07(
                 root / "snippets.jsonl",
                 root / "entity_seed.json",
                 root / "aliases_2.json",
@@ -3176,7 +3177,7 @@ class PipelineV2Tests(unittest.TestCase):
             proposals = json.loads((root / "conversation_entity_proposals_2.json").read_text(encoding="utf-8"))["proposals"]
             self.assertEqual(proposals, [])
 
-    def test_stage_d_uses_entity_anchors_instead_of_first_word_clusters(self) -> None:
+    def test_stage_08_uses_entity_anchors_instead_of_first_word_clusters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3214,7 +3215,7 @@ class PipelineV2Tests(unittest.TestCase):
                 ],
             )
 
-            run_stage_d(
+            run_stage_08(
                 root / "snippets.jsonl",
                 root / "resolved_entities.json",
                 root / "lore_clusters.json",
@@ -3226,7 +3227,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("unmapped", keys)
             self.assertNotIn("and", keys)
 
-    def test_stage_f_prompt_preserves_external_references_as_inspiration_claims(self) -> None:
+    def test_stage_09_prompt_preserves_external_references_as_inspiration_claims(self) -> None:
         prompt = build_claim_extraction_prompt(
             {"canonical_name": "Golok", "entity_type": "character"},
             {"cluster_id": "cluster_golok", "cluster_key": "Golok"},
@@ -3242,7 +3243,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertIn('claim_type "inspiration"', prompt)
         self.assertIn("should not become card subjects", prompt)
 
-    def test_stage_f_extracts_atomic_claims_without_raw_append(self) -> None:
+    def test_stage_09_extracts_atomic_claims_without_raw_append(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3286,8 +3287,8 @@ class PipelineV2Tests(unittest.TestCase):
             )
             write_json(root / "memory.json", {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
 
-            with patch("pipeline.stage_f_draft.call_mixtral_chat", return_value={"claims": [{"claim_text": "HECTR is a template ancestor for Krypteia AI systems.", "claim_type": "relationship", "source_snippet_ids": ["s1"], "confidence": 0.82, "contradiction_notes": ""}]}):
-                run_stage_f(
+            with patch("pipeline.stage_09_claim_drafting.call_mixtral_chat", return_value={"claims": [{"claim_text": "HECTR is a template ancestor for Krypteia AI systems.", "claim_type": "relationship", "source_snippet_ids": ["s1"], "confidence": 0.82, "contradiction_notes": ""}]}):
+                run_stage_09(
                     root / "resolved_entities.json",
                     root / "lore_clusters.json",
                     root / "meta_clusters.json",
@@ -3304,7 +3305,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertNotIn("proposed_summary_append", claims[0])
             self.assertEqual(claims[0]["source_snippet_ids"], ["s1"])
 
-    def test_stage_f_uses_batch_mode_for_claim_extraction_when_enabled(self) -> None:
+    def test_stage_09_uses_batch_mode_for_claim_extraction_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3344,7 +3345,7 @@ class PipelineV2Tests(unittest.TestCase):
                 {
                     "model_routing": {
                         "profiles": {"cheap": {"provider": "gemini", "api_model": "gemini-2.5-flash-lite"}},
-                        "tasks": {"stage_f_claim_extraction": {"profile": "cheap", "batch_enabled": True, "batch_max_requests": 10}},
+                        "tasks": {"stage_09_claim_drafting": {"profile": "cheap", "batch_enabled": True, "batch_max_requests": 10}},
                     }
                 },
             )
@@ -3369,9 +3370,9 @@ class PipelineV2Tests(unittest.TestCase):
                     }
                 }
 
-            with patch("pipeline.stage_f_draft.call_gemini_batch_json", side_effect=fake_batch) as batch:
-                with patch("pipeline.stage_f_draft.call_mixtral_chat", side_effect=AssertionError("sync model should not be used")):
-                    run_stage_f(
+            with patch("pipeline.stage_09_claim_drafting.call_gemini_batch_json", side_effect=fake_batch) as batch:
+                with patch("pipeline.stage_09_claim_drafting.call_mixtral_chat", side_effect=AssertionError("sync model should not be used")):
+                    run_stage_09(
                         root / "resolved_entities.json",
                         root / "lore_clusters.json",
                         root / "meta_clusters.json",
@@ -3387,7 +3388,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(len(claims), 1)
             self.assertEqual(claims[0]["claim_text"], "HECTR is a template ancestor for Krypteia AI systems.")
 
-    def test_stage_f_logs_failed_claim_extraction_and_continues(self) -> None:
+    def test_stage_09_logs_failed_claim_extraction_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3440,13 +3441,13 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(root / "config.json", {"mixtral": {"claim_extraction_validation_retries": 0}})
 
             with patch(
-                "pipeline.stage_f_draft.call_mixtral_chat",
+                "pipeline.stage_09_claim_drafting.call_mixtral_chat",
                 side_effect=[
                     {"not_claims": []},
                     {"claims": [{"claim_text": "HECTR is related to Krypteia AI systems.", "claim_type": "relationship", "confidence": 0.82, "contradiction_notes": ""}]},
                 ],
             ):
-                run_stage_f(
+                run_stage_09(
                     root / "resolved_entities.json",
                     root / "lore_clusters.json",
                     root / "meta_clusters.json",
@@ -3464,7 +3465,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(len(failures), 1)
             self.assertEqual(failures[0]["reason"], "model_claim_extraction_failed")
 
-    def test_stage_g_synthesizes_drafts_and_requires_card_approval_for_canon(self) -> None:
+    def test_stage_11_synthesizes_drafts_and_requires_card_approval_for_canon(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3509,8 +3510,8 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["claim1"], "background": ["claim1"], "role_in_story": ["claim1"], "relationships": ["claim1"], "timeline": [], "open_questions": []},
             }
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -3531,8 +3532,8 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(canonical_cards, [])
 
             write_json(root / "card_decisions.json", {"decisions": [{"card_id": "card_hectr", "decision": "approve", "reviewer": "r", "rationale": "canon"}]})
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -3551,7 +3552,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertNotIn("lore_bible_seed", canonical_cards[0]["source_evidence"])
             self.assertEqual(canonical_cards[0]["details"]["support_map"]["summary"], ["claim1"])
 
-    def test_stage_g_card_synthesis_prompt_requests_full_fandom_wiki_style_entry(self) -> None:
+    def test_stage_11_card_synthesis_prompt_requests_full_fandom_wiki_style_entry(self) -> None:
         prompt = build_card_synthesis_prompt(
             {"canonical_name": "HECTR", "entity_type": "character"},
             [{"claim_id": "claim1", "claim_text": "HECTR matters to Krypteia.", "claim_type": "relationship"}],
@@ -3565,7 +3566,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertIn("Word target plan", prompt)
         self.assertIn("section_word_targets", prompt)
 
-    def test_stage_g_detects_long_verbatim_claim_reuse_in_card_prose(self) -> None:
+    def test_stage_11_detects_long_verbatim_claim_reuse_in_card_prose(self) -> None:
         claim_text = (
             "HECTR is the supervising intelligence that anchors the Krypteia lab sequence "
             "and frames the player's first contact with the system."
@@ -3598,7 +3599,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(reused, ["claim_verbatim"])
         self.assertEqual(paraphrased, [])
 
-    def test_stage_g_accepts_author_claims_for_card_refactoring(self) -> None:
+    def test_stage_11_accepts_author_claims_for_card_refactoring(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3657,8 +3658,8 @@ class PipelineV2Tests(unittest.TestCase):
                 prompts.append(prompt)
                 return model_card
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", side_effect=fake_model):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", side_effect=fake_model):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -3679,7 +3680,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(draft_card["details"]["support_map"]["summary"], ["author_claim_tunnel_mycelium"])
             self.assertEqual(memory["accepted_claims"][0]["claim_id"], "author_claim_tunnel_mycelium")
 
-    def test_stage_g_card_synthesis_prompt_includes_original_source_snippet_context(self) -> None:
+    def test_stage_11_card_synthesis_prompt_includes_original_source_snippet_context(self) -> None:
         prompt = build_card_synthesis_prompt(
             {"canonical_name": "HECTR", "entity_type": "character"},
             [
@@ -3710,7 +3711,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertIn("HECTR watches the lab sequence", prompt)
         self.assertIn("Do not merely summarize summaries", prompt)
 
-    def test_stage_g_card_synthesis_prompt_scales_word_targets_for_developed_entities(self) -> None:
+    def test_stage_11_card_synthesis_prompt_scales_word_targets_for_developed_entities(self) -> None:
         claims = [
             {"claim_id": f"claim{i}", "claim_text": f"Enoch development detail {i}.", "claim_type": "role"}
             for i in range(1, 10)
@@ -3721,7 +3722,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertIn('"max": 800', prompt)
         self.assertIn("Heavily developed characters", prompt)
 
-    def test_stage_g_draft_cards_include_wiki_links_to_related_cards(self) -> None:
+    def test_stage_11_draft_cards_include_wiki_links_to_related_cards(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3775,8 +3776,8 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["claim_link"], "background": ["claim_link"], "role_in_story": [], "relationships": ["claim_link"], "timeline": [], "inspirations": [], "open_questions": []},
             }
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -3794,7 +3795,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(draft_card["details"]["wiki_links"][0]["target_card_id"], "card_krypteia")
             self.assertIn("section_word_counts", draft_card["details"])
 
-    def test_stage_g_writes_inspiration_section_from_accepted_inspiration_claims(self) -> None:
+    def test_stage_11_writes_inspiration_section_from_accepted_inspiration_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3861,8 +3862,8 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             }
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -3880,7 +3881,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(draft_cards[0]["details"]["support_map"]["inspirations"], ["claim_inspiration"])
             self.assertEqual(draft_cards[0]["source_evidence"], ["s_inspiration"])
 
-    def test_stage_g_revises_from_full_accepted_claim_history(self) -> None:
+    def test_stage_11_revises_from_full_accepted_claim_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -3955,8 +3956,8 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["old_claim", "new_claim"], "background": ["old_claim"], "role_in_story": ["new_claim"], "relationships": [], "timeline": [], "open_questions": [], "resolved_conflicts": [], "unresolved_conflicts": []},
             }
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -3976,7 +3977,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(by_id["card_hectr"]["source_evidence"], ["new_snip", "old_snip"])
             self.assertEqual(by_id["card_hectr"]["details"]["accepted_claim_ids"], ["old_claim", "new_claim"])
 
-    def test_stage_g_stores_accepted_alias_claims_for_future_resolution(self) -> None:
+    def test_stage_11_stores_accepted_alias_claims_for_future_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -4022,8 +4023,8 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["alias_claim"], "background": ["alias_claim"], "role_in_story": [], "relationships": [], "timeline": [], "open_questions": [], "resolved_conflicts": [], "unresolved_conflicts": []},
             }
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -4040,7 +4041,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(memory["approved_aliases"][0]["alias_text"], "the Warden")
             self.assertEqual(memory["approved_aliases"][0]["canonical_name"], "HECTR")
 
-    def test_stage_g_requires_review_then_applies_identity_merge_from_rename_claim(self) -> None:
+    def test_stage_10_requires_review_then_stage_11_applies_identity_merge_from_rename_claim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -4106,18 +4107,15 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(root / "directives.json", {"directives": []})
             write_json(root / "memory.json", {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat") as model:
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat") as model:
                 with self.assertRaisesRegex(RuntimeError, "identity cluster proposal"):
-                    run_stage_g(
+                    run_stage_10(
                         root / "resolved_entities.json",
                         root / "claim_drafts.json",
                         root / "claim_decisions.json",
-                        root / "card_decisions.json",
-                        root / "directives.json",
                         root / "memory.json",
-                        root / "card_drafts.json",
-                        root / "canonical_cards.json",
-                        root / "merge_log.jsonl",
+                        root / "identity_merge_proposals.json",
+                        root / "identity_merge_decisions.json",
                         None,
                     )
                 model.assert_not_called()
@@ -4144,6 +4142,15 @@ class PipelineV2Tests(unittest.TestCase):
                     ]
                 },
             )
+            run_stage_10(
+                root / "resolved_entities.json",
+                root / "claim_drafts.json",
+                root / "claim_decisions.json",
+                root / "memory.json",
+                root / "identity_merge_proposals.json",
+                root / "identity_merge_decisions.json",
+                None,
+            )
             model_card = {
                 "summary": "RUINR is introduced through a neurally integrated suit sequence, after beginning as ACHILLES.",
                 "sections": {
@@ -4169,8 +4176,8 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             }
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -4195,7 +4202,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(memory["entity_merges"][0]["target_entity_name"], "RUINR")
             self.assertEqual(memory["approved_aliases"][0]["alias_text"], "ACHILLES")
 
-    def test_stage_g_collates_identity_chain_into_one_canonical_cluster(self) -> None:
+    def test_stage_11_collates_identity_chain_into_one_canonical_cluster(self) -> None:
         entities = [
             {
                 "entity_id": "entity_loss",
@@ -4245,7 +4252,7 @@ class PipelineV2Tests(unittest.TestCase):
             "model_routing": {
                 "default_profile": "claude_sonnet",
                 "profiles": {"claude_sonnet": {"provider": "anthropic", "api_model": "claude-sonnet-4-6"}},
-                "tasks": {"stage_g_identity_merge_cluster_judgement": {"profile": "claude_sonnet"}},
+                "tasks": {"stage_10_identity_merge_cluster_judgement": {"profile": "claude_sonnet"}},
             },
             "mixtral": {"synthesis_provider_retries": 0},
         }
@@ -4266,7 +4273,7 @@ class PipelineV2Tests(unittest.TestCase):
                 }
             ]
         }
-        with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=judgement):
+        with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=judgement):
             proposals = _build_identity_cluster_proposals(edges, entities, config)
 
         self.assertEqual(len(proposals), 1)
@@ -4280,7 +4287,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertIn("Loss", proposal["alias_texts"])
         self.assertIn("Enoch Faust Ersatzen", proposal["formal_names"])
 
-    def test_stage_g_rejects_unsupported_acronym_expansion(self) -> None:
+    def test_stage_11_rejects_unsupported_acronym_expansion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -4325,9 +4332,9 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["claim1"], "background": ["claim1"], "role_in_story": [], "relationships": [], "timeline": [], "open_questions": []},
             }
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
                 with self.assertRaisesRegex(RuntimeError, "unsupported acronym expansion"):
-                    run_stage_g(
+                    run_stage_11(
                         root / "resolved_entities.json",
                         root / "claim_drafts.json",
                         root / "claim_decisions.json",
@@ -4340,7 +4347,7 @@ class PipelineV2Tests(unittest.TestCase):
                         None,
                     )
 
-    def test_stage_g_acronym_guard_allows_parenthetical_continuity(self) -> None:
+    def test_stage_11_acronym_guard_allows_parenthetical_continuity(self) -> None:
         entity = {"canonical_name": "ACHILLES", "aliases": []}
         claims = [
             {
@@ -4355,7 +4362,7 @@ class PipelineV2Tests(unittest.TestCase):
 
         self.assertEqual(find_unsupported_acronym_expansions(entity, claims, {}, synthesis), [])
 
-    def test_stage_g_drops_unclaimed_open_questions(self) -> None:
+    def test_stage_11_drops_unclaimed_open_questions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -4400,8 +4407,8 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["claim1"], "background": ["claim1"], "role_in_story": [], "relationships": [], "timeline": [], "open_questions": ["claim1"]},
             }
 
-            with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=model_card):
-                run_stage_g(
+            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+                run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
                     root / "claim_decisions.json",
@@ -4428,7 +4435,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_jsonl(root / "snips.jsonl", [])
             write_jsonl(root / "log.jsonl", [])
 
-            run_stage_h(root / "cards.json", root / "meta.json", root / "aliases.json", root / "snips.jsonl", root / "profiles.json", root / "log.jsonl", root / "notion.ndjson")
+            run_stage_12(root / "cards.json", root / "meta.json", root / "aliases.json", root / "snips.jsonl", root / "profiles.json", root / "log.jsonl", root / "notion.ndjson")
 
             self.assertEqual((root / "notion.ndjson").read_text(encoding="utf-8"), "")
 
@@ -4553,7 +4560,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(states[1], "done")
         self.assertEqual(states[2], "current")
         self.assertEqual(states[3], "waiting")
-        self.assertEqual(progress["summary"], "Running stage 2/11: Message Normalization")
+        self.assertEqual(progress["summary"], "Running stage 2/12: Message Normalization")
 
         html = render_pipeline_progress_html(progress)
         self.assertIn('id="pipeline-progress"', html)
@@ -4562,7 +4569,7 @@ class PipelineV2Tests(unittest.TestCase):
 
     def test_ui_pipeline_progress_uses_stage05_model_call_heartbeat(self) -> None:
         line = (
-            "13:37:51 | INFO | pipeline.stage_b4_conversation_patch_notes | "
+            "13:37:51 | INFO | pipeline.stage_05_conversation_patch_notes | "
             "Stage 05 model call 2601/2644: conversation_id=conversation_1 track=lore topic=Ramasinta art messages=41."
         )
         self.assertTrue(is_pipeline_progress_log_line(line))
@@ -4582,12 +4589,12 @@ class PipelineV2Tests(unittest.TestCase):
     def test_desktop_attach_finds_stage05_resume_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            older = root / "run_from_b4_old.err.log"
+            older = root / "run_from_stage_05_old.err.log"
             newer = root / "run_from_stage05_new.err.log"
             older.write_text("old", encoding="utf-8")
             newer.write_text("new", encoding="utf-8")
 
-            paths = attach_log_paths_for_run(root, "run_from_b4")
+            paths = attach_log_paths_for_run(root, "run_from_stage_05")
 
             self.assertIn(newer, paths)
             self.assertIn(older, paths)
@@ -4612,7 +4619,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(snapshot["status"], "review_required")
             self.assertEqual(states[6], "done")
             self.assertEqual(states[7], "attention")
-        self.assertIn("stage 7/11", progress["summary"])
+        self.assertIn("stage 7/12", progress["summary"])
 
     def test_ui_pipeline_progress_marks_review_gate_as_attention(self) -> None:
         progress = pipeline_progress_from_logs(
@@ -4642,7 +4649,67 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(states[7], "attention")
         self.assertEqual(states[8], "waiting")
         self.assertTrue(progress["review_gate"])
-        self.assertEqual(progress["summary"], "Paused for review at stage 7/11: Entity Resolution")
+        self.assertEqual(progress["summary"], "Paused for review at stage 7/12: Entity Resolution")
+
+    def test_ui_pipeline_progress_shows_identity_merge_as_distinct_done_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(root / "01_bootstrap" / "entity_seed.json", {"entities": []})
+            write_jsonl(root / "02_timeline" / "messages_normalized_per_thread.jsonl", [])
+            write_jsonl(root / "02_timeline" / "messages_global_timeline.jsonl", [])
+            write_json(root / "02_timeline" / "conversation_segments.json", {"segments": []})
+            write_json(
+                root / "02_timeline" / "conversation_patch_notes.json",
+                {"status": "complete", "conversation_count": 1, "notes_count": 1, "failure_count": 0, "notes": []},
+            )
+            write_jsonl(root / "03_relevance" / "snippets_candidates.jsonl", [])
+            write_json(root / "05_alias" / "resolved_entities.json", {"resolved_entities": []})
+            write_json(root / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": []})
+            write_json(
+                root / "07_review" / "identity_merge_proposals.json",
+                {"proposals": [{"proposal_id": "merge_1", "review_status": "approved"}]},
+            )
+            write_json(
+                root / "07_review" / "identity_merge_decisions.json",
+                {"decisions": [{"proposal_id": "merge_1", "decision": "approve"}]},
+            )
+
+            snapshot = pipeline_progress_artifact_snapshot(root)
+            progress = pipeline_progress_from_logs(snapshot["logs"], snapshot["status"], snapshot["message"])
+
+        states = {stage["index"]: stage["state"] for stage in progress["stages"]}
+        names = {stage["index"]: stage["name"] for stage in progress["stages"]}
+        self.assertEqual(progress["total_stages"], 12)
+        self.assertEqual(names[10], "Identity Merge")
+        self.assertEqual(states[10], "done")
+        self.assertEqual(states[11], "waiting")
+
+    def test_ui_pipeline_progress_marks_claim_step_complete_when_review_is_bypassed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(root / "01_bootstrap" / "entity_seed.json", {"entities": []})
+            write_jsonl(root / "02_timeline" / "messages_normalized_per_thread.jsonl", [])
+            write_jsonl(root / "02_timeline" / "messages_global_timeline.jsonl", [])
+            write_json(root / "02_timeline" / "conversation_segments.json", {"segments": []})
+            write_json(
+                root / "02_timeline" / "conversation_patch_notes.json",
+                {"status": "complete", "conversation_count": 1, "notes_count": 1, "failure_count": 0, "notes": []},
+            )
+            write_jsonl(root / "03_relevance" / "snippets_candidates.jsonl", [])
+            write_json(root / "05_alias" / "resolved_entities.json", {"resolved_entities": []})
+            write_json(
+                root / "06_drafts" / "card_drafts" / "claim_drafts.json",
+                {"claims": [{"claim_id": "claim_1", "claim_text": "A pending claim."}]},
+            )
+            write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": []})
+            write_json(root / "07_review" / "review_gate_bypass.json", {"claim_review": True})
+
+            snapshot = pipeline_progress_artifact_snapshot(root)
+            progress = pipeline_progress_from_logs(snapshot["logs"], snapshot["status"], snapshot["message"])
+
+        states = {stage["index"]: stage["state"] for stage in progress["stages"]}
+        self.assertEqual(states[9], "done")
+        self.assertEqual(states[10], "waiting")
 
     def test_desktop_candidate_inventory_browser_rows_bucket_and_categorize(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4861,7 +4928,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual({decision["proposal_id"] for decision in decisions}, {"p_metatron", "p_loss"})
             self.assertTrue(all(decision["canonical_name"] == "Enoch" for decision in decisions))
 
-    def test_stage_e_prefers_human_override_over_later_auto_review(self) -> None:
+    def test_stage_07_prefers_human_override_over_later_auto_review(self) -> None:
         proposals = [{"proposal_id": "p_loss", "candidate_name": "Loss", "normalized_name_key": "loss"}]
         decisions = [
             {
@@ -5630,7 +5697,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(stage, 7)
             self.assertIn("decisions changed", reason)
 
-    def test_pipeline_resume_starts_at_patch_notes_when_stage_four_is_done(self) -> None:
+    def test_pipeline_resume_starts_at_patch_notes_when_stage_04_is_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "01_bootstrap" / "entity_seed.json", {"entities": []})
@@ -5690,6 +5757,7 @@ class PipelineV2Tests(unittest.TestCase):
             root = Path(tmp)
             write_pipeline_artifacts_through_stage9(root, [{"claim_id": "claim_a"}])
             write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
+            write_json(root / "07_review" / "identity_merge_proposals.json", {"proposals": []})
             write_json(root / "07_review" / "card_drafts.json", {"cards": [{"card_id": "card_a", "status": "draft"}]})
             write_json(root / "07_review" / "canonical_cards.json", {"cards": []})
             write_jsonl(root / "07_review" / "merge_log.jsonl", [{"decision_id": "d1"}])
@@ -5705,14 +5773,15 @@ class PipelineV2Tests(unittest.TestCase):
             write_pipeline_artifacts_through_stage9(root, [{"claim_id": "claim_a"}])
             write_json(root / "07_review" / "claim_review_decisions.json", {"decisions": [{"claim_id": "claim_a", "decision": "accept"}]})
             write_json(root / "07_review" / "card_review_decisions.json", {"decisions": [{"card_id": "card_a", "decision": "approve"}]})
+            write_json(root / "07_review" / "identity_merge_proposals.json", {"proposals": []})
             write_json(root / "07_review" / "card_drafts.json", {"cards": [{"card_id": "card_a", "status": "draft"}]})
             write_json(root / "07_review" / "canonical_cards.json", {"cards": [{"card_id": "card_a", "status": "canonical"}]})
             write_jsonl(root / "07_review" / "merge_log.jsonl", [{"decision_id": "d1"}])
 
             stage, reason = determine_resume_start_stage(root)
 
-            self.assertEqual(stage, 11)
-            self.assertIn("Stage 11", reason)
+            self.assertEqual(stage, 12)
+            self.assertIn("Stage 12", reason)
 
     def test_new_run_artifacts_root_creates_unique_run_folder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

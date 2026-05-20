@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
@@ -17,7 +17,7 @@ from pipeline.review_memory import (
 
 
 STORY_SESSION_VERSION = 1
-STORY_TASK_NAME = "stage_09q_story_questions"
+STORY_TASK_NAME = "stage_09_story_questions"
 
 STORY_QUESTION_SCHEMA = {
     "type": "object",

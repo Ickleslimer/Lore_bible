@@ -3,7 +3,9 @@ import type {
   AppState,
   BridgeResponse,
   IdentityClustersResponse,
+  InventoryResponse,
   PipelineLogTail,
+  PipelineProgressTail,
   PipelineRuntimeStatus,
 } from "./types";
 
@@ -55,6 +57,22 @@ export async function decideIdentityEdge(payload: Record<string, unknown>): Prom
   return bridge<IdentityClustersResponse>("identity_edge_decision", payload);
 }
 
+export async function loadClaimInventory(artifactsRoot: string): Promise<InventoryResponse> {
+  return bridge<InventoryResponse>("claim_inventory", { artifacts_root: artifactsRoot });
+}
+
+export async function decideClaim(payload: Record<string, unknown>): Promise<InventoryResponse> {
+  return bridge<InventoryResponse>("claim_decision", payload);
+}
+
+export async function loadEntityInventory(artifactsRoot: string): Promise<InventoryResponse> {
+  return bridge<InventoryResponse>("entity_inventory", { artifacts_root: artifactsRoot });
+}
+
+export async function decideEntity(payload: Record<string, unknown>): Promise<InventoryResponse> {
+  return bridge<InventoryResponse>("entity_decision", payload);
+}
+
 export async function startPipeline(
   artifactsRoot: string,
   options: { resume?: boolean; ignorePending?: boolean } = {},
@@ -73,6 +91,13 @@ export async function pipelineStatus(): Promise<PipelineRuntimeStatus> {
 
 export async function pipelineLogTail(artifactsRoot?: string, maxLines = 250): Promise<PipelineLogTail> {
   return invoke<PipelineLogTail>("pipeline_log_tail", {
+    artifactsRoot: artifactsRoot || null,
+    maxLines,
+  });
+}
+
+export async function pipelineProgressTail(artifactsRoot?: string, maxLines = 120): Promise<PipelineProgressTail> {
+  return invoke<PipelineProgressTail>("pipeline_progress_tail", {
     artifactsRoot: artifactsRoot || null,
     maxLines,
   });

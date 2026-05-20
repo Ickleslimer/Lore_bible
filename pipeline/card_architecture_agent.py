@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
@@ -569,7 +569,7 @@ def generate_card_architecture_proposals(
         review_memory,
         source_snippets_by_id,
     )
-    response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(config, "stage_g_card_architecture_agent"))
+    response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(config, "stage_11_card_architecture_agent"))
     if response is None:
         raise RuntimeError("Stage 10A Card Architecture Agent requires model output; provider returned no response.")
     if not isinstance(response, dict) or not isinstance(response.get("proposals"), list):
@@ -591,7 +591,7 @@ def generate_card_architecture_proposals(
                 "request_id": request_id,
                 "created_at_utc": proposal.get("created_at_utc") or now_utc_iso(),
                 "status": "proposed",
-                "model_task": "stage_g_card_architecture_agent",
+                "model_task": "stage_11_card_architecture_agent",
             }
         )
     return generated

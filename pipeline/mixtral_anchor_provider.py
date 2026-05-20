@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -1921,7 +1921,7 @@ def call_mixtral_chat(
 def load_seed_entities(seed_path: Path | None) -> list[str]:
     return load_entity_names(seed_path)
 
-def build_stage_a_prompt(doc_excerpt: str) -> str:
+def build_stage_01_prompt(doc_excerpt: str) -> str:
     return f"""You extract ontology anchors from a lore bible.
 Be conservative. Return strict JSON only.
 

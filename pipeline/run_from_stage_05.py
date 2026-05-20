@@ -1,15 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 from pathlib import Path
 from time import perf_counter
 
 from pipeline.common import get_logger, read_json, read_jsonl, setup_logging
-from pipeline.stage_b4_conversation_patch_notes import run as run_stage_b4
-from pipeline.stage_c_extract import run as run_stage_c
-from pipeline.stage_d_group import run as run_stage_d
-from pipeline.stage_e_alias import run as run_stage_e
-from pipeline.stage_f_draft import run as run_stage_f
+from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
+from pipeline.stage_06_snippet_extraction import run as run_stage_06
+from pipeline.stage_08_snippet_grouping import run as run_stage_08
+from pipeline.stage_07_entity_resolution import run as run_stage_07
+from pipeline.stage_09_claim_drafting import run as run_stage_09
 
 
 REVIEW_REQUIRED_EXIT_CODE = 2
@@ -57,14 +57,14 @@ def main() -> None:
     logger = get_logger(__name__)
     root = args.artifacts_root
     thematic_runtime_path = root / "learning" / "thematic_profile_runtime.json"
-    total_stages = 9
+    total_stages = 12
 
     _run_stage(
         logger,
         5,
         total_stages,
         "Stage 05 Conversation Patch Notes",
-        run_stage_b4,
+        run_stage_05,
         root / "02_timeline" / "messages_relevant_conversations.jsonl",
         root / "02_timeline" / "conversation_segments.json",
         root / "02_timeline" / "conversation_patch_notes.json",
@@ -72,12 +72,12 @@ def main() -> None:
         root / "02_timeline" / "conversation_patch_note_failures.json",
         Path("config/pipeline_config.json"),
     )
-    stage_b4_index = read_json(root / "02_timeline" / "conversation_patch_notes.json")
+    stage_05_index = read_json(root / "02_timeline" / "conversation_patch_notes.json")
     logger.info(
         "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
-        int(stage_b4_index.get("notes_count", 0)),
-        int(stage_b4_index.get("conversation_count", 0)),
-        int(stage_b4_index.get("failure_count", 0)),
+        int(stage_05_index.get("notes_count", 0)),
+        int(stage_05_index.get("conversation_count", 0)),
+        int(stage_05_index.get("failure_count", 0)),
     )
 
     _run_stage(
@@ -85,7 +85,7 @@ def main() -> None:
         6,
         total_stages,
         "Stage 06 Snippet Extraction",
-        run_stage_c,
+        run_stage_06,
         root / "02_timeline" / "messages_relevant_conversations.jsonl",
         root / "03_relevance" / "dm_source_profiles.json",
         root / "03_relevance" / "snippets_candidates.jsonl",
@@ -108,7 +108,7 @@ def main() -> None:
         7,
         total_stages,
         "Stage 07 Entity Resolution",
-        run_stage_e,
+        run_stage_07,
         root / "03_relevance" / "snippets_candidates.jsonl",
         root / "01_bootstrap" / "entity_seed.json",
         root / "05_alias" / "alias_map.json",
@@ -125,7 +125,7 @@ def main() -> None:
         8,
         total_stages,
         "Stage 08 Snippet Grouping",
-        run_stage_d,
+        run_stage_08,
         root / "03_relevance" / "snippets_candidates.jsonl",
         root / "05_alias" / "resolved_entities.json",
         root / "04_grouping" / "snippet_clusters_lore.json",
@@ -139,7 +139,7 @@ def main() -> None:
         9,
         total_stages,
         "Stage 09 Claim Drafting",
-        run_stage_f,
+        run_stage_09,
         root / "05_alias" / "resolved_entities.json",
         root / "04_grouping" / "snippet_clusters_lore.json",
         root / "04_grouping" / "snippet_clusters_meta.json",

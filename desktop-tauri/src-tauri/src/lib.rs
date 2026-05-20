@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+﻿use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
@@ -11,6 +11,10 @@ use std::thread;
 use std::os::windows::process::CommandExt;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x00000008;
 
 #[derive(Default)]
 struct PipelineProcessState {
@@ -83,6 +87,13 @@ fn no_window(command: &mut Command) {
     }
 }
 
+fn detached_worker(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    }
+}
+
 fn now_string() -> String {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
         Ok(duration) => format!("{}", duration.as_secs()),
@@ -132,6 +143,51 @@ fn read_log_tail(path: &Path, max_lines: usize) -> Vec<String> {
         }
     }
     lines
+}
+
+fn bounded_log_preview(lines: Vec<String>, max_lines: usize, max_chars_per_line: usize) -> Vec<String> {
+    let start = lines.len().saturating_sub(max_lines);
+    lines
+        .into_iter()
+        .skip(start)
+        .map(|line| {
+            if line.chars().count() <= max_chars_per_line {
+                line
+            } else {
+                let mut truncated: String = line.chars().take(max_chars_per_line).collect();
+                truncated.push_str("...");
+                truncated
+            }
+        })
+        .collect()
+}
+
+fn is_progress_log_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    line.contains("] START ")
+        || line.contains("] DONE ")
+        || line.contains("] SKIP ")
+        || lower.contains("desktop:")
+        || lower.contains("progress:")
+        || lower.contains("batch progress")
+        || lower.contains("model call")
+        || lower.contains("model window")
+        || lower.contains("requesting model")
+        || (lower.contains("sending ") && lower.contains("prompt"))
+        || lower.contains("paused for review")
+        || lower.contains("requiring review")
+        || lower.contains("complete:")
+        || lower.contains("runtimeerror")
+        || lower.contains("traceback")
+}
+
+fn progress_log_preview(lines: &[String], max_lines: usize, max_chars_per_line: usize) -> Vec<String> {
+    let filtered = lines
+        .iter()
+        .filter(|line| is_progress_log_line(line))
+        .cloned()
+        .collect();
+    bounded_log_preview(filtered, max_lines, max_chars_per_line)
 }
 
 fn pipeline_snapshot(state: &SharedPipelineState, include_logs: bool) -> Value {
@@ -204,6 +260,7 @@ fn pipeline_log_tail(
     artifacts_root: Option<String>,
     max_lines: Option<usize>,
 ) -> Value {
+    write_diagnostic(None, "pipeline_log_tail invoked");
     let root = artifacts_root.or_else(|| {
         state
             .lock()
@@ -213,7 +270,40 @@ fn pipeline_log_tail(
     let lines = root
         .map(|raw| read_log_tail(&worker_log_path(&PathBuf::from(raw)), max_lines.unwrap_or(250)))
         .unwrap_or_default();
-    json!({ "logs": lines })
+    let total_lines = lines.len();
+    let preview = bounded_log_preview(lines, 30, 360);
+    write_diagnostic(None, &format!("pipeline_log_tail returned {} line(s)", preview.len()));
+    json!({ "logs": preview, "total_lines": total_lines })
+}
+
+#[tauri::command]
+fn pipeline_progress_tail(
+    state: tauri::State<'_, SharedPipelineState>,
+    artifacts_root: Option<String>,
+    max_lines: Option<usize>,
+) -> Value {
+    let root = artifacts_root.or_else(|| {
+        state
+            .lock()
+            .ok()
+            .and_then(|guard| guard.artifacts_root.clone())
+    });
+    let lines = root
+        .map(|raw| read_log_tail(&worker_log_path(&PathBuf::from(raw)), max_lines.unwrap_or(120)))
+        .unwrap_or_default();
+    let latest_line = lines.last().cloned().unwrap_or_default();
+    let latest_preview = bounded_log_preview(vec![latest_line], 1, 260)
+        .pop()
+        .unwrap_or_default();
+    let progress = progress_log_preview(&lines, 8, 260);
+    let latest_progress_line = progress.last().cloned().unwrap_or_default();
+    json!({
+        "latest_line": latest_preview,
+        "latest_progress_line": latest_progress_line,
+        "lines": progress,
+        "total_scanned": lines.len(),
+        "updated_at_epoch": now_string(),
+    })
 }
 
 #[tauri::command]
@@ -354,7 +444,7 @@ fn run_pipeline_worker(
         .env("PYTHONIOENCODING", "utf-8")
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
-    no_window(&mut command);
+    detached_worker(&mut command);
     let mut child = command
         .spawn()
         .map_err(|err| {
@@ -458,8 +548,124 @@ pub fn run() {
             pipeline_start,
             pipeline_status,
             pipeline_log_tail,
+            pipeline_progress_tail,
             pipeline_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bounded_log_preview, progress_log_preview, read_log_tail, worker_log_path};
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "theriac_tauri_{label}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock before epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    #[test]
+    fn log_tail_missing_file_returns_empty_lines() {
+        let root = temp_dir("missing_log");
+        let path = worker_log_path(&root);
+        let lines = read_log_tail(&path, 300);
+        assert!(lines.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn log_tail_returns_only_requested_tail() {
+        let root = temp_dir("tail_limit");
+        let path = worker_log_path(&root);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open log");
+        for index in 0..12 {
+            writeln!(file, "line {index}").expect("write log line");
+        }
+        drop(file);
+
+        let lines = read_log_tail(&path, 5);
+
+        assert_eq!(lines, vec!["line 7", "line 8", "line 9", "line 10", "line 11"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn log_tail_reads_while_log_is_open_for_append() {
+        let root = temp_dir("open_writer");
+        let path = worker_log_path(&root);
+        let mut writer = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open writer");
+        writeln!(writer, "worker started").expect("write first line");
+        writer.flush().expect("flush writer");
+
+        let lines = read_log_tail(&path, 10);
+
+        assert_eq!(lines, vec!["worker started"]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn log_preview_bounds_lines_and_characters_for_webview() {
+        let lines = vec![
+            "short 1".to_string(),
+            "short 2".to_string(),
+            "x".repeat(20),
+            "final".to_string(),
+        ];
+
+        let preview = bounded_log_preview(lines, 3, 8);
+
+        assert_eq!(preview, vec!["short 2", "xxxxxxxx...", "final"]);
+    }
+
+    #[test]
+    fn progress_preview_filters_to_pipeline_and_model_heartbeats() {
+        let lines = vec![
+            "ordinary debug noise".to_string(),
+            "08:12:00 | INFO | pipeline.run_pipeline | [7/12] START Stage 07 Entity Resolution".to_string(),
+            "08:12:01 | INFO | pipeline.stage_10_identity_merge | Sending identity merge prompt 1/3".to_string(),
+            "another ordinary line".to_string(),
+            "08:12:03 | INFO | pipeline.run_pipeline | [7/12] DONE  Stage 07 Entity Resolution (2.0s)".to_string(),
+        ];
+
+        let preview = progress_log_preview(&lines, 8, 260);
+
+        assert_eq!(preview.len(), 3);
+        assert!(preview[0].contains("START Stage 07 Entity Resolution"));
+        assert!(preview[1].contains("Sending identity merge prompt"));
+        assert!(preview[2].contains("DONE  Stage 07 Entity Resolution"));
+    }
+
+    #[test]
+    fn progress_preview_bounds_line_count_and_length() {
+        let lines = vec![
+            "Stage 04 batch progress: 1/4".to_string(),
+            "Stage 04 batch progress: 2/4".to_string(),
+            format!("Stage 04 model call {}", "x".repeat(40)),
+        ];
+
+        let preview = progress_log_preview(&lines, 2, 24);
+
+        assert_eq!(preview.len(), 2);
+        assert_eq!(preview[0], "Stage 04 batch progress:...");
+        assert_eq!(preview[1], "Stage 04 model call xxxx...");
+    }
 }

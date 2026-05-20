@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -208,7 +208,7 @@ def run(
 
     claim_drafts = []
     extraction_failures: list[dict[str, Any]] = []
-    batch_enabled = model_batch_enabled(config, "stage_f_claim_extraction")
+    batch_enabled = model_batch_enabled(config, "stage_09_claim_drafting")
     batch_tasks: list[dict[str, Any]] = []
     model_call_total = 0
     if not batch_enabled:
@@ -329,7 +329,7 @@ def run(
             )
 
     if batch_tasks:
-        max_batch_requests = model_batch_max_requests(config, "stage_f_claim_extraction", default=100)
+        max_batch_requests = model_batch_max_requests(config, "stage_09_claim_drafting", default=100)
         batch_total = (len(batch_tasks) + max_batch_requests - 1) // max_batch_requests
         logger.info(
             "Stage 09: batch mode enabled; submitting %d claim extraction task(s) in chunks of %d.",
@@ -346,7 +346,7 @@ def run(
                 offset,
             )
             try:
-                batch_outputs = call_gemini_batch_json(config, "stage_f_claim_extraction", task_chunk)
+                batch_outputs = call_gemini_batch_json(config, "stage_09_claim_drafting", task_chunk)
             except Exception as exc:
                 for task in task_chunk:
                     extraction_failures.append(
@@ -608,7 +608,7 @@ def extract_claims_with_model(
     validation_failures = 0
     while True:
         prompt = build_claim_extraction_prompt(entity, cluster, evidence, memory_for_entity, validation_feedback)
-        call_kwargs = model_call_kwargs(config, "stage_f_claim_extraction")
+        call_kwargs = model_call_kwargs(config, "stage_09_claim_drafting")
         response = call_mixtral_chat(
             prompt=prompt,
             **call_kwargs,

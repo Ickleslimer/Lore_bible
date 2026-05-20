@@ -27,8 +27,9 @@ PIPELINE_STAGES = [
     {"index": 7, "short_label": "07", "name": "Entity Resolution"},
     {"index": 8, "short_label": "08", "name": "Snippet Grouping"},
     {"index": 9, "short_label": "09", "name": "Claim Drafting"},
-    {"index": 10, "short_label": "10", "name": "Card Synthesis"},
-    {"index": 11, "short_label": "11", "name": "Notion Export"},
+    {"index": 10, "short_label": "10", "name": "Identity Merge"},
+    {"index": 11, "short_label": "11", "name": "Card Synthesis"},
+    {"index": 12, "short_label": "12", "name": "Notion Export"},
 ]
 
 NEW_RUN_SELECTOR_VALUE = "__theriac_new_run__"
@@ -44,7 +45,7 @@ PIPELINE_PROGRESS_CSS = """
     .pipeline-progress-header { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 12px; }
     .pipeline-progress-title { margin: 0; font-size: 16px; }
     .pipeline-progress-meta { color: #57606a; font-size: 13px; }
-    .pipeline-stages { display: grid; grid-template-columns: repeat(11, minmax(72px, 1fr)); gap: 8px; }
+    .pipeline-stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(82px, 1fr)); gap: 8px; }
     .pipeline-stage { position: relative; min-width: 0; text-align: center; }
     .pipeline-dot { width: 22px; height: 22px; border-radius: 50%; margin: 0 auto 6px; border: 2px solid #c9d1d9; background: #fff; box-sizing: border-box; }
     .pipeline-stage.done .pipeline-dot { background: #238636; border-color: #238636; }
@@ -134,6 +135,17 @@ def is_pipeline_progress_log_line(line: str) -> bool:
     )
 
 
+def _display_stage_index(raw_index: int, stage_text: str) -> int:
+    lowered = stage_text.lower()
+    if "identity merge" in lowered or "identity cluster" in lowered:
+        return 10
+    if "card synthesis" in lowered or "card architecture" in lowered or "draft sync" in lowered:
+        return 11
+    if "notion export" in lowered:
+        return 12
+    return raw_index
+
+
 def pipeline_progress_from_logs(
     logs: list[str],
     status: str,
@@ -142,12 +154,13 @@ def pipeline_progress_from_logs(
 ) -> dict[str, Any]:
     completed: set[int] = set()
     current_index: int | None = None
+    review_index: int | None = None
     latest_index = 0
     latest_heartbeat: dict[str, Any] | None = None
     for line in logs:
         match = STAGE_LOG_RE.search(line)
         if match:
-            idx = int(match.group(1))
+            idx = _display_stage_index(int(match.group(1)), match.group(4))
             action = match.group(3)
             latest_index = max(latest_index, idx)
             if action == "START":
@@ -158,10 +171,11 @@ def pipeline_progress_from_logs(
                     current_index = None
             elif action == "REVIEW":
                 current_index = idx
+                review_index = idx
             continue
         heartbeat = STAGE_HEARTBEAT_RE.search(line)
         if heartbeat:
-            idx = int(heartbeat.group(1))
+            idx = _display_stage_index(int(heartbeat.group(1)), line)
             latest_index = max(latest_index, idx)
             current_index = idx
             latest_heartbeat = {
@@ -176,6 +190,8 @@ def pipeline_progress_from_logs(
     if status == "succeeded":
         completed = {stage["index"] for stage in PIPELINE_STAGES}
         current_index = None
+    elif status in {"failed", "review_required"} and review_index is not None:
+        current_index = review_index
     elif status == "running" and current_index is None and len(completed) < total_stages:
         current_index = min(len(completed) + 1, total_stages)
     elif status in {"failed", "review_required"} and current_index is None:
@@ -240,6 +256,8 @@ def pipeline_progress_from_logs(
 def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
     logs: list[str] = []
     stage_total = len(PIPELINE_STAGES)
+    bypass_payload = _read_json_or_default(root / "07_review" / "review_gate_bypass.json", {})
+    claim_review_bypassed = isinstance(bypass_payload, dict) and bool(bypass_payload.get("claim_review"))
 
     def mark_done(index: int, name: str) -> None:
         logs.append(f"[{index}/{stage_total}] START Stage {index:02d} {name}")
@@ -247,6 +265,19 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
 
     def mark_start(index: int, name: str) -> None:
         logs.append(f"[{index}/{stage_total}] START Stage {index:02d} {name}")
+
+    def mark_identity_merge_if_known() -> bool:
+        proposals_path = root / "07_review" / "identity_merge_proposals.json"
+        decisions_path = root / "07_review" / "identity_merge_decisions.json"
+        if not proposals_path.exists() and not decisions_path.exists():
+            return False
+        mark_start(10, "Identity Merge")
+        pending_identity = int(counts.get("identity_merges", 0) or 0)
+        if pending_identity > 0:
+            logs.append(f"[10/{stage_total}] REVIEW Stage 10 Identity Merge")
+            return True
+        logs.append(f"[10/{stage_total}] DONE  Stage 10 Identity Merge")
+        return False
 
     if (root / "01_bootstrap" / "entity_seed.json").exists():
         mark_done(1, "Entity Bootstrap")
@@ -293,52 +324,70 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
     if (root / "06_drafts" / "card_drafts" / "claim_drafts.json").exists():
         mark_start(9, "Claim Drafting")
         if counts.get("claims", 0) > 0:
-            logs.append(f"[9/{stage_total}] REVIEW Stage 09 Claim Drafting")
-            return {
-                "status": "review_required",
-                "message": f"Paused after Stage 09 Claim Drafting: {counts['claims']} claim(s) need review.",
-                "logs": logs,
-            }
-        logs.append(f"[9/{stage_total}] DONE  Stage 09 Claim Drafting")
+            if claim_review_bypassed:
+                logs.append(f"[9/{stage_total}] DONE  Stage 09 Claim Drafting")
+            else:
+                logs.append(f"[9/{stage_total}] REVIEW Stage 09 Claim Drafting")
+                identity_pending = mark_identity_merge_if_known()
+                if identity_pending:
+                    return {
+                        "status": "review_required",
+                        "message": f"Paused for identity review: {counts['identity_merges']} identity cluster proposal(s) need review.",
+                        "logs": logs,
+                    }
+                return {
+                    "status": "review_required",
+                    "message": f"Paused after Stage 09 Claim Drafting: {counts['claims']} claim(s) need review.",
+                    "logs": logs,
+                }
+        else:
+            logs.append(f"[9/{stage_total}] DONE  Stage 09 Claim Drafting")
 
-    if counts.get("identity_merges", 0) > 0:
-        mark_start(10, "Card Synthesis")
-        logs.append(f"[10/{stage_total}] REVIEW Stage 10 Card Synthesis")
+    if not claim_review_bypassed and counts.get("claims", 0) > 0 and not (root / "06_drafts" / "card_drafts" / "claim_drafts.json").exists():
+        mark_start(9, "Claim Drafting")
+        logs.append(f"[9/{stage_total}] REVIEW Stage 09 Claim Drafting")
+        return {
+            "status": "review_required",
+            "message": f"Paused after Stage 09 Claim Drafting: {counts['claims']} claim(s) need review.",
+            "logs": logs,
+        }
+
+    if mark_identity_merge_if_known() or counts.get("identity_merges", 0) > 0:
         return {
             "status": "review_required",
             "message": f"Paused for identity review: {counts['identity_merges']} identity cluster proposal(s) need review.",
             "logs": logs,
         }
     if counts.get("card_architecture", 0) > 0:
-        mark_start(10, "Card Synthesis")
-        logs.append(f"[10/{stage_total}] REVIEW Stage 10 Card Synthesis")
+        mark_start(11, "Card Synthesis")
+        logs.append(f"[11/{stage_total}] REVIEW Stage 11 Card Synthesis")
         return {
             "status": "review_required",
             "message": f"Paused for card architecture review: {counts['card_architecture']} architecture action(s) need review.",
             "logs": logs,
         }
     if (root / "07_review" / "card_drafts.json").exists() or (root / "07_review" / "canonical_cards.json").exists():
-        mark_start(10, "Card Synthesis")
+        mark_start(11, "Card Synthesis")
         if counts.get("cards", 0) > 0:
-            logs.append(f"[10/{stage_total}] REVIEW Stage 10 Card Synthesis")
+            logs.append(f"[11/{stage_total}] REVIEW Stage 11 Card Synthesis")
             return {
                 "status": "review_required",
                 "message": f"Paused for card review: {counts['cards']} card draft(s) need review.",
                 "logs": logs,
             }
-        logs.append(f"[10/{stage_total}] DONE  Stage 10 Card Synthesis")
+        logs.append(f"[11/{stage_total}] DONE  Stage 11 Card Synthesis")
     if counts.get("cards", 0) > 0:
-        mark_start(10, "Card Synthesis")
-        logs.append(f"[10/{stage_total}] REVIEW Stage 10 Card Synthesis")
+        mark_start(11, "Card Synthesis")
+        logs.append(f"[11/{stage_total}] REVIEW Stage 11 Card Synthesis")
         return {
             "status": "review_required",
             "message": f"Paused for card review: {counts['cards']} card draft(s) need review.",
             "logs": logs,
         }
     if (root / "08_notion" / "notion_import.ndjson").exists():
-        mark_done(11, "Notion Export")
+        mark_done(12, "Notion Export")
     if logs:
-        status = "succeeded" if any(f"[11/{stage_total}] DONE" in line for line in logs) else "idle"
+        status = "succeeded" if any(f"[12/{stage_total}] DONE" in line for line in logs) else "idle"
         return {"status": status, "message": "", "logs": logs}
     return {"status": "idle", "message": "", "logs": []}
 
@@ -616,7 +665,7 @@ HTML_CARD = """
     <button name="decision" value="needs_more_context">Needs More Context</button>
   </form>
   <hr />
-  <p class="status">After card review decisions are saved, rerun Stage 10 to write approved cards to canonical_cards.json and persistent review memory.</p>
+  <p class="status">After card review decisions are saved, rerun Stage 11 to write approved cards to canonical_cards.json and persistent review memory.</p>
   </div>
 </body>
 </html>
@@ -719,7 +768,7 @@ HTML_IDENTITY_MERGE = """
     <button name="decision" value="needs_more_context">Needs More Context</button>
   </form>
   <hr />
-  <p class="status">After entity merge decisions are saved, rerun Stage 10 so approved merges can regroup claims before card synthesis.</p>
+  <p class="status">After entity merge decisions are saved, rerun Stage 10 to clear identity review, then Stage 11 will regroup claims before card synthesis.</p>
   </div>
 </body>
 </html>
@@ -1120,7 +1169,7 @@ def _load_patches_or_reason(patches_path: Path) -> tuple[list[dict[str, Any]] | 
 
 def _load_card_drafts_or_reason(card_drafts_path: Path) -> tuple[list[dict[str, Any]] | None, str]:
     if not card_drafts_path.exists():
-        return None, "No synthesized card drafts file was found yet. Run Stage 10 after reviewing claims."
+        return None, "No synthesized card drafts file was found yet. Run Stage 11 after reviewing claims and identity merges."
     try:
         payload = read_json(card_drafts_path)
     except Exception:
