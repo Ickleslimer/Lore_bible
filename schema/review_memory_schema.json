@@ -26,6 +26,8 @@
     "rejected_conversation_entities": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
     "approved_cards": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
     "author_directives": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "card_architecture_actions": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "card_redirects": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
     "style_corrections": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
     "updated_at_utc": { "type": "string", "format": "date-time" }
   },

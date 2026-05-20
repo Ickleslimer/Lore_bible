@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/card_architecture_decision.schema.json",
+  "title": "CardArchitectureDecision",
+  "type": "object",
+  "required": [
+    "action_id",
+    "decision",
+    "reviewer",
+    "rationale",
+    "timestamp_utc"
+  ],
+  "properties": {
+    "action_id": { "type": "string" },
+    "proposal_id": { "type": "string" },
+    "request_id": { "type": "string" },
+    "action_type": { "type": "string" },
+    "decision": {
+      "type": "string",
+      "enum": ["approve", "accept", "reject", "defer", "needs_more_context"]
+    },
+    "reviewer": { "type": "string" },
+    "rationale": { "type": "string" },
+    "timestamp_utc": { "type": "string", "format": "date-time" },
+    "human_override": { "type": "boolean" },
+    "override_source": { "type": "string" }
+  },
+  "additionalProperties": true
+}

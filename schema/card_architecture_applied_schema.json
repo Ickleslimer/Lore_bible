@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/card_architecture_applied.schema.json",
+  "title": "CardArchitectureApplied",
+  "type": "object",
+  "required": [
+    "generated_at_utc",
+    "applied_actions"
+  ],
+  "properties": {
+    "generated_at_utc": { "type": "string", "format": "date-time" },
+    "applied_actions": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "suppressed_entity_ids": { "type": "array", "items": { "type": "string" } },
+    "suppressed_claim_ids": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

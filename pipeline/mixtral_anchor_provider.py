@@ -716,10 +716,16 @@ def _call_mistral_chat(
             {"attempt": attempt_idx, "attempts": attempts, "timeout_seconds": timeout_seconds},
         )
         # endregion
+        import socket
+        orig_timeout = socket.getdefaulttimeout()
         try:
-            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-                raw_body = resp.read().decode("utf-8")
-                break
+            socket.setdefaulttimeout(float(timeout_seconds))
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                    raw_body = resp.read().decode("utf-8")
+                    break
+            finally:
+                socket.setdefaulttimeout(orig_timeout)
         except urllib.error.HTTPError as exc:
             err_body = ""
             try:

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/card_edit_request.schema.json",
+  "title": "CardEditRequest",
+  "type": "object",
+  "required": [
+    "request_id",
+    "instruction_text",
+    "requester",
+    "status",
+    "created_at_utc"
+  ],
+  "properties": {
+    "request_id": { "type": "string" },
+    "instruction_text": { "type": "string" },
+    "target_text": { "type": "string" },
+    "rationale": { "type": "string" },
+    "requester": { "type": "string" },
+    "status": { "type": "string", "enum": ["pending", "cancelled", "applied"] },
+    "created_at_utc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": true
+}

@@ -28,18 +28,18 @@
         "adaptive_min_interval_seconds": 0.5
       },
       "claude_opus": {
-        "provider": "openrouter",
-        "api_model": "qwen/qwen3-235b-a22b-2507",
-        "api_base_url": "https://openrouter.ai/api/v1",
-        "rate_state_path": "artifacts/learning/openrouter_qwen_instruct_rate_runtime.json",
+        "provider": "anthropic",
+        "api_model": "claude-opus-4-1-20250805",
+        "api_base_url": "https://api.anthropic.com/v1",
+        "rate_state_path": "artifacts/learning/anthropic_claude_opus_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5,
         "timeout_seconds": 180
       },
       "claude_sonnet": {
-        "provider": "openrouter",
-        "api_model": "qwen/qwen3-235b-a22b-2507",
-        "api_base_url": "https://openrouter.ai/api/v1",
-        "rate_state_path": "artifacts/learning/openrouter_qwen_instruct_rate_runtime.json",
+        "provider": "anthropic",
+        "api_model": "claude-sonnet-4-6",
+        "api_base_url": "https://api.anthropic.com/v1",
+        "rate_state_path": "artifacts/learning/anthropic_claude_sonnet_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5,
         "timeout_seconds": 180,
         "max_tokens": 8192
@@ -81,6 +81,18 @@
         "batch_display_name": "theriac-f-claim-extraction"
       },
       "stage_g_card_synthesis": {
+        "profile": "claude_sonnet",
+        "batch_enabled": false
+      },
+      "stage_g_card_architecture_agent": {
+        "profile": "claude_sonnet",
+        "batch_enabled": false
+      },
+      "stage_g_identity_merge_proposals": {
+        "profile": "claude_sonnet",
+        "batch_enabled": false
+      },
+      "stage_g_identity_merge_cluster_judgement": {
         "profile": "claude_sonnet",
         "batch_enabled": false
       },

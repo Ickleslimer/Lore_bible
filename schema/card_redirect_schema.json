@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/card_redirect.schema.json",
+  "title": "CardRedirect",
+  "type": "object",
+  "required": [
+    "redirect_id",
+    "source_entity_id",
+    "source_card_id",
+    "target_entity_id",
+    "target_card_id",
+    "status",
+    "action_id",
+    "created_at_utc"
+  ],
+  "properties": {
+    "redirect_id": { "type": "string" },
+    "source_entity_id": { "type": "string" },
+    "source_card_id": { "type": "string" },
+    "source_entity_name": { "type": "string" },
+    "target_entity_id": { "type": "string" },
+    "target_card_id": { "type": "string" },
+    "target_entity_name": { "type": "string" },
+    "target_section": { "type": "string" },
+    "status": { "type": "string", "enum": ["demoted_to_section", "merged_into_card", "not_standalone"] },
+    "action_id": { "type": "string" },
+    "rationale": { "type": "string" },
+    "created_at_utc": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": true
+}

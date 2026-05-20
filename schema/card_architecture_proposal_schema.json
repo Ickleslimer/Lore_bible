@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/card_architecture_proposal.schema.json",
+  "title": "CardArchitectureProposal",
+  "type": "object",
+  "required": [
+    "proposal_id",
+    "request_id",
+    "actions"
+  ],
+  "properties": {
+    "proposal_id": { "type": "string" },
+    "request_id": { "type": "string" },
+    "summary": { "type": "string" },
+    "status": { "type": "string" },
+    "model_task": { "type": "string" },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action_id", "action_type"],
+        "properties": {
+          "action_id": { "type": "string" },
+          "proposal_id": { "type": "string" },
+          "request_id": { "type": "string" },
+          "action_type": {
+            "type": "string",
+            "enum": [
+              "demote_card_to_section",
+              "mark_not_standalone",
+              "move_claims_to_card",
+              "add_author_claim",
+              "add_author_directive",
+              "rename_card",
+              "add_alias",
+              "merge_cards",
+              "create_relationship",
+              "request_human_clarification"
+            ]
+          },
+          "source_entity_id": { "type": "string" },
+          "source_card_id": { "type": "string" },
+          "source_entity_name": { "type": "string" },
+          "target_entity_id": { "type": "string" },
+          "target_card_id": { "type": "string" },
+          "target_entity_name": { "type": "string" },
+          "target_section": { "type": "string" },
+          "claim_ids": { "type": "array", "items": { "type": "string" } },
+          "affected_claim_ids": { "type": "array", "items": { "type": "string" } },
+          "affected_cards": { "type": "array", "items": { "type": "string" } },
+          "claim_text": { "type": "string" },
+          "claim_type": { "type": "string" },
+          "knowledge_track": { "type": "string" },
+          "instruction_text": { "type": "string" },
+          "alias_text": { "type": "string" },
+          "new_canonical_name": { "type": "string" },
+          "relationship_type": { "type": "string" },
+          "clarification_question": { "type": "string" },
+          "rationale": { "type": "string" },
+          "confidence": { "type": "number" },
+          "validation_status": { "type": "string", "enum": ["valid", "invalid"] },
+          "validation_errors": { "type": "array", "items": { "type": "string" } },
+          "validation_warnings": { "type": "array", "items": { "type": "string" } },
+          "review_status": {
+            "type": "string",
+            "enum": ["pending", "approve", "accept", "reject", "defer", "needs_more_context", "invalid"]
+          },
+          "reviewer": { "type": "string" },
+          "review_rationale": { "type": "string" },
+          "reviewed_at_utc": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

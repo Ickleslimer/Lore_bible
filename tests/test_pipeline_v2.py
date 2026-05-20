@@ -42,14 +42,17 @@ from pipeline.stage_d_group import run as run_stage_d
 from pipeline.stage_e_alias import annotate_conversation_entity_proposals, infer_type_evidence_for_candidate, normalize_entity_type, run as run_stage_e
 from pipeline.stage_f_draft import build_claim_extraction_prompt, run as run_stage_f
 from pipeline.stage_g_merge_engine import (
+    _build_identity_cluster_proposals,
+    apply_entity_merges_to_entities,
     build_card_synthesis_prompt,
     find_unsupported_acronym_expansions,
     find_verbatim_claim_reuse,
+    remember_identity_merge_decisions,
     run as run_stage_g,
 )
 from pipeline.stage_h_notion_export import run as run_stage_h
 from pipeline.notion_draft_sync import notion_draft_config, sync_draft_cards_to_notion
-from theriac_lore_desktop import (
+from pipeline.review_inventory import (
     append_author_claim,
     attach_log_paths_for_run,
     candidate_inventory_browser_rows,
@@ -4104,7 +4107,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(root / "memory.json", {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
 
             with patch("pipeline.stage_g_merge_engine.call_mixtral_chat") as model:
-                with self.assertRaisesRegex(RuntimeError, "identity merge proposal"):
+                with self.assertRaisesRegex(RuntimeError, "identity cluster proposal"):
                     run_stage_g(
                         root / "resolved_entities.json",
                         root / "claim_drafts.json",
@@ -4191,6 +4194,91 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(memory["entity_merges"][0]["source_entity_name"], "ACHILLES")
             self.assertEqual(memory["entity_merges"][0]["target_entity_name"], "RUINR")
             self.assertEqual(memory["approved_aliases"][0]["alias_text"], "ACHILLES")
+
+    def test_stage_g_collates_identity_chain_into_one_canonical_cluster(self) -> None:
+        entities = [
+            {
+                "entity_id": "entity_loss",
+                "card_id": "card_loss",
+                "canonical_name": "Loss",
+                "entity_type": "character",
+                "aliases": [],
+            },
+            {
+                "entity_id": "entity_enoch",
+                "card_id": "card_enoch",
+                "canonical_name": "Enoch",
+                "entity_type": "character",
+                "aliases": [],
+            },
+            {
+                "entity_id": "entity_enoch_full",
+                "card_id": "card_enoch_full",
+                "canonical_name": "Enoch Faust Ersatzen",
+                "entity_type": "character",
+                "aliases": [],
+            },
+        ]
+        edges = [
+            {
+                "proposal_id": "edge_loss_enoch",
+                "source_entity_id": "entity_loss",
+                "source_entity_name": "Loss",
+                "target_entity_id": "entity_enoch",
+                "target_entity_name": "Enoch",
+                "evidence_claim_ids": ["claim_loss"],
+                "source_snippet_ids": ["snippet_loss"],
+                "evidence": [{"claim_id": "claim_loss", "claim_text": "Loss later becomes Enoch."}],
+            },
+            {
+                "proposal_id": "edge_enoch_full",
+                "source_entity_id": "entity_enoch",
+                "source_entity_name": "Enoch",
+                "target_entity_id": "entity_enoch_full",
+                "target_entity_name": "Enoch Faust Ersatzen",
+                "evidence_claim_ids": ["claim_full"],
+                "source_snippet_ids": ["snippet_full"],
+                "evidence": [{"claim_id": "claim_full", "claim_text": "Enoch's full name is Enoch Faust Ersatzen."}],
+            },
+        ]
+        config = {
+            "model_routing": {
+                "default_profile": "claude_sonnet",
+                "profiles": {"claude_sonnet": {"provider": "anthropic", "api_model": "claude-sonnet-4-6"}},
+                "tasks": {"stage_g_identity_merge_cluster_judgement": {"profile": "claude_sonnet"}},
+            },
+            "mixtral": {"synthesis_provider_retries": 0},
+        }
+        judgement = {
+            "clusters": [
+                {
+                    "cluster_index": 0,
+                    "canonical_entity_id": "entity_enoch",
+                    "canonical_name": "Enoch",
+                    "aliases": ["Loss", "Enoch Faust Ersatzen"],
+                    "former_names": ["Loss"],
+                    "working_names": ["Loss"],
+                    "formal_names": ["Enoch Faust Ersatzen"],
+                    "do_not_merge_entity_ids": [],
+                    "status": "ready_for_review",
+                    "confidence": 0.91,
+                    "rationale": "Loss is a working name and Enoch Faust Ersatzen is a full name; Enoch is the best page title.",
+                }
+            ]
+        }
+        with patch("pipeline.stage_g_merge_engine.call_mixtral_chat", return_value=judgement):
+            proposals = _build_identity_cluster_proposals(edges, entities, config)
+
+        self.assertEqual(len(proposals), 1)
+        proposal = proposals[0]
+        self.assertEqual(proposal["proposal_kind"], "identity_cluster")
+        self.assertEqual(proposal["canonical_entity_id"], "entity_enoch")
+        self.assertEqual(proposal["canonical_name"], "Enoch")
+        self.assertEqual(proposal["target_entity_name"], "Enoch")
+        self.assertEqual(set(proposal["member_entity_ids"]), {"entity_loss", "entity_enoch", "entity_enoch_full"})
+        self.assertEqual(set(proposal["edge_proposal_ids"]), {"edge_loss_enoch", "edge_enoch_full"})
+        self.assertIn("Loss", proposal["alias_texts"])
+        self.assertIn("Enoch Faust Ersatzen", proposal["formal_names"])
 
     def test_stage_g_rejects_unsupported_acronym_expansion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6809,6 +6897,137 @@ class PipelineV2Tests(unittest.TestCase):
             display = story_question_display(root)
             self.assertEqual(display["pending_claim_count"], 1)
             self.assertEqual(display["question"]["question_text"], "What purpose does Enoch serve in the plot?")
+
+
+class TestIdentityMergeGUIReview(unittest.TestCase):
+    def test_identity_merge_inventory_browser_rows_and_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proposals_path = root / "identity_merge_proposals.json"
+            decisions_path = root / "identity_merge_decisions.json"
+
+            # Create test proposals
+            proposals_data = {
+                "proposals": [
+                    {
+                        "proposal_id": "prop_1",
+                        "source_entity_id": "entity_achilles",
+                        "source_entity_name": "ACHILLES",
+                        "target_entity_id": "entity_ruinr",
+                        "target_entity_name": "RUINR",
+                        "merge_type": "renamed",
+                        "review_status": "pending",
+                        "confidence": 0.9,
+                        "rationale": "Renamed in sequence.",
+                        "evidence_claim_ids": ["claim_1", "claim_2"]
+                    }
+                ]
+            }
+            write_json(proposals_path, proposals_data)
+
+            # Test identity_merge_inventory_browser_rows with no decisions
+            from pipeline.review_inventory import identity_merge_inventory_browser_rows, write_identity_merge_override_decision
+            rows = identity_merge_inventory_browser_rows(proposals_path, decisions_path)
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["row_id"], "identity_merge:prop_1")
+            self.assertEqual(row["row_kind"], "identity_merge")
+            self.assertEqual(row["bucket"], "pending")
+            self.assertEqual(row["candidate_name"], "ACHILLES -> RUINR")
+            self.assertEqual(row["canonical_name"], "RUINR")
+            self.assertEqual(row["proposed_entity_type"], "renamed")
+            self.assertEqual(row["evidence_count"], 2)
+            self.assertEqual(row["triage_reason"], "Renamed in sequence.")
+
+            # Test write_identity_merge_override_decision
+            write_identity_merge_override_decision(
+                decisions_path,
+                row,
+                "approve",
+                "human_reviewer",
+                "manually confirmed renaming"
+            )
+
+            # Re-read decisions to verify
+            decisions = json.loads(decisions_path.read_text(encoding="utf-8"))["decisions"]
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0]["proposal_id"], "prop_1")
+            self.assertEqual(decisions[0]["decision"], "approve")
+            self.assertEqual(decisions[0]["reviewer"], "human_reviewer")
+            self.assertEqual(decisions[0]["rationale"], "manually confirmed renaming")
+            self.assertTrue(decisions[0]["human_override"])
+
+            # Test reload rows with decisions
+            rows = identity_merge_inventory_browser_rows(proposals_path, decisions_path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["bucket"], "approved")
+            self.assertEqual(rows[0]["decision"], "approve")
+
+    def test_identity_edge_refutation_excludes_disconnected_branch_on_cluster_approval(self) -> None:
+        proposal = {
+            "proposal_id": "cluster_1",
+            "cluster_id": "cluster_1",
+            "proposal_kind": "identity_cluster",
+            "member_entity_ids": ["entity_a", "entity_b", "entity_c"],
+            "member_entities": [
+                {"entity_id": "entity_a", "card_id": "card_a", "canonical_name": "A", "aliases": []},
+                {"entity_id": "entity_b", "card_id": "card_b", "canonical_name": "B", "aliases": []},
+                {"entity_id": "entity_c", "card_id": "card_c", "canonical_name": "C", "aliases": []},
+            ],
+            "canonical_entity_id": "entity_c",
+            "canonical_name": "C",
+            "target_entity_id": "entity_c",
+            "target_entity_name": "C",
+            "member_edges": [
+                {
+                    "proposal_id": "edge_ab",
+                    "source_entity_id": "entity_a",
+                    "source_entity_name": "A",
+                    "target_entity_id": "entity_b",
+                    "target_entity_name": "B",
+                    "evidence_claim_ids": ["claim_ab"],
+                },
+                {
+                    "proposal_id": "edge_bc",
+                    "source_entity_id": "entity_b",
+                    "source_entity_name": "B",
+                    "target_entity_id": "entity_c",
+                    "target_entity_name": "C",
+                    "evidence_claim_ids": ["claim_bc"],
+                },
+            ],
+            "evidence_claim_ids": ["claim_ab", "claim_bc"],
+            "source_snippet_ids": [],
+            "alias_texts": ["A", "B"],
+            "merge_type": "identity_cluster",
+        }
+        decisions = [
+            {
+                "decision_scope": "identity_edge",
+                "cluster_id": "cluster_1",
+                "edge_proposal_id": "edge_ab",
+                "decision": "reject",
+                "reviewer": "r",
+                "rationale": "A is only related to B.",
+                "timestamp_utc": "2026-05-19T00:00:00Z",
+            },
+            {
+                "proposal_id": "cluster_1",
+                "decision": "approve",
+                "reviewer": "r",
+                "rationale": "B and C are same entity.",
+                "timestamp_utc": "2026-05-19T00:01:00Z",
+            },
+        ]
+        memory = {"entity_merges": [], "approved_aliases": []}
+
+        remember_identity_merge_decisions(memory, [proposal], decisions)
+
+        merge_pairs = {(item["source_entity_id"], item["target_entity_id"]) for item in memory["entity_merges"]}
+        self.assertEqual(merge_pairs, {("entity_b", "entity_c")})
+        alias_texts = {item["alias_text"] for item in memory["approved_aliases"]}
+        self.assertIn("B", alias_texts)
+        self.assertNotIn("A", alias_texts)
 
 
 if __name__ == "__main__":

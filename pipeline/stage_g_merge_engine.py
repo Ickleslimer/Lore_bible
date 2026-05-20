@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.author_directives import apply_directive_to_card, parse_author_instruction
+from pipeline.card_architecture_agent import (
+    apply_card_architecture_actions,
+    card_architecture_paths,
+    ensure_card_architecture_files,
+    prepare_card_architecture_review,
+)
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json, write_jsonl
 from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalized_name_key
 from pipeline.mixtral_anchor_provider import call_mixtral_chat, get_mixtral_runtime_status, model_call_kwargs
@@ -81,8 +87,71 @@ AUTHOR_CLAIM_META_MARKERS = (
     "generic reference",
     "likely refer",
 )
-VERBATIM_CLAIM_REUSE_MIN_WORDS = 10
 VERBATIM_CLAIM_REUSE_MIN_CHARS = 70
+VERBATIM_CLAIM_REUSE_MIN_WORDS = 8
+
+IDENTITY_MERGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "merges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source_entity_name": {"type": "string", "description": "The old or previous name of the entity."},
+                    "target_entity_name": {"type": "string", "description": "The new or current name of the entity."},
+                    "trigger_phrase": {"type": "string", "description": "The exact phrase from the claim that indicates the merge (e.g., 'was renamed to')."},
+                    "claim_index": {"type": "integer", "description": "The index of the claim in the provided list."}
+                },
+                "required": ["source_entity_name", "target_entity_name", "trigger_phrase", "claim_index"],
+                "additionalProperties": False
+            }
+        }
+    },
+    "required": ["merges"],
+    "additionalProperties": False
+}
+
+IDENTITY_CLUSTER_CANONICAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "clusters": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "cluster_index": {"type": "integer"},
+                    "canonical_entity_id": {"type": "string"},
+                    "canonical_name": {"type": "string"},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
+                    "former_names": {"type": "array", "items": {"type": "string"}},
+                    "working_names": {"type": "array", "items": {"type": "string"}},
+                    "formal_names": {"type": "array", "items": {"type": "string"}},
+                    "do_not_merge_entity_ids": {"type": "array", "items": {"type": "string"}},
+                    "status": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "rationale": {"type": "string"},
+                },
+                "required": [
+                    "cluster_index",
+                    "canonical_entity_id",
+                    "canonical_name",
+                    "aliases",
+                    "former_names",
+                    "working_names",
+                    "formal_names",
+                    "do_not_merge_entity_ids",
+                    "status",
+                    "confidence",
+                    "rationale",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["clusters"],
+    "additionalProperties": False,
+}
 
 
 def provider_wait_seconds(reason: str, status: dict[str, Any], fallback_seconds: float) -> float:
@@ -301,10 +370,82 @@ def _latest_decision_by_card(decisions: list[dict[str, Any]]) -> dict[str, dict[
 def _latest_decision_by_identity_merge(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for decision in decisions:
+        if str(decision.get("decision_scope", "")).strip() == "identity_edge":
+            continue
         proposal_id = str(decision.get("proposal_id") or decision.get("merge_id") or "")
         if proposal_id:
             out[proposal_id] = decision
     return out
+
+
+def _latest_identity_edge_decisions(decisions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for decision in decisions:
+        if str(decision.get("decision_scope", "")).strip() != "identity_edge":
+            continue
+        edge_id = str(decision.get("edge_proposal_id") or decision.get("edge_id") or "").strip()
+        if edge_id:
+            out[edge_id] = decision
+    return out
+
+
+def _rejected_identity_edge_ids_for_cluster(proposal: dict[str, Any], decisions: list[dict[str, Any]]) -> set[str]:
+    cluster_id = str(proposal.get("cluster_id") or proposal.get("proposal_id") or "").strip()
+    rejected = {
+        str(edge_id)
+        for edge_id in proposal.get("rejected_edge_proposal_ids", []) or []
+        if str(edge_id).strip()
+    }
+    for decision in decisions:
+        if str(decision.get("decision_scope", "")).strip() != "identity_edge":
+            continue
+        if cluster_id and str(decision.get("cluster_id") or decision.get("proposal_id") or "").strip() not in {"", cluster_id}:
+            continue
+        edge_id = str(decision.get("edge_proposal_id") or decision.get("edge_id") or "").strip()
+        if not edge_id:
+            continue
+        action = str(decision.get("decision", "")).strip().lower()
+        if action in {"reject", "rejected", "refute", "refuted"}:
+            rejected.add(edge_id)
+        elif action in {"accept", "approve", "keep", "restore"}:
+            rejected.discard(edge_id)
+    return rejected
+
+
+def _identity_cluster_connected_member_ids(
+    proposal: dict[str, Any],
+    target_entity_id: str,
+    rejected_edge_ids: set[str],
+) -> set[str]:
+    member_ids = {
+        str(entity_id)
+        for entity_id in proposal.get("member_entity_ids", []) or []
+        if str(entity_id).strip()
+    }
+    if not member_ids:
+        return set()
+    adjacency: dict[str, set[str]] = {entity_id: set() for entity_id in member_ids}
+    for edge in proposal.get("member_edges", []) or []:
+        if not isinstance(edge, dict):
+            continue
+        edge_id = str(edge.get("proposal_id", "")).strip()
+        if edge_id and edge_id in rejected_edge_ids:
+            continue
+        source_id = str(edge.get("source_entity_id", "")).strip()
+        target_id = str(edge.get("target_entity_id", "")).strip()
+        if source_id in member_ids and target_id in member_ids and source_id != target_id:
+            adjacency.setdefault(source_id, set()).add(target_id)
+            adjacency.setdefault(target_id, set()).add(source_id)
+    root_id = target_entity_id if target_entity_id in member_ids else next(iter(member_ids))
+    seen: set[str] = set()
+    stack = [root_id]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(sorted(adjacency.get(current, set()) - seen))
+    return seen
 
 
 def apply_claim_decisions(
@@ -388,6 +529,9 @@ def _entity_mentions(text: str, entities: list[dict[str, Any]]) -> list[dict[str
     return sorted(mentions, key=lambda mention: (int(mention["start"]), -int(mention["end"])))
 
 
+
+
+
 def _nearest_mention_before(mentions: list[dict[str, Any]], idx: int) -> dict[str, Any] | None:
     candidates = [mention for mention in mentions if int(mention["end"]) <= idx]
     if not candidates:
@@ -447,54 +591,786 @@ def _claim_identity_pairs(claim: dict[str, Any], entities: list[dict[str, Any]])
     ]
 
 
+def _cluster_claims_by_entity_overlap(
+    claims_with_entities: list[tuple[dict[str, Any], set[str]]],
+    max_cluster_size: int = 50
+) -> list[dict[str, Any]]:
+    """
+    Greedily clusters claims so that claims sharing entities are placed adjacent to each other.
+    Returns a sorted/reordered list of claims.
+    """
+    unclustered = list(claims_with_entities)
+    reordered_claims = []
+    
+    while unclustered:
+        # Start a new cluster with the first available claim
+        current_cluster = [unclustered.pop(0)]
+        cluster_entities = set(current_cluster[0][1])
+        
+        # Grow the cluster greedily by finding claims that overlap with the current cluster's entities
+        i = 0
+        while i < len(unclustered) and len(current_cluster) < max_cluster_size:
+            claim_data, entity_ids = unclustered[i]
+            # Check if there's any intersection between the claim's entities and the cluster's entities
+            if entity_ids & cluster_entities:
+                current_cluster.append(unclustered.pop(i))
+                cluster_entities.update(entity_ids)
+                # Reset index to scan again since cluster_entities expanded
+                i = 0
+            else:
+                i += 1
+                
+        # Append the clustered claims to our reordered list
+        for claim_data, _ in current_cluster:
+            reordered_claims.append(claim_data)
+            
+    return reordered_claims
+
+
+GENERIC_IDENTITY_NAMES = {
+    "architect",
+    "beast",
+    "fear",
+    "general",
+    "joy",
+    "loss",
+    "love",
+    "mech",
+    "player",
+    "suit",
+}
+
+
+def _clean_text_list(values: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values if isinstance(values, list) else ([] if values in (None, "") else [values]):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = normalized_name_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _first_text_field(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, dict):
+            for nested_key in ("name", "title", "value", "text"):
+                nested = str(value.get(nested_key, "")).strip()
+                if nested:
+                    return nested
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _first_list_field(payload: dict[str, Any], *keys: str) -> list[str]:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return _clean_text_list(value)
+        if isinstance(value, str) and value.strip():
+            return _clean_text_list([part.strip() for part in re.split(r"[,;]", value) if part.strip()])
+    return []
+
+
+def _first_float_field(payload: dict[str, Any], *keys: str, fallback: float = 0.65) -> float:
+    for key in keys:
+        value = payload.get(key)
+        try:
+            if value is not None and str(value).strip() != "":
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return fallback
+
+
+def _identity_name_score(name: str, incoming_edges: int = 0, outgoing_edges: int = 0) -> float:
+    clean = re.sub(r"\s+", " ", str(name or "").strip())
+    if not clean:
+        return -1000.0
+    key = normalized_name_key(clean)
+    token_count = len(clean.split())
+    score = float(incoming_edges * 5 - outgoing_edges)
+    score += min(len(clean), 40) / 10.0
+    score += token_count * 1.5
+    if key in GENERIC_IDENTITY_NAMES:
+        score -= 14.0
+    if token_count == 1 and len(clean) <= 5:
+        score -= 5.0
+    if clean.isupper() and len(clean) <= 8:
+        score -= 1.0
+    return score
+
+
+def _fallback_identity_cluster_canonical_id(
+    member_ids: list[str],
+    member_by_id: dict[str, dict[str, Any]],
+    edge_proposals: list[dict[str, Any]],
+) -> str:
+    incoming: dict[str, int] = {}
+    outgoing: dict[str, int] = {}
+    for edge in edge_proposals:
+        source_id = str(edge.get("source_entity_id", "")).strip()
+        target_id = str(edge.get("target_entity_id", "")).strip()
+        if source_id:
+            outgoing[source_id] = outgoing.get(source_id, 0) + 1
+        if target_id:
+            incoming[target_id] = incoming.get(target_id, 0) + 1
+    ranked = sorted(
+        member_ids,
+        key=lambda entity_id: (
+            _identity_name_score(
+                str(member_by_id.get(entity_id, {}).get("canonical_name", "")),
+                incoming.get(entity_id, 0),
+                outgoing.get(entity_id, 0),
+            ),
+            str(member_by_id.get(entity_id, {}).get("canonical_name", "")).lower(),
+        ),
+        reverse=True,
+    )
+    return ranked[0] if ranked else ""
+
+
+def _identity_cluster_source_display(
+    member_ids: list[str],
+    canonical_entity_id: str,
+    member_by_id: dict[str, dict[str, Any]],
+) -> tuple[str, str, str]:
+    source_ids = [entity_id for entity_id in member_ids if entity_id != canonical_entity_id]
+    if not source_ids and member_ids:
+        source_ids = [member_ids[0]]
+    source_names = [
+        str(member_by_id.get(entity_id, {}).get("canonical_name", entity_id)).strip() or entity_id
+        for entity_id in source_ids
+    ]
+    display_name = " + ".join(source_names[:4])
+    if len(source_names) > 4:
+        display_name += f" +{len(source_names) - 4}"
+    return (source_ids[0] if source_ids else "", display_name, display_name)
+
+
+def _identity_cluster_alias_texts(
+    member_entities: list[dict[str, Any]],
+    canonical_entity_id: str,
+    canonical_name: str,
+    extra_aliases: list[str] | None = None,
+) -> list[str]:
+    aliases: list[str] = []
+    canonical_key = normalized_name_key(canonical_name)
+    for entity in member_entities:
+        entity_name = str(entity.get("canonical_name", "")).strip()
+        if str(entity.get("entity_id", "")) != canonical_entity_id and entity_name:
+            aliases.append(entity_name)
+        for alias in entity.get("aliases", []) or []:
+            aliases.append(str(alias))
+    aliases.extend(extra_aliases or [])
+    return [text for text in _clean_text_list(aliases) if normalized_name_key(text) != canonical_key]
+
+
+def _resolve_cluster_canonical_entity_id(
+    judgement: dict[str, Any],
+    cluster: dict[str, Any],
+) -> str:
+    member_ids = {str(entity_id) for entity_id in cluster.get("member_entity_ids", []) or []}
+    by_name: dict[str, str] = {}
+    for entity in cluster.get("member_entities", []) or []:
+        entity_id = str(entity.get("entity_id", "")).strip()
+        if not entity_id:
+            continue
+        name = str(entity.get("canonical_name", "")).strip()
+        if name:
+            by_name[normalized_name_key(name)] = entity_id
+        for alias in entity.get("aliases", []) or []:
+            alias_text = str(alias).strip()
+            if alias_text:
+                by_name[normalized_name_key(alias_text)] = entity_id
+    proposed_id = str(judgement.get("canonical_entity_id", "")).strip()
+    if proposed_id in member_ids:
+        return proposed_id
+    proposed_name = str(judgement.get("canonical_name", "")).strip()
+    if proposed_name and normalized_name_key(proposed_name) in by_name:
+        return by_name[normalized_name_key(proposed_name)]
+    fallback_id = str(cluster.get("canonical_entity_id") or cluster.get("target_entity_id") or "").strip()
+    if fallback_id in member_ids:
+        return fallback_id
+    return sorted(member_ids)[0] if member_ids else ""
+
+
+def _build_identity_cluster_proposals(
+    edge_proposals: list[dict[str, Any]],
+    entities: list[dict[str, Any]],
+    config: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not edge_proposals:
+        return []
+    entity_by_id = {str(entity.get("entity_id", "")): entity for entity in entities if str(entity.get("entity_id", "")).strip()}
+    parent: dict[str, str] = {}
+
+    def find(entity_id: str) -> str:
+        parent.setdefault(entity_id, entity_id)
+        while parent[entity_id] != entity_id:
+            parent[entity_id] = parent[parent[entity_id]]
+            entity_id = parent[entity_id]
+        return entity_id
+
+    def union(left: str, right: str) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    touched: set[str] = set()
+    for edge in edge_proposals:
+        source_id = str(edge.get("source_entity_id", "")).strip()
+        target_id = str(edge.get("target_entity_id", "")).strip()
+        if source_id and target_id and source_id in entity_by_id and target_id in entity_by_id and source_id != target_id:
+            union(source_id, target_id)
+            touched.update([source_id, target_id])
+
+    components: dict[str, list[str]] = {}
+    for entity_id in touched:
+        components.setdefault(find(entity_id), []).append(entity_id)
+
+    clusters: list[dict[str, Any]] = []
+    for component_ids in components.values():
+        member_ids = sorted(set(component_ids), key=lambda entity_id: str(entity_by_id[entity_id].get("canonical_name", "")).lower())
+        if len(member_ids) < 2:
+            continue
+        member_set = set(member_ids)
+        member_edges = [
+            edge
+            for edge in edge_proposals
+            if str(edge.get("source_entity_id", "")) in member_set and str(edge.get("target_entity_id", "")) in member_set
+        ]
+        canonical_entity_id = _fallback_identity_cluster_canonical_id(member_ids, entity_by_id, member_edges)
+        canonical_entity = entity_by_id.get(canonical_entity_id, {})
+        canonical_name = str(canonical_entity.get("canonical_name", "")).strip()
+        source_entity_id, source_entity_name, alias_text = _identity_cluster_source_display(member_ids, canonical_entity_id, entity_by_id)
+        member_entities = [
+            {
+                "entity_id": str(entity_by_id[entity_id].get("entity_id", "")),
+                "card_id": str(entity_by_id[entity_id].get("card_id", "")),
+                "canonical_name": str(entity_by_id[entity_id].get("canonical_name", "")),
+                "entity_type": str(entity_by_id[entity_id].get("entity_type", "")),
+                "aliases": _clean_text_list(entity_by_id[entity_id].get("aliases", [])),
+            }
+            for entity_id in member_ids
+        ]
+        evidence_claim_ids = _clean_text_list(
+            [claim_id for edge in member_edges for claim_id in edge.get("evidence_claim_ids", []) or []]
+        )
+        source_snippet_ids = _clean_text_list(
+            [snippet_id for edge in member_edges for snippet_id in edge.get("source_snippet_ids", []) or []]
+        )
+        evidence = []
+        for edge in member_edges:
+            for item in edge.get("evidence", []) or []:
+                if isinstance(item, dict):
+                    evidence.append(item)
+        aliases = _identity_cluster_alias_texts(member_entities, canonical_entity_id, canonical_name)
+        cluster_id = stable_id("identity_merge_cluster", *member_ids)
+        clusters.append(
+            {
+                "proposal_id": cluster_id,
+                "cluster_id": cluster_id,
+                "proposal_kind": "identity_cluster",
+                "member_entity_ids": member_ids,
+                "member_entities": member_entities,
+                "canonical_entity_id": canonical_entity_id,
+                "canonical_card_id": canonical_entity.get("card_id", ""),
+                "canonical_name": canonical_name,
+                "target_entity_id": canonical_entity_id,
+                "target_card_id": canonical_entity.get("card_id", ""),
+                "target_entity_name": canonical_name,
+                "source_entity_id": source_entity_id,
+                "source_card_id": entity_by_id.get(source_entity_id, {}).get("card_id", ""),
+                "source_entity_name": source_entity_name,
+                "alias_text": alias_text,
+                "alias_texts": aliases,
+                "former_names": [],
+                "working_names": [],
+                "formal_names": [],
+                "merge_type": "identity_cluster",
+                "status": "proposed",
+                "review_status": "pending",
+                "confidence": 0.65,
+                "rationale": "Deterministically collated connected identity/rename evidence into one reviewable entity cluster.",
+                "cluster_review_flags": [],
+                "suggested_split_entity_ids": [],
+                "edge_proposal_ids": [str(edge.get("proposal_id", "")) for edge in member_edges if str(edge.get("proposal_id", "")).strip()],
+                "member_edges": member_edges,
+                "evidence_claim_ids": evidence_claim_ids,
+                "source_snippet_ids": source_snippet_ids,
+                "evidence": evidence,
+                "created_at_utc": now_utc_iso(),
+            }
+        )
+
+    refined = _refine_identity_clusters_with_model(clusters, config or {})
+    return sorted(refined, key=lambda proposal: str(proposal.get("canonical_name") or proposal.get("target_entity_name", "")).lower())
+
+
+def _refine_identity_clusters_with_model(clusters: list[dict[str, Any]], config: dict[str, Any]) -> list[dict[str, Any]]:
+    if not clusters:
+        return []
+    tasks = config.get("model_routing", {}).get("tasks", {}) if isinstance(config.get("model_routing", {}), dict) else {}
+    if "stage_g_identity_merge_cluster_judgement" not in tasks:
+        return clusters
+
+    logger = get_logger(__name__)
+    call_kwargs = model_call_kwargs(config, "stage_g_identity_merge_cluster_judgement")
+    mixtral_cfg = config.get("mixtral", {}) if isinstance(config, dict) else {}
+    provider_retries = max(0, int(mixtral_cfg.get("identity_merge_provider_retries", mixtral_cfg.get("synthesis_provider_retries", 2))))
+    provider_retry_sleep_seconds = max(
+        0.0,
+        float(
+            mixtral_cfg.get(
+                "identity_merge_provider_retry_sleep_seconds",
+                mixtral_cfg.get("synthesis_provider_retry_sleep_seconds", mixtral_cfg.get("rate_limit_cooldown_seconds", 30)),
+            )
+        ),
+    )
+    refined = [dict(cluster) for cluster in clusters]
+    batch_size = 8
+    batch_failures = 0
+    for start in range(0, len(refined), batch_size):
+        batch = refined[start:start + batch_size]
+        prompt_lines = [
+            "You are reviewing identity-merge clusters for a lore wiki pipeline.",
+            "Each cluster was made by collapsing pairwise rename/alias evidence into one connected component.",
+            "For each cluster, choose the best final wiki page title and canonical entity id.",
+            "Use a natural page title, not necessarily the longest name. Treat generic or working names such as 'Loss', 'Suit', 'Fear', 'General', or 'Mech' as aliases when a clearer current name is supported.",
+            "If a member looks related but not identical, keep the cluster reviewable and list that member in do_not_merge_entity_ids; do not invent entity ids.",
+            "Return one judgement per cluster_index.",
+            "",
+        ]
+        for local_index, cluster in enumerate(batch):
+            prompt_lines.append(f"Cluster {local_index}:")
+            prompt_lines.append("Members:")
+            for entity in cluster.get("member_entities", []) or []:
+                prompt_lines.append(
+                    f"- id={entity.get('entity_id')} name={entity.get('canonical_name')} "
+                    f"type={entity.get('entity_type')} aliases={_clean_text_list(entity.get('aliases', []))}"
+                )
+            prompt_lines.append("Evidence edges:")
+            for edge in (cluster.get("member_edges", []) or [])[:10]:
+                evidence_texts = []
+                for evidence in edge.get("evidence", []) or []:
+                    if isinstance(evidence, dict) and evidence.get("claim_text"):
+                        evidence_texts.append(str(evidence.get("claim_text")))
+                prompt_lines.append(
+                    f"- {edge.get('source_entity_name')} -> {edge.get('target_entity_name')} "
+                    f"trigger={edge.get('merge_type') or 'identity'} claims={edge.get('evidence_claim_ids', [])} "
+                    f"text={'; '.join(evidence_texts[:2])[:900]}"
+                )
+            prompt_lines.append("")
+        prompt = "\n".join(prompt_lines)
+        batch_number = start // batch_size + 1
+        batch_total = (len(refined) + batch_size - 1) // batch_size
+        provider_failures = 0
+        while True:
+            logger.info(
+                "Sending identity cluster canonical-name prompt to LLM (batch %d/%d, clusters=%d)...",
+                batch_number,
+                batch_total,
+                len(batch),
+            )
+            response = call_mixtral_chat(prompt=prompt, json_schema=IDENTITY_CLUSTER_CANONICAL_SCHEMA, **call_kwargs)
+            if response is None:
+                status = get_mixtral_runtime_status()
+                reason = str(status.get("last_mistral_skip_reason") or "provider_unavailable")
+                sleep_s = provider_wait_seconds(reason, status, provider_retry_sleep_seconds)
+                if reason in PACING_SKIP_REASONS:
+                    if sleep_s:
+                        logger.info(
+                            "Stage 10 identity cluster provider pacing for batch %d/%d; retrying in %.1fs (%s).",
+                            batch_number,
+                            batch_total,
+                            sleep_s,
+                            reason,
+                        )
+                        time.sleep(sleep_s)
+                    continue
+                provider_failures += 1
+                if provider_failures > provider_retries:
+                    batch_failures += 1
+                    logger.error(
+                        "Failed to judge identity clusters with LLM (batch %d/%d): provider returned no response (%s).",
+                        batch_number,
+                        batch_total,
+                        reason,
+                    )
+                    break
+                if sleep_s:
+                    logger.info(
+                        "Stage 10 waiting %.1fs before retrying identity cluster batch %d/%d after provider returned no response (%s).",
+                        sleep_s,
+                        batch_number,
+                        batch_total,
+                        reason,
+                    )
+                    time.sleep(sleep_s)
+                continue
+            cluster_rows = None
+            if isinstance(response, dict) and isinstance(response.get("clusters"), list):
+                cluster_rows = response.get("clusters")
+            elif isinstance(response, dict) and response.get("_json_root_type") == "list" and isinstance(response.get("_json_root"), list):
+                cluster_rows = response.get("_json_root")
+            if cluster_rows is None:
+                batch_failures += 1
+                logger.error(
+                    "Failed to judge identity clusters with LLM (batch %d/%d): invalid response shape keys=%s",
+                    batch_number,
+                    batch_total,
+                    sorted(response.keys()) if isinstance(response, dict) else type(response).__name__,
+                )
+                break
+            for judgement in cluster_rows or []:
+                if not isinstance(judgement, dict):
+                    continue
+                try:
+                    local_index = int(judgement.get("cluster_index"))
+                except (TypeError, ValueError):
+                    continue
+                if local_index < 0 or local_index >= len(batch):
+                    continue
+                cluster = batch[local_index]
+                normalized_judgement = {
+                    **judgement,
+                    "canonical_entity_id": _first_text_field(
+                        judgement,
+                        "canonical_entity_id",
+                        "target_entity_id",
+                        "chosen_entity_id",
+                        "canonical_id",
+                    ),
+                    "canonical_name": _first_text_field(
+                        judgement,
+                        "canonical_name",
+                        "canonical_page_title",
+                        "suggested_canonical_name",
+                        "final_canonical_name",
+                        "page_title",
+                        "display_name",
+                    ),
+                    "aliases": _first_list_field(judgement, "aliases", "alias_texts", "alias_names"),
+                    "former_names": _first_list_field(judgement, "former_names", "old_names", "previous_names"),
+                    "working_names": _first_list_field(judgement, "working_names", "working_name_aliases"),
+                    "formal_names": _first_list_field(judgement, "formal_names", "full_names", "formal_name"),
+                    "do_not_merge_entity_ids": _first_list_field(
+                        judgement,
+                        "do_not_merge_entity_ids",
+                        "split_entity_ids",
+                        "possible_false_identity_entity_ids",
+                    ),
+                    "status": _first_text_field(judgement, "status", "review_status", "recommendation"),
+                    "confidence": _first_float_field(judgement, "confidence", "confidence_score", "canonical_confidence", fallback=float(cluster.get("confidence", 0.65) or 0.65)),
+                    "rationale": _first_text_field(judgement, "rationale", "reason", "reasoning", "explanation", "notes"),
+                }
+                canonical_entity_id = _resolve_cluster_canonical_entity_id(normalized_judgement, cluster)
+                member_entities = cluster.get("member_entities", []) or []
+                canonical_entity = next((entity for entity in member_entities if str(entity.get("entity_id", "")) == canonical_entity_id), {})
+                canonical_name = str(normalized_judgement.get("canonical_name") or canonical_entity.get("canonical_name") or cluster.get("canonical_name") or "").strip()
+                if not canonical_name:
+                    canonical_name = str(canonical_entity.get("canonical_name", "")).strip()
+                aliases = _identity_cluster_alias_texts(
+                    member_entities,
+                    canonical_entity_id,
+                    canonical_name,
+                    _clean_text_list(normalized_judgement.get("aliases", [])),
+                )
+                source_entity_id, source_entity_name, alias_text = _identity_cluster_source_display(
+                    [str(item) for item in cluster.get("member_entity_ids", []) or []],
+                    canonical_entity_id,
+                    {str(entity.get("entity_id", "")): entity for entity in member_entities},
+                )
+                flags = _clean_text_list(cluster.get("cluster_review_flags", []))
+                status = str(normalized_judgement.get("status", "")).strip()
+                split_ids = [entity_id for entity_id in _clean_text_list(normalized_judgement.get("do_not_merge_entity_ids", [])) if entity_id in cluster.get("member_entity_ids", [])]
+                if split_ids and "possible_false_identity_edge" not in flags:
+                    flags.append("possible_false_identity_edge")
+                if status and status not in {"ready_for_review", "ok", "ready"}:
+                    flags.append(status)
+                cluster.update(
+                    {
+                        "canonical_entity_id": canonical_entity_id,
+                        "canonical_card_id": canonical_entity.get("card_id", ""),
+                        "canonical_name": canonical_name,
+                        "target_entity_id": canonical_entity_id,
+                        "target_card_id": canonical_entity.get("card_id", ""),
+                        "target_entity_name": canonical_name,
+                        "source_entity_id": source_entity_id,
+                        "source_card_id": next(
+                            (
+                                entity.get("card_id", "")
+                                for entity in member_entities
+                                if str(entity.get("entity_id", "")) == source_entity_id
+                            ),
+                            "",
+                        ),
+                        "source_entity_name": source_entity_name,
+                        "alias_text": alias_text,
+                        "alias_texts": aliases,
+                        "former_names": _clean_text_list(normalized_judgement.get("former_names", [])),
+                        "working_names": _clean_text_list(normalized_judgement.get("working_names", [])),
+                        "formal_names": _clean_text_list(normalized_judgement.get("formal_names", [])),
+                        "suggested_split_entity_ids": split_ids,
+                        "cluster_review_flags": flags,
+                        "confidence": normalized_judgement.get("confidence", cluster.get("confidence", 0.65)),
+                        "rationale": str(normalized_judgement.get("rationale") or cluster.get("rationale") or ""),
+                        "canonical_judgement_model_task": "stage_g_identity_merge_cluster_judgement",
+                    }
+                )
+            break
+    if batch_failures:
+        logger.warning("LLM identity cluster canonical judgement: %d/%d batches failed", batch_failures, (len(refined) + batch_size - 1) // batch_size)
+    logger.info("LLM identity cluster canonical judgement complete: %d cluster(s), %d batch failure(s)", len(refined), batch_failures)
+    return refined
+
+
 def detect_identity_merge_proposals(
     accepted_claims: list[dict[str, Any]],
     entities: list[dict[str, Any]],
+    config: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    proposals_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    logger = get_logger(__name__)
+
+    # Determine whether to use the heuristic or LLM-based approach.
+    # We use LLM only if a pipeline config is present AND routes
+    # "stage_g_identity_merge_proposals" to a model.  In unit tests the
+    # config is empty / absent, so the fast heuristic path runs instead.
+    use_llm = False
+    if config:
+        task_routing = config.get("model_routing", {}).get("tasks", {})
+        if "stage_g_identity_merge_proposals" in task_routing:
+            use_llm = True
+
+    if not use_llm:
+        proposals_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+        for claim in accepted_claims:
+            for source, target, trigger in _claim_identity_pairs(claim, entities):
+                source_id = str(source.get("entity_id", ""))
+                target_id = str(target.get("entity_id", ""))
+                key = (source_id, target_id)
+                if key not in proposals_by_pair:
+                    proposals_by_pair[key] = {
+                        "proposal_id": stable_id("identity_merge_proposal", source_id, target_id),
+                        "source_entity_id": source_id,
+                        "source_card_id": source.get("card_id"),
+                        "source_entity_name": source.get("canonical_name"),
+                        "target_entity_id": target_id,
+                        "target_card_id": target.get("card_id"),
+                        "target_entity_name": target.get("canonical_name"),
+                        "alias_text": source.get("canonical_name"),
+                        "merge_type": "identity_rename",
+                        "status": "proposed",
+                        "evidence_claim_ids": [],
+                        "source_snippet_ids": [],
+                        "evidence": [],
+                        "created_at_utc": now_utc_iso(),
+                    }
+                proposal = proposals_by_pair[key]
+                claim_id = str(claim.get("claim_id", ""))
+                if claim_id and claim_id not in proposal["evidence_claim_ids"]:
+                    proposal["evidence_claim_ids"].append(claim_id)
+                for snippet_id in claim.get("source_snippet_ids", []) or []:
+                    snippet_text = str(snippet_id)
+                    if snippet_text and snippet_text not in proposal["source_snippet_ids"]:
+                        proposal["source_snippet_ids"].append(snippet_text)
+                proposal["evidence"].append(
+                    {
+                        "claim_id": claim.get("claim_id"),
+                        "claim_text": claim.get("claim_text"),
+                        "trigger": trigger,
+                        "source_snippet_ids": claim.get("source_snippet_ids", []),
+                        "confidence": claim.get("confidence"),
+                    }
+                )
+        return _build_identity_cluster_proposals(list(proposals_by_pair.values()), entities, config)
+
+    candidate_claims_with_entities = []
     for claim in accepted_claims:
-        for source, target, trigger in _claim_identity_pairs(claim, entities):
-            source_id = str(source.get("entity_id", ""))
-            target_id = str(target.get("entity_id", ""))
-            key = (source_id, target_id)
-            if key not in proposals_by_pair:
-                proposals_by_pair[key] = {
-                    "proposal_id": stable_id("identity_merge_proposal", source_id, target_id),
-                    "source_entity_id": source_id,
-                    "source_card_id": source.get("card_id"),
-                    "source_entity_name": source.get("canonical_name"),
-                    "target_entity_id": target_id,
-                    "target_card_id": target.get("card_id"),
-                    "target_entity_name": target.get("canonical_name"),
-                    "alias_text": source.get("canonical_name"),
-                    "merge_type": "identity_rename",
-                    "status": "proposed",
-                    "evidence_claim_ids": [],
-                    "source_snippet_ids": [],
-                    "evidence": [],
-                    "created_at_utc": now_utc_iso(),
-                }
-            proposal = proposals_by_pair[key]
-            claim_id = str(claim.get("claim_id", ""))
-            if claim_id and claim_id not in proposal["evidence_claim_ids"]:
-                proposal["evidence_claim_ids"].append(claim_id)
-            for snippet_id in claim.get("source_snippet_ids", []) or []:
-                snippet_text = str(snippet_id)
-                if snippet_text and snippet_text not in proposal["source_snippet_ids"]:
-                    proposal["source_snippet_ids"].append(snippet_text)
-            proposal["evidence"].append(
-                {
-                    "claim_id": claim.get("claim_id"),
-                    "claim_text": claim.get("claim_text"),
-                    "trigger": trigger,
-                    "source_snippet_ids": claim.get("source_snippet_ids", []),
-                    "confidence": claim.get("confidence"),
-                }
+        text = str(claim.get("claim_text", "")).strip()
+        if not text:
+            continue
+        mentions = _entity_mentions(text, entities)
+        unique_entity_ids = {str(m["entity"].get("entity_id")) for m in mentions if str(m["entity"].get("entity_id"))}
+        if len(unique_entity_ids) >= 2:
+            candidate_claims_with_entities.append((claim, unique_entity_ids))
+            
+    proposals_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    
+    if not candidate_claims_with_entities:
+        return []
+        
+    # Cluster the claims greedily by entity overlap so similar entities end up in the same batch
+    candidate_claims = _cluster_claims_by_entity_overlap(candidate_claims_with_entities, max_cluster_size=50)
+    
+    call_kwargs = model_call_kwargs(config, "stage_g_identity_merge_proposals")
+    batch_size = 50
+    batch_failures = 0
+    mixtral_cfg = config.get("mixtral", {}) if isinstance(config, dict) else {}
+    provider_retries = max(0, int(mixtral_cfg.get("identity_merge_provider_retries", mixtral_cfg.get("synthesis_provider_retries", 2))))
+    provider_retry_sleep_seconds = max(
+        0.0,
+        float(
+            mixtral_cfg.get(
+                "identity_merge_provider_retry_sleep_seconds",
+                mixtral_cfg.get("synthesis_provider_retry_sleep_seconds", mixtral_cfg.get("rate_limit_cooldown_seconds", 30)),
             )
-    return sorted(
-        proposals_by_pair.values(),
-        key=lambda proposal: (str(proposal.get("target_entity_name", "")), str(proposal.get("source_entity_name", ""))),
+        ),
     )
+
+    for i in range(0, len(candidate_claims), batch_size):
+        batch = candidate_claims[i:i+batch_size]
+        
+        prompt_lines = [
+            "Analyze the following claims and identify any that indicate two entities are actually the exact same entity under different names, or that one entity was renamed to, merged into, or is formerly known as another entity.",
+            "IMPORTANT: Do NOT merge distinct entities that have a relational connection (e.g., colleagues, partners, family members, creator/creation, boss/employee, weapon/user). They must represent the exact same single individual, concept, or group.",
+            "Example of a valid merge: 'The protagonist, also known as the Player Character, is silent.' -> Protagonist and Player Character are the exact same.",
+            "Example of an INVALID merge: 'The Partner Character is a senior colleague of the Player Character.' -> A senior colleague is a separate person. Do NOT merge them.",
+            "Return a JSON list of merges containing the source_entity_name (old/alias name), target_entity_name (new/canonical name), trigger_phrase (the exact text that indicates the merge), and claim_index.",
+            "If there are no merges, return an empty array for 'merges'.",
+            ""
+        ]
+        
+        for idx, claim in enumerate(batch):
+            text = str(claim.get("claim_text", ""))
+            mentions = _entity_mentions(text, entities)
+            mention_names = list({m["entity"].get("canonical_name") for m in mentions if m["entity"].get("canonical_name")})
+            prompt_lines.append(f"[{idx}] Claim: \"{text}\"")
+            prompt_lines.append(f"     Mentions: {', '.join(mention_names)}")
+            prompt_lines.append("")
+
+        prompt = "\n".join(prompt_lines)
+
+        try:
+            batch_number = i // batch_size + 1
+            batch_total = (len(candidate_claims) + batch_size - 1) // batch_size
+            provider_failures = 0
+            while True:
+                logger.info("Sending identity merge prompt to LLM (batch %d/%d, claims=%d)...", batch_number, batch_total, len(batch))
+                response = call_mixtral_chat(
+                    prompt=prompt,
+                    json_schema=IDENTITY_MERGE_SCHEMA,
+                    **call_kwargs,
+                )
+                if response is None:
+                    status = get_mixtral_runtime_status()
+                    reason = str(status.get("last_mistral_skip_reason") or "provider_unavailable")
+                    sleep_s = provider_wait_seconds(reason, status, provider_retry_sleep_seconds)
+                    if reason in PACING_SKIP_REASONS:
+                        if sleep_s:
+                            logger.info(
+                                "Stage 10 identity merge provider pacing for batch %d/%d; retrying in %.1fs (%s).",
+                                batch_number,
+                                batch_total,
+                                sleep_s,
+                                reason,
+                            )
+                            time.sleep(sleep_s)
+                        continue
+                    provider_failures += 1
+                    if provider_failures > provider_retries:
+                        batch_failures += 1
+                        logger.error(
+                            "Failed to detect identity merge proposals with LLM (batch %d/%d): provider returned no response (%s).",
+                            batch_number,
+                            batch_total,
+                            reason,
+                        )
+                        break
+                    if sleep_s:
+                        logger.info(
+                            "Stage 10 waiting %.1fs before retrying identity merge batch %d/%d after provider returned no response (%s).",
+                            sleep_s,
+                            batch_number,
+                            batch_total,
+                            reason,
+                        )
+                        time.sleep(sleep_s)
+                    continue
+                if not isinstance(response, dict) or "merges" not in response or not isinstance(response.get("merges"), list):
+                    batch_failures += 1
+                    logger.error(
+                        "Failed to detect identity merge proposals with LLM (batch %d/%d): invalid response shape keys=%s",
+                        batch_number,
+                        batch_total,
+                        sorted(response.keys()) if isinstance(response, dict) else type(response).__name__,
+                    )
+                    break
+                for merge in response.get("merges", []):
+                    claim_idx = merge.get("claim_index")
+                    if claim_idx is None or claim_idx < 0 or claim_idx >= len(batch):
+                        continue
+                    claim = batch[claim_idx]
+
+                    source = _resolve_author_claim_target({"target_entity_name": merge.get("source_entity_name")}, entities)
+                    target = _resolve_author_claim_target({"target_entity_name": merge.get("target_entity_name")}, entities)
+
+                    if not source or not target:
+                        continue
+
+                    source_id = str(source.get("entity_id", ""))
+                    target_id = str(target.get("entity_id", ""))
+                    if not source_id or not target_id or source_id == target_id:
+                        continue
+
+                    trigger = merge.get("trigger_phrase", "model_identified")
+
+                    key = (source_id, target_id)
+                    if key not in proposals_by_pair:
+                        proposals_by_pair[key] = {
+                            "proposal_id": stable_id("identity_merge_proposal", source_id, target_id),
+                            "source_entity_id": source_id,
+                            "source_card_id": source.get("card_id"),
+                            "source_entity_name": source.get("canonical_name"),
+                            "target_entity_id": target_id,
+                            "target_card_id": target.get("card_id"),
+                            "target_entity_name": target.get("canonical_name"),
+                            "alias_text": source.get("canonical_name"),
+                            "merge_type": "identity_rename",
+                            "status": "proposed",
+                            "evidence_claim_ids": [],
+                            "source_snippet_ids": [],
+                            "evidence": [],
+                            "created_at_utc": now_utc_iso(),
+                        }
+                    proposal = proposals_by_pair[key]
+                    claim_id = str(claim.get("claim_id", ""))
+                    if claim_id and claim_id not in proposal["evidence_claim_ids"]:
+                        proposal["evidence_claim_ids"].append(claim_id)
+                    for snippet_id in claim.get("source_snippet_ids", []) or []:
+                        snippet_text = str(snippet_id)
+                        if snippet_text and snippet_text not in proposal["source_snippet_ids"]:
+                            proposal["source_snippet_ids"].append(snippet_text)
+                    proposal["evidence"].append(
+                        {
+                            "claim_id": claim.get("claim_id"),
+                            "claim_text": claim.get("claim_text"),
+                            "trigger": trigger,
+                            "source_snippet_ids": claim.get("source_snippet_ids", []),
+                            "confidence": claim.get("confidence"),
+                        }
+                    )
+                break
+        except Exception as exc:
+            batch_failures += 1
+            logger.error("Failed to detect identity merge proposals with LLM (batch %d): %s", i // batch_size + 1, exc)
+
+    total_batches = (len(candidate_claims) + batch_size - 1) // batch_size
+    if batch_failures:
+        logger.warning("LLM identity merge detection: %d/%d batches failed", batch_failures, total_batches)
+    logger.info("LLM identity merge detection complete: %d proposals from %d batches (%d failures)", len(proposals_by_pair), total_batches, batch_failures)
+
+    return _build_identity_cluster_proposals(list(proposals_by_pair.values()), entities, config)
 
 
 def annotate_identity_merge_proposals(
@@ -502,18 +1378,41 @@ def annotate_identity_merge_proposals(
     decisions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     decision_by_proposal = _latest_decision_by_identity_merge(decisions)
+    edge_decisions = _latest_identity_edge_decisions(decisions)
     annotated: list[dict[str, Any]] = []
     for proposal in proposals:
+        rejected_edge_ids = _rejected_identity_edge_ids_for_cluster(proposal, decisions)
+        annotated_edges: list[dict[str, Any]] = []
+        for edge in proposal.get("member_edges", []) or []:
+            if not isinstance(edge, dict):
+                continue
+            edge_id = str(edge.get("proposal_id", "")).strip()
+            edge_decision = edge_decisions.get(edge_id, {})
+            edge_status = str(edge_decision.get("decision", "")).lower() if edge_decision else ""
+            if not edge_status:
+                edge_status = "rejected" if edge_id in rejected_edge_ids else "pending"
+            annotated_edges.append(
+                {
+                    **edge,
+                    "edge_review_status": edge_status,
+                    "latest_edge_decision": edge_decision,
+                }
+            )
         decision = decision_by_proposal.get(str(proposal.get("proposal_id", "")))
+        base = {
+            **proposal,
+            "member_edges": annotated_edges if annotated_edges else proposal.get("member_edges", []),
+            "rejected_edge_proposal_ids": sorted(rejected_edge_ids),
+        }
         if not decision:
-            annotated.append({**proposal, "review_status": "pending"})
+            annotated.append({**base, "review_status": "pending"})
             continue
         action = str(decision.get("decision", "defer")).lower()
         if action not in VALID_IDENTITY_MERGE_DECISIONS:
             action = "defer"
         annotated.append(
             {
-                **proposal,
+                **base,
                 "review_status": action,
                 "reviewer": decision.get("reviewer", "reviewer"),
                 "review_rationale": decision.get("rationale", ""),
@@ -546,42 +1445,113 @@ def remember_identity_merge_decisions(
         proposal = proposal_by_id.get(str(decision.get("proposal_id") or decision.get("merge_id") or ""))
         if not proposal:
             continue
-        merge_key = (str(proposal.get("source_entity_id", "")), str(proposal.get("target_entity_id", "")))
-        if merge_key not in existing_merges:
-            memory.setdefault("entity_merges", []).append(
-                {
-                    "merge_id": str(proposal.get("proposal_id", stable_id("entity_merge", *merge_key))),
-                    "source_entity_id": proposal.get("source_entity_id", ""),
-                    "source_card_id": proposal.get("source_card_id", ""),
-                    "source_entity_name": proposal.get("source_entity_name", ""),
-                    "target_entity_id": proposal.get("target_entity_id", ""),
-                    "target_card_id": proposal.get("target_card_id", ""),
-                    "target_entity_name": proposal.get("target_entity_name", ""),
-                    "alias_text": proposal.get("alias_text", proposal.get("source_entity_name", "")),
-                    "merge_type": proposal.get("merge_type", "identity_rename"),
-                    "source_claim_ids": proposal.get("evidence_claim_ids", []),
-                    "source_snippet_ids": proposal.get("source_snippet_ids", []),
-                    "approved_by": decision.get("reviewer", "reviewer"),
-                    "rationale": decision.get("rationale", ""),
-                    "approved_at_utc": decision.get("timestamp_utc", now_utc_iso()),
-                }
-            )
-            existing_merges.add(merge_key)
+        member_entities = proposal.get("member_entities", []) if isinstance(proposal.get("member_entities", []), list) else []
+        member_by_id = {
+            str(entity.get("entity_id", "")): entity
+            for entity in member_entities
+            if isinstance(entity, dict) and str(entity.get("entity_id", "")).strip()
+        }
+        member_ids = [str(item) for item in proposal.get("member_entity_ids", []) or [] if str(item).strip()]
+        if not member_ids:
+            member_ids = [
+                str(proposal.get("source_entity_id", "")).strip(),
+                str(proposal.get("target_entity_id", "")).strip(),
+            ]
+        decision_canonical_name = str(decision.get("canonical_name", "")).strip()
+        target_id = str(decision.get("canonical_entity_id") or "").strip()
+        if not target_id and decision_canonical_name:
+            decision_name_key = normalized_name_key(decision_canonical_name)
+            for entity_id, entity in member_by_id.items():
+                names = [str(entity.get("canonical_name", "")), *[str(alias) for alias in entity.get("aliases", []) or []]]
+                if any(normalized_name_key(name) == decision_name_key for name in names if name.strip()):
+                    target_id = entity_id
+                    break
+        if not target_id:
+            target_id = str(proposal.get("canonical_entity_id") or proposal.get("target_entity_id") or "").strip()
+        if target_id not in set(member_ids):
+            target_id = str(proposal.get("target_entity_id", "")).strip()
+        target_entity = member_by_id.get(target_id, {})
+        target_name = str(decision_canonical_name or proposal.get("canonical_name") or proposal.get("target_entity_name") or target_entity.get("canonical_name") or "").strip()
+        target_card_id = str(target_entity.get("card_id") or proposal.get("target_card_id") or card_id_for_entity(target_name))
+        rejected_edge_ids = _rejected_identity_edge_ids_for_cluster(proposal, decisions)
+        excluded_member_ids = {
+            str(entity_id)
+            for entity_id in proposal.get("suggested_split_entity_ids", []) or []
+            if str(entity_id).strip()
+        }
+        included_member_ids = _identity_cluster_connected_member_ids(proposal, target_id, rejected_edge_ids)
+        if not included_member_ids:
+            included_member_ids = set(member_ids)
+        included_member_ids = {entity_id for entity_id in included_member_ids if entity_id not in excluded_member_ids}
+        source_ids = [
+            entity_id
+            for entity_id in member_ids
+            if entity_id and entity_id != target_id and entity_id in included_member_ids
+        ]
+        if not source_ids and str(proposal.get("source_entity_id", "")).strip():
+            source_ids = [str(proposal.get("source_entity_id", "")).strip()]
+        cluster_id = str(proposal.get("cluster_id") or proposal.get("proposal_id") or "").strip()
+        source_claim_ids = _clean_text_list(proposal.get("evidence_claim_ids", []))
+        source_snippet_ids = _clean_text_list(proposal.get("source_snippet_ids", []))
+        for source_id in source_ids:
+            source_entity = member_by_id.get(source_id, {})
+            source_name = str(source_entity.get("canonical_name") or proposal.get("source_entity_name") or source_id).strip()
+            source_card_id = str(source_entity.get("card_id") or proposal.get("source_card_id") or card_id_for_entity(source_name))
+            merge_key = (source_id, target_id)
+            if source_id and target_id and source_id != target_id and merge_key not in existing_merges:
+                memory.setdefault("entity_merges", []).append(
+                    {
+                        "merge_id": stable_id("entity_merge", cluster_id, source_id, target_id),
+                        "cluster_id": cluster_id,
+                        "source_entity_id": source_id,
+                        "source_card_id": source_card_id,
+                        "source_entity_name": source_name,
+                        "target_entity_id": target_id,
+                        "target_card_id": target_card_id,
+                        "target_entity_name": target_name,
+                        "canonical_name": target_name,
+                        "alias_text": source_name,
+                        "merge_type": proposal.get("merge_type", "identity_cluster"),
+                        "source_claim_ids": source_claim_ids,
+                        "source_snippet_ids": source_snippet_ids,
+                        "approved_by": decision.get("reviewer", "reviewer"),
+                        "rationale": decision.get("rationale", ""),
+                        "approved_at_utc": decision.get("timestamp_utc", now_utc_iso()),
+                    }
+                )
+                existing_merges.add(merge_key)
 
-        alias_text = str(proposal.get("alias_text") or proposal.get("source_entity_name") or "").strip()
-        alias_key = (str(proposal.get("target_entity_id", "")), alias_text.lower())
-        if alias_text and alias_key not in existing_aliases:
-            memory.setdefault("approved_aliases", []).append(
-                {
-                    "target_entity_id": proposal.get("target_entity_id", ""),
-                    "canonical_name": proposal.get("target_entity_name", ""),
-                    "alias_text": alias_text,
-                    "source_claim_id": ",".join(str(item) for item in proposal.get("evidence_claim_ids", [])),
-                    "source_snippet_ids": proposal.get("source_snippet_ids", []),
-                    "approved_at_utc": decision.get("timestamp_utc", now_utc_iso()),
-                }
-            )
-            existing_aliases.add(alias_key)
+        alias_candidates = _clean_text_list(
+            list(proposal.get("alias_texts", []) or [])
+            + list(proposal.get("former_names", []) or [])
+            + list(proposal.get("working_names", []) or [])
+            + list(proposal.get("formal_names", []) or [])
+            + [
+                str(member_by_id.get(entity_id, {}).get("canonical_name", ""))
+                for entity_id in source_ids
+            ]
+        )
+        excluded_alias_keys: set[str] = set()
+        for entity_id, entity in member_by_id.items():
+            if entity_id in included_member_ids or entity_id == target_id:
+                continue
+            excluded_alias_keys.add(normalized_name_key(str(entity.get("canonical_name", ""))))
+            excluded_alias_keys.update(normalized_name_key(str(alias)) for alias in entity.get("aliases", []) or [])
+        for alias_text in alias_candidates:
+            alias_key = (target_id, alias_text.lower())
+            alias_name_key = normalized_name_key(alias_text)
+            if alias_text and alias_name_key not in excluded_alias_keys and alias_name_key != normalized_name_key(target_name) and alias_key not in existing_aliases:
+                memory.setdefault("approved_aliases", []).append(
+                    {
+                        "target_entity_id": target_id,
+                        "canonical_name": target_name,
+                        "alias_text": alias_text,
+                        "source_claim_id": ",".join(str(item) for item in source_claim_ids),
+                        "source_snippet_ids": source_snippet_ids,
+                        "approved_at_utc": decision.get("timestamp_utc", now_utc_iso()),
+                    }
+                )
+                existing_aliases.add(alias_key)
 
 
 def approved_entity_merges_from_memory(memory: dict[str, Any]) -> list[dict[str, Any]]:
@@ -612,6 +1582,12 @@ def apply_entity_merges_to_entities(
 ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, list[str]]]:
     entity_by_id = {str(entity.get("entity_id", "")): entity for entity in entities}
     target_map = _merge_target_map(merge_records)
+    target_name_overrides: dict[str, str] = {}
+    for record in merge_records:
+        target_id = str(record.get("target_entity_id", "")).strip()
+        target_name = str(record.get("canonical_name") or record.get("target_entity_name") or "").strip()
+        if target_id and target_name:
+            target_name_overrides[target_id] = target_name
     sources_by_target: dict[str, list[str]] = {}
     for source_id, target_id in target_map.items():
         if source_id in entity_by_id and target_id in entity_by_id and source_id != target_id:
@@ -644,6 +1620,13 @@ def apply_entity_merges_to_entities(
             seed_ids.update(str(item) for item in source.get("seed_entity_ids", []) or [])
             relationship_hints.extend(source.get("relationship_hints", []) or [])
             merged_from.add(source_id)
+        override_name = target_name_overrides.get(target_id, "").strip()
+        if override_name and override_name != str(target.get("canonical_name", "")):
+            old_name = str(target.get("canonical_name", "")).strip()
+            if old_name:
+                aliases.add(old_name)
+            target["canonical_name"] = override_name
+            target["card_id"] = card_id_for_entity(override_name)
         target["aliases"] = sorted(aliases)
         target["seed_entity_ids"] = sorted(seed_ids)
         target["relationship_hints"] = relationship_hints
@@ -692,6 +1675,8 @@ def _merge_memory_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
         "entity_merges": [],
         "approved_cards": [],
         "author_directives": [],
+        "card_architecture_actions": [],
+        "card_redirects": [],
         "style_corrections": [],
     }
     seen_claims: set[tuple[str, str]] = set()
@@ -705,7 +1690,15 @@ def _merge_memory_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
                     continue
                 merged[key].append(claim)
                 seen_claims.add(claim_key)
-        for key in ["approved_aliases", "entity_merges", "approved_cards", "author_directives", "style_corrections"]:
+        for key in [
+            "approved_aliases",
+            "entity_merges",
+            "approved_cards",
+            "author_directives",
+            "card_architecture_actions",
+            "card_redirects",
+            "style_corrections",
+        ]:
             merged[key].extend([item for item in payload.get(key, []) or [] if isinstance(item, dict)])
     return merged
 
@@ -1734,7 +2727,7 @@ def run(
     remember_claim_decisions(memory, all_claims, all_claim_decisions)
     remember_author_directives(memory, directives)
     identity_merge_decisions = _load_identity_merge_decisions(identity_merge_decisions_path)
-    identity_merge_proposals = detect_identity_merge_proposals(accepted_claims, entities)
+    identity_merge_proposals = detect_identity_merge_proposals(accepted_claims, entities, config)
     remember_identity_merge_decisions(memory, identity_merge_proposals, identity_merge_decisions)
     identity_merge_proposals = annotate_identity_merge_proposals(identity_merge_proposals, identity_merge_decisions)
     write_json(
@@ -1751,7 +2744,7 @@ def run(
     if pending_identity_merges:
         save_review_memory(in_review_memory_json, memory)
         raise RuntimeError(
-            f"Stage 10 found {len(pending_identity_merges)} identity merge proposal(s) requiring review; "
+            f"Stage 10 found {len(pending_identity_merges)} identity cluster proposal(s) requiring review; "
             f"review {identity_merge_proposals_path} and save decisions to {identity_merge_decisions_path}, then rerun Stage 10."
         )
 
@@ -1767,6 +2760,51 @@ def run(
         for alias in entity.get("aliases", []) or []:
             entities_by_name[normalized_name_key(str(alias))] = entity
     accepted_claims = remap_claims_for_entity_merges(accepted_claims, entity_by_id, merge_target_map)
+
+    review_dir = out_card_drafts_json.parent
+    ensure_card_architecture_files(review_dir)
+    architecture_paths = card_architecture_paths(review_dir)
+    architecture_proposals, pending_architecture_actions, architecture_failures = prepare_card_architecture_review(
+        review_dir=review_dir,
+        accepted_claims=accepted_claims,
+        entities=merged_entities,
+        existing_canonical_cards=existing_canonical_cards,
+        review_memory=memory,
+        source_snippets_by_id=source_snippets_by_id,
+        config=config,
+    )
+    logger.info(
+        "Stage 10A Card Architecture Agent: proposals=%d pending_actions=%d validation_failures=%d",
+        len(architecture_proposals),
+        len(pending_architecture_actions),
+        len(architecture_failures),
+    )
+    if pending_architecture_actions:
+        save_review_memory(in_review_memory_json, memory)
+        raise RuntimeError(
+            f"Stage 10 found {len(pending_architecture_actions)} card architecture proposal action(s) requiring review; "
+            f"review {architecture_paths['proposals']} and save decisions to {architecture_paths['decisions']}, then rerun Stage 10."
+        )
+
+    architecture_result = apply_card_architecture_actions(
+        review_dir=review_dir,
+        accepted_claims=accepted_claims,
+        entities=merged_entities,
+        directives=directives,
+        review_memory=memory,
+        author_claims_path=author_claims_path,
+        directives_path=in_author_directives_json,
+    )
+    accepted_claims = architecture_result["accepted_claims"]
+    merged_entities = architecture_result["entities"]
+    directives = architecture_result["directives"]
+    merge_log.extend(architecture_result.get("merge_log_rows", []))
+    entity_by_id = {str(e.get("entity_id")): e for e in merged_entities}
+    entities_by_name = {}
+    for entity in merged_entities:
+        entities_by_name[normalized_name_key(entity.get("canonical_name", ""))] = entity
+        for alias in entity.get("aliases", []) or []:
+            entities_by_name[normalized_name_key(str(alias))] = entity
 
     accepted_by_entity: dict[str, list[dict[str, Any]]] = {}
     for claim in accepted_claims:

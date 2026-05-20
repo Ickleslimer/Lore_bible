@@ -11,6 +11,7 @@ V2 contract:
 - `canonical_cards.json` contains only human-approved cards.
 - Persistent corrections live in `canon/review_memory.json` and are reused by later runs.
 - Later accepted claims revise the same entity card from the full accepted claim history, rather than appending raw text or leaving the original card untouched.
+- Stage 10 can run a card-base architecture agent before drafting, so freeform structural requests become reviewable card moves, demotions, redirects, aliases, directives, and author claims.
 
 ## Flow
 
@@ -31,13 +32,15 @@ V2 contract:
 8. Stage 08 Snippet Grouping: group snippets against resolved and approved conversation-born entities.
 9. Stage 09 Claim Drafting: run model-required claim extraction to `06_drafts/card_drafts/claim_drafts.json`.
 10. Review pass 1: accept/reject/edit conversation entity proposals and atomic claims in the UI. Optionally use Story Questions in the desktop app to ask one high-value author question at a time, ask the configured story model to propose claim decisions and author claims from the answer, approve/discard/critique that proposal, then generate the next question from the reduced unresolved claim list.
-11. Stage 10 Identity Merge Preflight: propose identity merges from accepted claims such as "ACHILLES renames itself to RUINR" in `07_review/identity_merge_proposals.json`.
-12. Review identity merge proposals in `07_review/identity_merge_decisions.json`; approved merges are persisted to `canon/review_memory.json`.
-13. Stage 10 Card Synthesis: synthesize draft wiki-card revisions from all accepted claims for each touched entity, regrouping claims under approved entity merges.
-14. Stage 10 Draft Notion Sync: live-sync synthesized draft cards to a Notion database for comfortable reading while keeping desktop decisions as the source of truth.
-15. Review pass 2: approve/edit synthesized card drafts.
-16. Stage 10 Canon Merge: write approved revisions to `07_review/canonical_cards.json`, carrying forward unchanged canonical cards.
-17. Stage 11 Notion Export: export approved canonical cards and supporting records to Notion NDJSON.
+11. Stage 10 Identity Cluster Preflight: detect pairwise identity evidence from accepted claims, collapse it into connected entity clusters, and ask the configured model to suggest one canonical wiki-page title per cluster in `07_review/identity_merge_proposals.json`.
+12. Review identity cluster proposals in `07_review/identity_merge_decisions.json`; approved clusters are expanded into deterministic entity merges and persisted to `canon/review_memory.json`.
+13. Stage 10A Card Architecture Agent: read accepted claims, author claims, source snippets, patch notes, existing cards, review memory, and freeform requests from `07_review/card_edit_requests.jsonl`; write proposed actions to `07_review/card_architecture_proposals.json`.
+14. Stage 10B Card Architecture Review/Application: approve or reject proposed actions in the desktop app. Approved demotions, redirects, claim moves, aliases, directives, and author claims are applied as an overlay and recorded in `card_architecture_applied.json`, `card_redirects.json`, and `canon/review_memory.json`.
+15. Stage 10C Card Synthesis: synthesize draft wiki-card revisions from all accepted claims for each final architecture work item, regrouping claims under approved entity merges and card architecture decisions.
+16. Stage 10 Draft Notion Sync: live-sync synthesized draft cards to a Notion database for comfortable reading while keeping desktop decisions as the source of truth.
+17. Review pass 2: approve/edit synthesized card drafts.
+18. Stage 10 Canon Merge: write approved revisions to `07_review/canonical_cards.json`, carrying forward unchanged canonical cards.
+19. Stage 11 Notion Export: export approved canonical cards and supporting records to Notion NDJSON.
 
 ## Install
 
@@ -59,19 +62,13 @@ Resume an existing run after completed Stage 04 segmentation, regenerating Stage
 python -m pipeline.run_from_b4 --artifacts-root "artifacts/runs/<run_folder>"
 ```
 
-Start the review UI:
+Start the desktop review app:
 
 ```bash
-python -m pipeline.ui_review_app --artifacts-root "artifacts"
+desktop-tauri\src-tauri\target\release\theriac-lore-tauri.exe
 ```
 
-Start the native Windows app:
-
-```bash
-dist\TheriacLoreDesktop.exe
-```
-
-The desktop app opens as a normal Windows window, includes the run selector for previous CLI-generated batches, and draws the pipeline progress tracker directly on a canvas. Select `New Run` before pressing `Run Full Pipeline` to create a fresh timestamped artifact folder under `artifacts/runs/`. During claim review, use `Story Questions` for the optional guided review session. `Propose Updates` calls the configured story model; `Approve Proposal` only commits the already proposed decisions and does not make another model call.
+The Tauri/Svelte desktop app is the primary review surface. It includes the run selector for previous CLI-generated batches, pipeline run controls, cancellation, progress tracking, identity-cluster review, and candidate browsing. Select `New Run` before starting a full run to create a fresh timestamped artifact folder under `artifacts/runs/`. During claim review, use `Story Questions` for the optional guided review session. `Propose Updates` calls the configured story model; `Approve Proposal` only commits the already proposed decisions and does not make another model call. Use `Card Agent` for freeform card-base commissions such as moving a standalone draft into another card section; resume Stage 10 to generate proposed architecture actions, then approve/reject those actions before card writing.
 
 For Stage 10 draft-card reading in Notion, add these to `.env`:
 
@@ -81,25 +78,21 @@ For Stage 10 draft-card reading in Notion, add these to `.env`:
 
 The Notion integration must be shared with the parent page or existing database. Stage 10 automatically writes `08_notion/notion_draft_sync_report.json`; the desktop app also has a `Sync Drafts to Notion` button for rerunning the live sync without rerunning synthesis. Existing pages are updated in place by card ID and run ID.
 
-Build or rebuild it with:
+Start the new Tauri/Svelte desktop app during development:
 
 ```bash
-build_desktop_app.bat
+cd desktop-tauri
+npm install
+npm run dev
 ```
 
-Start the legacy browser-based packaged app:
+Build the Tauri/Svelte app:
 
 ```bash
-dist\TheriacLoreGUI.exe
+build_tauri_app.bat
 ```
 
-The executable opens the review GUI in your browser, auto-selects the most recent reviewable artifact root, and falls back to the next free port if `8787` is busy. Build or rebuild it with:
-
-```bash
-build_gui_exe.bat
-```
-
-The GUI includes a run selector for any artifact root under `artifacts/` that still has pending conversation entity, claim, identity merge, or card review decisions. This lets you open older CLI-generated batches without restarting the app.
+The Tauri app uses a Svelte UI and a small Python JSON bridge (`pipeline.tauri_bridge`) so the pipeline remains the source of truth. Building Tauri on Windows requires the Rust stable toolchain and Microsoft Visual C++ Build Tools (`link.exe`); `build_tauri_app.bat` loads the Visual Studio developer environment automatically when Build Tools are installed.
 
 After claim review, synthesize card drafts:
 
@@ -107,7 +100,7 @@ After claim review, synthesize card drafts:
 python -m pipeline.stage_g_merge_engine --in-entities-json "artifacts/05_alias/resolved_entities.json" --in-claim-drafts-json "artifacts/06_drafts/card_drafts/claim_drafts.json" --in-claim-decisions-json "artifacts/07_review/claim_review_decisions.json" --in-card-review-decisions-json "artifacts/07_review/card_review_decisions.json" --in-author-directives-json "artifacts/07_review/author_directives.json" --in-review-memory-json "canon/review_memory.json" --out-card-drafts-json "artifacts/07_review/card_drafts.json" --out-cards-json "artifacts/07_review/canonical_cards.json" --out-merge-log-jsonl "artifacts/07_review/merge_log.jsonl" --in-pipeline-config-json "config/pipeline_config.json"
 ```
 
-If Stage 10 reports pending identity merge proposals, review `artifacts/07_review/identity_merge_proposals.json`, save decisions to `artifacts/07_review/identity_merge_decisions.json`, and rerun the same Stage 10 command. Then approve card drafts in the UI and rerun Stage 10 to promote approved cards to canon.
+If Stage 10 reports pending identity cluster proposals, review `artifacts/07_review/identity_merge_proposals.json`, optionally edit the canonical name in the GUI, save decisions to `artifacts/07_review/identity_merge_decisions.json`, and rerun the same Stage 10 command. If it reports pending card architecture proposals, review `artifacts/07_review/card_architecture_proposals.json`, save decisions to `artifacts/07_review/card_architecture_decisions.json`, and rerun Stage 10. Then approve card drafts in the UI and rerun Stage 10 to promote approved cards to canon.
 
 Export approved canon:
 
@@ -129,12 +122,16 @@ Configure providers in `config/pipeline_config.json`:
 - `mixtral.adaptive_min_interval_seconds`: currently `0.5`; the runtime file will increase this automatically if rate limits appear.
 - `model_routing.profiles.flash_lite`: routes cheap/high-volume work to `qwen/qwen3.5-flash-02-23`.
 - `model_routing.profiles.flash_regular`: routes reasoning-sensitive Gemini-replacement work to `qwen/qwen3.5-flash-02-23`.
-- `model_routing.profiles.claude_opus`: routes low-volume Claude-replacement work to `qwen/qwen3-235b-a22b-2507`.
+- `model_routing.profiles.claude_opus`: routes low-volume work to Anthropic Claude Opus.
+- `model_routing.profiles.claude_sonnet`: routes low-volume reasoning work to Anthropic Claude Sonnet 4.6.
 - `model_routing.tasks.stage_b3_segmentation`: currently uses synchronous Flash-Lite so segmentation progress remains visible.
 - `model_routing.tasks.stage_b4_patch_notes`: currently uses synchronous Flash-Lite for chronological conversation development notes.
 - `model_routing.tasks.stage_f_claim_extraction`: currently uses synchronous Flash-Lite.
-- `model_routing.tasks.stage_g_card_synthesis`: currently uses synchronous Qwen Instruct for final card drafting, with validation retries to keep synthesis stateful and evidence-bound.
-- `model_routing.tasks.stage_09q_story_questions`: currently uses Qwen Instruct for iterative question generation and answer-application proposals.
+- `model_routing.tasks.stage_g_card_architecture_agent`: currently uses synchronous Claude Sonnet for low-volume structural card-base reasoning before final drafting.
+- `model_routing.tasks.stage_g_identity_merge_proposals`: currently uses synchronous Claude Sonnet for identity/alias merge proposal detection.
+- `model_routing.tasks.stage_g_identity_merge_cluster_judgement`: currently uses synchronous Claude Sonnet to choose canonical names and aliases for collated identity clusters.
+- `model_routing.tasks.stage_g_card_synthesis`: currently uses synchronous Claude Sonnet for final card drafting, with validation retries to keep synthesis stateful and evidence-bound.
+- `model_routing.tasks.stage_09q_story_questions`: currently uses Claude Sonnet for iterative question generation and answer-application proposals.
 - `story_questions`: controls the optional guided claim-review flow and writes `07_review/story_question_session.json`, `story_questions.jsonl`, `story_question_answers.jsonl`, `story_question_application_proposals.jsonl`, `story_question_applications.jsonl`, and `story_question_failures.json`.
 - `conversation_segmentation.max_gap_hours`: coarse DM window boundary before model topic segmentation; defaults to `12`.
 - `conversation_segmentation.self_user_id`: optional account override for 1:1 DM pair detection.
@@ -148,6 +145,7 @@ Configure providers in `config/pipeline_config.json`:
 - approved aliases and entity merges
 - approved card prose
 - author directives
+- approved card architecture actions and redirects
 - story-question answers
 - style corrections
 

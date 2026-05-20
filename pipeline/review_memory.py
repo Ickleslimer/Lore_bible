@@ -21,6 +21,8 @@ def empty_review_memory() -> dict[str, Any]:
         "rejected_conversation_entities": [],
         "approved_cards": [],
         "author_directives": [],
+        "card_architecture_actions": [],
+        "card_redirects": [],
         "story_question_answers": [],
         "style_corrections": [],
         "updated_at_utc": now_utc_iso(),
@@ -44,6 +46,8 @@ def load_review_memory(path: Path | None) -> dict[str, Any]:
         "rejected_conversation_entities",
         "approved_cards",
         "author_directives",
+        "card_architecture_actions",
+        "card_redirects",
         "story_question_answers",
         "style_corrections",
     ]:
@@ -127,6 +131,28 @@ def relevant_memory_for_entity(memory: dict[str, Any], entity_id: str, canonical
         ],
         "approved_cards": [x for x in memory.get("approved_cards", []) if isinstance(x, dict) and matches(x)],
         "author_directives": global_author_directives + entity_author_directives,
+        "card_architecture_actions": [
+            x
+            for x in memory.get("card_architecture_actions", [])[-100:]
+            if isinstance(x, dict)
+            and (
+                str(x.get("target_entity_id", "")) in names
+                or str(x.get("source_entity_id", "")) in names
+                or str(x.get("target_entity_name", "")).lower() in names
+                or str(x.get("source_entity_name", "")).lower() in names
+            )
+        ],
+        "card_redirects": [
+            x
+            for x in memory.get("card_redirects", [])[-100:]
+            if isinstance(x, dict)
+            and (
+                str(x.get("target_entity_id", "")) in names
+                or str(x.get("source_entity_id", "")) in names
+                or str(x.get("target_entity_name", "")).lower() in names
+                or str(x.get("source_entity_name", "")).lower() in names
+            )
+        ],
         "story_question_answers": [
             x
             for x in memory.get("story_question_answers", [])[-50:]

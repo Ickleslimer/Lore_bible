@@ -13,7 +13,9 @@ from typing import Any
 from flask import Flask, jsonify, redirect, render_template_string, request
 
 from pipeline.author_directives import parse_author_instruction
+from pipeline.card_architecture_agent import pending_card_architecture_actions
 from pipeline.common import now_utc_iso, read_json, read_jsonl, safe_uuid, write_json
+from pipeline.entity_resolution import normalized_name_key
 
 PIPELINE_STAGES = [
     {"index": 1, "short_label": "01", "name": "Entity Bootstrap"},
@@ -119,6 +121,7 @@ REVIEW_GATE_LOG_MARKERS = (
     "requiring review",
     "conversation entity proposal",
     "identity merge proposal",
+    "card architecture proposal",
 )
 
 
@@ -303,7 +306,15 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
         logs.append(f"[10/{stage_total}] REVIEW Stage 10 Card Synthesis")
         return {
             "status": "review_required",
-            "message": f"Paused for identity review: {counts['identity_merges']} identity merge proposal(s) need review.",
+            "message": f"Paused for identity review: {counts['identity_merges']} identity cluster proposal(s) need review.",
+            "logs": logs,
+        }
+    if counts.get("card_architecture", 0) > 0:
+        mark_start(10, "Card Synthesis")
+        logs.append(f"[10/{stage_total}] REVIEW Stage 10 Card Synthesis")
+        return {
+            "status": "review_required",
+            "message": f"Paused for card architecture review: {counts['card_architecture']} architecture action(s) need review.",
             "logs": logs,
         }
     if (root / "07_review" / "card_drafts.json").exists() or (root / "07_review" / "canonical_cards.json").exists():
@@ -626,24 +637,53 @@ HTML_IDENTITY_MERGE = """
   <div class="page">
   <div class="page-header">
     <h2>THERIAC Entity Merge Review</h2>
-    <p class="subtitle">Approve only the identity merges that should regroup claims before card synthesis.</p>
+    <p class="subtitle">Approve identity clusters, choosing one canonical wiki-page title before card synthesis.</p>
   </div>
   {{ run_selector_html | safe }}
   {{ pipeline_progress_html | safe }}
   <div class="review-panel">
     <div class="panel-heading">
       <div>
-        <span class="eyebrow">Proposed Identity Merge</span>
-        <h3>{{ proposal.source_entity_name or proposal.source_entity_id }} -> {{ proposal.target_entity_name or proposal.target_entity_id }}</h3>
+        <span class="eyebrow">Proposed Identity Cluster</span>
+        <h3>
+          {% if proposal.member_entities %}
+            {% for member in proposal.member_entities[:4] %}{{ member.canonical_name or member.entity_id }}{% if not loop.last %} + {% endif %}{% endfor %}
+            -> {{ proposal.canonical_name or proposal.target_entity_name or proposal.target_entity_id }}
+          {% else %}
+            {{ proposal.source_entity_name or proposal.source_entity_id }} -> {{ proposal.target_entity_name or proposal.target_entity_id }}
+          {% endif %}
+        </h3>
       </div>
       <span class="pill">{{ proposal.confidence }}</span>
     </div>
     <div class="meta-grid">
       <div class="meta"><b>Merge Type</b><span>{{ proposal.merge_type }}</span></div>
       <div class="meta"><b>Proposal ID</b><span>{{ proposal.proposal_id }}</span></div>
-      <div class="meta"><b>Source Entity ID</b><span>{{ proposal.source_entity_id }}</span></div>
-      <div class="meta"><b>Target Entity ID</b><span>{{ proposal.target_entity_id }}</span></div>
+      <div class="meta"><b>Canonical Entity ID</b><span>{{ proposal.canonical_entity_id or proposal.target_entity_id }}</span></div>
+      <div class="meta"><b>Members</b><span>{{ proposal.member_entity_ids|join(", ") if proposal.member_entity_ids else proposal.source_entity_id ~ ", " ~ proposal.target_entity_id }}</span></div>
     </div>
+    {% if proposal.alias_texts %}
+      <div class="section">
+        <h4>Aliases / Working Names</h4>
+        <p class="section-body">{{ proposal.alias_texts|join(", ") }}</p>
+      </div>
+    {% endif %}
+    {% if proposal.suggested_split_entity_ids %}
+      <div class="section">
+        <h4>Suggested Exclusions</h4>
+        <p class="section-body">{{ proposal.suggested_split_entity_ids|join(", ") }}</p>
+      </div>
+    {% endif %}
+    {% if proposal.member_edges %}
+      <div class="section">
+        <h4>Identity Evidence Edges</h4>
+        <p class="section-body">
+          {% for edge in proposal.member_edges %}
+            {{ edge.source_entity_name }} -> {{ edge.target_entity_name }}{% if not loop.last %}<br />{% endif %}
+          {% endfor %}
+        </p>
+      </div>
+    {% endif %}
     <div class="section">
       <h4>Rationale</h4>
       <p class="section-body">{{ proposal.rationale or proposal.reason }}</p>
@@ -666,10 +706,14 @@ HTML_IDENTITY_MERGE = """
       <input type="text" name="reviewer" value="human_reviewer" />
     </div>
     <div class="form-row">
+      <label>Canonical Name</label>
+      <input type="text" name="canonical_name" value="{{ proposal.canonical_name or proposal.target_entity_name or '' }}" />
+    </div>
+    <div class="form-row">
       <label>Rationale</label>
       <textarea name="rationale"></textarea>
     </div>
-    <button name="decision" value="approve">Approve Merge</button>
+    <button name="decision" value="approve">Approve Cluster</button>
     <button name="decision" value="reject">Reject</button>
     <button name="decision" value="defer">Defer</button>
     <button name="decision" value="needs_more_context">Needs More Context</button>
@@ -1027,6 +1071,7 @@ def _ensure_review_files(
     card_decisions_path: Path,
     identity_merge_decisions_path: Path,
     conversation_entity_decisions_path: Path,
+    card_architecture_decisions_path: Path | None = None,
 ) -> None:
     if not decisions_path.exists():
         write_json(decisions_path, {"decisions": []})
@@ -1038,6 +1083,8 @@ def _ensure_review_files(
         write_json(identity_merge_decisions_path, {"decisions": []})
     if not conversation_entity_decisions_path.exists():
         write_json(conversation_entity_decisions_path, {"decisions": []})
+    if card_architecture_decisions_path is not None and not card_architecture_decisions_path.exists():
+        write_json(card_architecture_decisions_path, {"decisions": []})
 
 
 def _resolve_docx(repo_root: Path, docx_hint: Path | None) -> Path | None:
@@ -1319,6 +1366,14 @@ def pending_review_counts_for_root(root: Path) -> dict[str, int]:
         and str(proposal.get("review_status", "pending")) == "pending"
     ]
 
+    try:
+        pending_architecture = pending_card_architecture_actions(
+            root / "07_review" / "card_architecture_proposals.json",
+            root / "07_review" / "card_architecture_decisions.json",
+        )
+    except Exception:
+        pending_architecture = []
+
     cards = _read_json_or_default(root / "07_review" / "card_drafts.json", {"cards": []}).get("cards", [])
     card_decisions = _decision_ids(root / "07_review" / "card_review_decisions.json", ["card_id", "target_card_id"])
     pending_cards = [
@@ -1331,6 +1386,7 @@ def pending_review_counts_for_root(root: Path) -> dict[str, int]:
         "conversation_entities": len(pending_alias_groups) + len(pending_conversation_entities),
         "claims": len(pending_claims),
         "identity_merges": len(pending_merges),
+        "card_architecture": len(pending_architecture),
         "cards": len(pending_cards),
     }
 
@@ -1343,7 +1399,8 @@ def pending_review_summary(counts: dict[str, int]) -> str:
     labels = [
         ("conversation_entities", "conversation entities"),
         ("claims", "claims"),
-        ("identity_merges", "identity merges"),
+        ("identity_merges", "identity clusters"),
+        ("card_architecture", "card architecture actions"),
         ("cards", "cards"),
     ]
     parts = [f"{counts[key]} {label}" for key, label in labels if counts.get(key, 0)]
@@ -1500,6 +1557,7 @@ def _pipeline_worker_command(
     conversations_root: Path,
     artifacts_root: Path,
     resume: bool = False,
+    ignore_pending: bool = False,
 ) -> list[str]:
     args = [
         "--docx",
@@ -1513,6 +1571,8 @@ def _pipeline_worker_command(
     ]
     if resume:
         args.append("--resume")
+    if ignore_pending:
+        args.append("--ignore-pending")
     if getattr(sys, "frozen", False):
         return [sys.executable, "--pipeline-worker", *args]
     return [sys.executable, "-m", "pipeline.run_pipeline", *args]
@@ -1919,6 +1979,19 @@ def build_app(
             "rationale": request.form.get("rationale", ""),
             "timestamp_utc": now_utc_iso(),
         }
+        canonical_name = request.form.get("canonical_name", "").strip()
+        if canonical_name:
+            payload["canonical_name"] = canonical_name
+            proposals_data = read_json(identity_merge_proposals_path) if identity_merge_proposals_path.exists() else {"proposals": []}
+            for proposal in proposals_data.get("proposals", []):
+                if str(proposal.get("proposal_id", "")) != str(payload["proposal_id"]):
+                    continue
+                for member in proposal.get("member_entities", []) or []:
+                    names = [str(member.get("canonical_name", "")), *[str(alias) for alias in member.get("aliases", []) or []]]
+                    if any(normalized_name_key(name) == normalized_name_key(canonical_name) for name in names if name.strip()):
+                        payload["canonical_entity_id"] = str(member.get("entity_id", ""))
+                        break
+                break
         decisions_data.setdefault("decisions", []).append(payload)
         write_json(identity_merge_decisions_path, decisions_data)
         return index()

@@ -17,6 +17,7 @@ from pipeline.stage_f_draft import run as run_stage_f
 from pipeline.stage_g_merge_engine import run as run_stage_g
 from pipeline.stage_h_notion_export import run as run_stage_h
 from pipeline.notion_draft_sync import sync_draft_cards_to_notion
+from pipeline.card_architecture_agent import load_card_edit_requests, load_card_architecture_proposals, pending_card_architecture_actions
 
 
 REVIEW_REQUIRED_EXIT_CODE = 2
@@ -24,6 +25,7 @@ REVIEW_GATE_MARKERS = (
     "requiring review",
     "conversation entity proposal",
     "identity merge proposal",
+    "card architecture proposal",
     "claim review",
     "card review",
 )
@@ -142,6 +144,43 @@ def _pending_card_count(root: Path) -> int:
     )
 
 
+def _pending_card_architecture_count(root: Path) -> int:
+    try:
+        return len(
+            pending_card_architecture_actions(
+                root / "07_review" / "card_architecture_proposals.json",
+                root / "07_review" / "card_architecture_decisions.json",
+            )
+        )
+    except Exception:
+        return 0
+
+
+def _unproposed_card_edit_request_count(root: Path) -> int:
+    requests_path = root / "07_review" / "card_edit_requests.jsonl"
+    proposals_path = root / "07_review" / "card_architecture_proposals.json"
+    if not requests_path.exists():
+        return 0
+    try:
+        requests = load_card_edit_requests(requests_path)
+        proposals = load_card_architecture_proposals(proposals_path)
+    except Exception:
+        return 0
+    covered = {
+        str(proposal.get("request_id", "")).strip()
+        for proposal in proposals
+        if isinstance(proposal, dict) and str(proposal.get("request_id", "")).strip()
+    }
+    return sum(
+        1
+        for request in requests
+        if isinstance(request, dict)
+        and str(request.get("status", "pending")) != "cancelled"
+        and str(request.get("request_id", "")).strip()
+        and str(request.get("request_id", "")).strip() not in covered
+    )
+
+
 def _json_field(path: Path, key: str, default: object = None) -> object:
     if not path.exists():
         return default
@@ -152,7 +191,7 @@ def _json_field(path: Path, key: str, default: object = None) -> object:
     return payload.get(key, default) if isinstance(payload, dict) else default
 
 
-def determine_resume_start_stage(root: Path) -> tuple[int, str]:
+def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tuple[int, str]:
     """Return the earliest stage that must run for an existing artifact root.
 
     A return value of 0 means the current artifacts are up to date through
@@ -208,7 +247,7 @@ def determine_resume_start_stage(root: Path) -> tuple[int, str]:
     if _missing(stage9) or _newer_than_outputs(stage8 + [stage7[0], root / "05_alias" / "alias_map.json"], stage9):
         return 9, "Stage 09 claim drafts are missing or stale."
 
-    if _pending_claim_count(root) > 0:
+    if not ignore_pending and _pending_claim_count(root) > 0:
         return 0, "Paused for claim review; approve/reject draft claims before Stage 10 card synthesis."
 
     claim_decisions = root / "07_review" / "claim_review_decisions.json"
@@ -217,8 +256,15 @@ def determine_resume_start_stage(root: Path) -> tuple[int, str]:
     identity_merge_decisions = root / "07_review" / "identity_merge_decisions.json"
     card_decisions = root / "07_review" / "card_review_decisions.json"
     identity_merge_proposals = root / "07_review" / "identity_merge_proposals.json"
-    if _pending_identity_merge_count(root) > 0:
-        return 0, "Paused for identity merge review; approve/reject identity merge proposals before rerunning Stage 10."
+    card_edit_requests = root / "07_review" / "card_edit_requests.jsonl"
+    card_architecture_proposals = root / "07_review" / "card_architecture_proposals.json"
+    card_architecture_decisions = root / "07_review" / "card_architecture_decisions.json"
+    if not ignore_pending and _pending_identity_merge_count(root) > 0:
+        return 0, "Paused for identity cluster review; approve/reject identity clusters before rerunning Stage 10."
+    if not ignore_pending and _pending_card_architecture_count(root) > 0:
+        return 0, "Paused for card architecture review; approve/reject card architecture proposals before rerunning Stage 10."
+    if _unproposed_card_edit_request_count(root) > 0:
+        return 10, "Card Agent edit requests need Stage 10 architecture proposals."
     if _missing(stage10):
         return 10, "Stage 10 card synthesis/canon merge artifacts are missing."
     if _newer_than_outputs(
@@ -231,13 +277,16 @@ def determine_resume_start_stage(root: Path) -> tuple[int, str]:
             author_directives,
             identity_merge_decisions,
             card_decisions,
+            card_edit_requests,
+            card_architecture_proposals,
+            card_architecture_decisions,
         ],
         stage10,
     ):
         return 10, "Stage 10 card synthesis/canon merge artifacts are stale after review decisions."
     if identity_merge_proposals.exists() and _newer_than_outputs([identity_merge_proposals], stage10):
         return 10, "Stage 10 identity merge proposals changed after card synthesis."
-    if _pending_card_count(root) > 0:
+    if not ignore_pending and _pending_card_count(root) > 0:
         return 0, "Paused for card review; approve/reject synthesized card drafts before canonical merge."
 
     if _missing(stage11) or _newer_than_outputs(
@@ -291,6 +340,7 @@ def main() -> None:
     parser.add_argument("--artifacts-root", type=Path, required=True)
     parser.add_argument("--log-level", type=str, default=None, help="Logging level (DEBUG, INFO, WARNING, ERROR).")
     parser.add_argument("--resume", action="store_true", help="Resume an existing artifact folder from the earliest stale stage.")
+    parser.add_argument("--ignore-pending", action="store_true", help="Ignore pending review items and force continuation.")
     parser.add_argument("--start-stage", type=int, default=1, help="Expert override: first stage to run, 1-11.")
     args = parser.parse_args()
     setup_logging(args.log_level)
@@ -301,7 +351,7 @@ def main() -> None:
     total_stages = STAGE_TOTAL
     start_stage = max(1, min(total_stages, int(args.start_stage or 1)))
     if args.resume:
-        start_stage, resume_reason = determine_resume_start_stage(root)
+        start_stage, resume_reason = determine_resume_start_stage(root, ignore_pending=args.ignore_pending)
         logger.info("Resume mode selected for %s: %s", root, resume_reason)
         if start_stage <= 0:
             if "review" in resume_reason.lower():
@@ -524,7 +574,7 @@ def main() -> None:
         logger.info("[9/%d] SKIP  Stage 09 Claim Drafting (resume starts at Stage %02d)", total_stages, start_stage)
 
     pending_claims = _pending_claim_count(root)
-    if pending_claims:
+    if pending_claims and not args.ignore_pending:
         _pause_for_review(
             logger,
             9,
@@ -577,7 +627,7 @@ def main() -> None:
         logger.info("[10/%d] SKIP  Stage 10 Card Synthesis (resume starts at Stage %02d)", total_stages, start_stage)
 
     pending_cards = _pending_card_count(root)
-    if pending_cards:
+    if pending_cards and not args.ignore_pending:
         _pause_for_review(
             logger,
             10,
