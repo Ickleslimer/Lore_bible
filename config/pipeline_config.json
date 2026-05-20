@@ -1,4 +1,4 @@
-﻿{
+{
   "cutoff_utc": "2025-01-08T01:05:00Z",
   "paths": {
     "docx_lore_bible": "theriac-coda---lore-bible.docx",
@@ -11,35 +11,35 @@
     "temperature": 0.0
   },
   "model_routing": {
-    "default_profile": "flash_lite",
+    "default_profile": "high_volume",
     "profiles": {
-      "flash_lite": {
+      "high_volume": {
         "provider": "openrouter",
         "api_model": "qwen/qwen3.5-flash-02-23",
         "api_base_url": "https://openrouter.ai/api/v1",
         "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5
       },
-      "flash_regular": {
+      "balanced_reasoning": {
         "provider": "openrouter",
         "api_model": "qwen/qwen3.5-flash-02-23",
         "api_base_url": "https://openrouter.ai/api/v1",
         "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5
       },
-      "claude_opus": {
+      "premium_reasoning": {
         "provider": "anthropic",
         "api_model": "claude-opus-4-1-20250805",
         "api_base_url": "https://api.anthropic.com/v1",
-        "rate_state_path": "artifacts/learning/anthropic_claude_opus_rate_runtime.json",
+        "rate_state_path": "artifacts/learning/anthropic_premium_reasoning_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5,
         "timeout_seconds": 180
       },
-      "claude_sonnet": {
+      "deep_reasoning": {
         "provider": "anthropic",
         "api_model": "claude-sonnet-4-6",
         "api_base_url": "https://api.anthropic.com/v1",
-        "rate_state_path": "artifacts/learning/anthropic_claude_sonnet_rate_runtime.json",
+        "rate_state_path": "artifacts/learning/anthropic_deep_reasoning_rate_runtime.json",
         "adaptive_min_interval_seconds": 0.5,
         "timeout_seconds": 180,
         "max_tokens": 8192
@@ -47,11 +47,11 @@
     },
     "tasks": {
       "stage_01_entity_bootstrap": {
-        "profile": "flash_regular",
+        "profile": "balanced_reasoning",
         "batch_enabled": false
       },
       "stage_04_conversation_segmentation": {
-        "profile": "flash_lite",
+        "profile": "high_volume",
         "batch_enabled": false,
         "batch_initial_max_requests": 10,
         "batch_max_requests": 75,
@@ -62,18 +62,18 @@
         "batch_display_name": "theriac-stage-04-segmentation"
       },
       "stage_05_conversation_patch_notes": {
-        "profile": "flash_lite",
+        "profile": "high_volume",
         "batch_enabled": false
       },
       "stage_07_entity_resolution": {
-        "profile": "flash_regular",
+        "profile": "balanced_reasoning",
         "batch_enabled": false,
         "enabled": true,
         "max_evidence_per_call": 24,
         "max_candidates_per_call": 80
       },
       "stage_09_claim_drafting": {
-        "profile": "flash_lite",
+        "profile": "high_volume",
         "batch_enabled": false,
         "batch_max_requests": 75,
         "batch_poll_interval_seconds": 30,
@@ -81,23 +81,23 @@
         "batch_display_name": "theriac-stage-09-claim-drafting"
       },
       "stage_11_card_synthesis": {
-        "profile": "claude_sonnet",
+        "profile": "deep_reasoning",
         "batch_enabled": false
       },
       "stage_11_card_architecture_agent": {
-        "profile": "claude_sonnet",
+        "profile": "deep_reasoning",
         "batch_enabled": false
       },
       "stage_10_identity_merge_proposals": {
-        "profile": "claude_sonnet",
+        "profile": "deep_reasoning",
         "batch_enabled": false
       },
       "stage_10_identity_merge_cluster_judgement": {
-        "profile": "claude_sonnet",
+        "profile": "deep_reasoning",
         "batch_enabled": false
       },
       "stage_09_story_questions": {
-        "profile": "claude_sonnet",
+        "profile": "deep_reasoning",
         "batch_enabled": false
       }
     }
@@ -113,10 +113,10 @@
   "stage_06_anchor_provider": "conversation_metadata",
   "stage_01_anchor_provider": "hybrid",
   "stage_01_model_excerpt_chars": 24000,
-  "mixtral": {
+  "model_provider": {
     "provider": "openrouter",
     "base_url": "http://127.0.0.1:11434",
-    "model": "mixtral",
+    "model": "llama3.1",
     "api_base_url": "https://openrouter.ai/api/v1",
     "api_model": "qwen/qwen3.5-flash-02-23",
     "api_retries": 2,

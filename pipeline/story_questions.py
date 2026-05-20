@@ -7,7 +7,7 @@ from typing import Any
 
 from pipeline.common import now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json
 from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalized_name_key
-from pipeline.mixtral_anchor_provider import call_mixtral_chat, get_mixtral_runtime_status, model_call_kwargs
+from pipeline.model_provider import call_model_chat, get_model_runtime_status, model_call_kwargs
 from pipeline.review_memory import (
     load_review_memory,
     normalize_claim_text,
@@ -959,9 +959,9 @@ def generate_next_question(
     kwargs["provider"] = cfg["provider"]
     kwargs["api_model"] = cfg["model"]
     kwargs["json_schema"] = STORY_QUESTION_SCHEMA
-    response = call_mixtral_chat(prompt=prompt, **kwargs)
+    response = call_model_chat(prompt=prompt, **kwargs)
     if not response:
-        reason = get_mixtral_runtime_status().get("last_mistral_skip_reason") or "provider_unavailable"
+        reason = get_model_runtime_status().get("last_model_skip_reason") or "provider_unavailable"
         _record_failure(
             root,
             "generate_question",
@@ -1719,9 +1719,9 @@ def propose_story_answer_application(
         kwargs["provider"] = cfg["provider"]
         kwargs["api_model"] = cfg["model"]
         kwargs["json_schema"] = ANSWER_APPLICATION_PROPOSAL_SCHEMA
-        response = call_mixtral_chat(prompt=prompt, **kwargs)
+        response = call_model_chat(prompt=prompt, **kwargs)
         if not response:
-            reason = get_mixtral_runtime_status().get("last_mistral_skip_reason") or "provider_unavailable"
+            reason = get_model_runtime_status().get("last_model_skip_reason") or "provider_unavailable"
             if reason == "content_parse_failed":
                 retry_prompt = _application_retry_prompt(
                     question,
@@ -1732,7 +1732,7 @@ def propose_story_answer_application(
                     prior_proposal=prior_proposal,
                 )
                 kwargs["json_schema"] = ANSWER_APPLICATION_PROPOSAL_SCHEMA
-                response = call_mixtral_chat(prompt=retry_prompt, **kwargs)
+                response = call_model_chat(prompt=retry_prompt, **kwargs)
                 if response:
                     retry_context = {
                         "initial_reason": reason,
@@ -1741,7 +1741,7 @@ def propose_story_answer_application(
                         "recovered": True,
                     }
                 else:
-                    retry_reason = get_mixtral_runtime_status().get("last_mistral_skip_reason") or "provider_unavailable"
+                    retry_reason = get_model_runtime_status().get("last_model_skip_reason") or "provider_unavailable"
                     _record_failure(
                         root,
                         "propose_application",

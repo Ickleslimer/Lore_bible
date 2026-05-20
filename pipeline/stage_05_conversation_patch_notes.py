@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, stable_id, write_json, write_jsonl
-from pipeline.mixtral_anchor_provider import call_mixtral_chat, get_mixtral_runtime_status, model_call_kwargs
+from pipeline.model_provider import call_model_chat, get_model_runtime_status, model_call_kwargs
 
 
 PACING_SKIP_REASONS = {"provider_locked", "adaptive_pacing", "rate_limit_cooldown"}
@@ -67,7 +67,7 @@ def _safe_confidence(value: Any, default: float = 0.0) -> float:
 
 def _provider_wait_seconds(reason: str, status: dict[str, Any], fallback_seconds: float) -> float:
     now_s = time.time()
-    next_attempt = float(status.get("next_mistral_attempt_epoch_s") or 0.0)
+    next_attempt = float(status.get("next_model_attempt_epoch_s") or 0.0)
     rate_limited_until = float(status.get("rate_limited_until_epoch_s") or 0.0)
     target = next_attempt
     if reason in {"rate_limit_cooldown", "rate_limited_429"}:
@@ -480,7 +480,7 @@ def extract_patch_note_with_model(
             cfg=cfg,
             validation_feedback=validation_feedback,
         )
-        response = call_mixtral_chat(
+        response = call_model_chat(
             prompt=prompt,
             **model_call_kwargs(provider_config, "stage_05_conversation_patch_notes"),
         )
@@ -501,8 +501,8 @@ def extract_patch_note_with_model(
                 if retry_sleep_seconds:
                     time.sleep(retry_sleep_seconds)
                 continue
-        status = get_mixtral_runtime_status()
-        reason = str(status.get("last_mistral_skip_reason") or "provider_unavailable")
+        status = get_model_runtime_status()
+        reason = str(status.get("last_model_skip_reason") or "provider_unavailable")
         sleep_s = _provider_wait_seconds(reason, status, provider_retry_sleep_seconds)
         if reason in PACING_SKIP_REASONS:
             if sleep_s:

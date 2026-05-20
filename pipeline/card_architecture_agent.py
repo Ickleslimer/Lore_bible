@@ -7,7 +7,7 @@ from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json, write_jsonl
 from pipeline.entity_resolution import card_id_for_entity, normalized_name_key
-from pipeline.mixtral_anchor_provider import call_mixtral_chat, model_call_kwargs
+from pipeline.model_provider import call_model_chat, model_call_kwargs
 
 
 CARD_EDIT_REQUESTS_FILENAME = "card_edit_requests.jsonl"
@@ -569,7 +569,7 @@ def generate_card_architecture_proposals(
         review_memory,
         source_snippets_by_id,
     )
-    response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(config, "stage_11_card_architecture_agent"))
+    response = call_model_chat(prompt=prompt, **model_call_kwargs(config, "stage_11_card_architecture_agent"))
     if response is None:
         raise RuntimeError("Stage 10A Card Architecture Agent requires model output; provider returned no response.")
     if not isinstance(response, dict) or not isinstance(response.get("proposals"), list):

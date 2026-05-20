@@ -135,6 +135,11 @@
     activeTab = tab;
   }
 
+  function runName(path: string | undefined) {
+    if (!path) return "Loading";
+    return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  }
+
   onMount(() => {
     void refresh();
   });
@@ -172,7 +177,10 @@
     <header class="topbar">
       <div>
         <span class="caption">Active Run</span>
-        <h2>{state?.active_label ?? "Loading"}</h2>
+        <h2>{runName(state?.active_label)}</h2>
+        {#if state?.active_label}
+          <p class="run-path" title={state.active_root}>{state.active_label}</p>
+        {/if}
       </div>
       <button class="icon-button" disabled={busy} on:click={refresh} title="Refresh">
         <RefreshCcw size={18} />

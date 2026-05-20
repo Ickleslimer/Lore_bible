@@ -16,10 +16,10 @@ from pipeline.common import (
     read_jsonl,
     stable_id,
 )
-from pipeline.mixtral_anchor_provider import (
+from pipeline.model_provider import (
     call_gemini_batch_json,
-    call_mixtral_chat,
-    get_mixtral_runtime_status,
+    call_model_chat,
+    get_model_runtime_status,
     load_seed_entities,
     model_batch_enabled,
     model_batch_initial_max_requests,
@@ -143,11 +143,11 @@ def conversation_config(provider_config: dict[str, Any]) -> dict[str, Any]:
     raw = provider_config.get("conversation_segmentation", {})
     raw_cfg = raw if isinstance(raw, dict) else {}
     cfg.update(raw_cfg)
-    mixtral_cfg = provider_config.get("mixtral", {}) if isinstance(provider_config.get("mixtral", {}), dict) else {}
-    if "segmentation_provider_retry_sleep_seconds" not in raw_cfg and "rate_limit_cooldown_seconds" in mixtral_cfg:
-        cfg["segmentation_provider_retry_sleep_seconds"] = int(mixtral_cfg.get("rate_limit_cooldown_seconds", 90))
-    if "segmentation_validation_retry_sleep_seconds" not in raw_cfg and "adaptive_min_interval_seconds" in mixtral_cfg:
-        cfg["segmentation_validation_retry_sleep_seconds"] = float(mixtral_cfg.get("adaptive_min_interval_seconds", 2.0))
+    model_provider_cfg = provider_config.get("model_provider", {}) if isinstance(provider_config.get("model_provider", {}), dict) else {}
+    if "segmentation_provider_retry_sleep_seconds" not in raw_cfg and "rate_limit_cooldown_seconds" in model_provider_cfg:
+        cfg["segmentation_provider_retry_sleep_seconds"] = int(model_provider_cfg.get("rate_limit_cooldown_seconds", 90))
+    if "segmentation_validation_retry_sleep_seconds" not in raw_cfg and "adaptive_min_interval_seconds" in model_provider_cfg:
+        cfg["segmentation_validation_retry_sleep_seconds"] = float(model_provider_cfg.get("adaptive_min_interval_seconds", 2.0))
 
     cfg["max_gap_hours"] = float(cfg.get("max_gap_hours", 12))
     cfg["short_digression_max_messages"] = max(0, int(cfg.get("short_digression_max_messages", 5)))
@@ -486,12 +486,12 @@ def _call_model(prompt: str, provider_config: dict[str, Any], cfg: dict[str, Any
         call_kwargs["provider"] = str(cfg["provider"])
     if cfg.get("api_retries") is not None:
         call_kwargs["api_retries"] = int(cfg["api_retries"])
-    return call_mixtral_chat(prompt=prompt, **call_kwargs)
+    return call_model_chat(prompt=prompt, **call_kwargs)
 
 
 def _provider_wait_seconds(reason: str, status: dict[str, Any], cfg: dict[str, Any]) -> float:
     now_s = time.time()
-    next_attempt = float(status.get("next_mistral_attempt_epoch_s") or 0.0)
+    next_attempt = float(status.get("next_model_attempt_epoch_s") or 0.0)
     rate_limited_until = float(status.get("rate_limited_until_epoch_s") or 0.0)
     target = 0.0
     if reason in {"provider_locked", "adaptive_pacing"}:
@@ -802,8 +802,8 @@ def segment_window_with_model(
     while provider_failures < provider_attempts and validation_failures < validation_attempts:
         payload = _call_model(prompt, provider_config, cfg)
         if not isinstance(payload, dict):
-            status = get_mixtral_runtime_status()
-            reason = str(status.get("last_mistral_skip_reason") or "provider_unavailable_or_rate_limited")
+            status = get_model_runtime_status()
+            reason = str(status.get("last_model_skip_reason") or "provider_unavailable_or_rate_limited")
             last_reason = reason
             sleep_s = _provider_wait_seconds(reason, status, cfg)
             if reason in PACING_SKIP_REASONS:

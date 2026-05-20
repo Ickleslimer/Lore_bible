@@ -9,10 +9,10 @@ from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json
 from pipeline.entity_resolution import load_entity_records, normalized_name_key
-from pipeline.mixtral_anchor_provider import (
+from pipeline.model_provider import (
     call_gemini_batch_json,
-    call_mixtral_chat,
-    get_mixtral_runtime_status,
+    call_model_chat,
+    get_model_runtime_status,
     model_batch_enabled,
     model_batch_max_requests,
     model_call_kwargs,
@@ -102,7 +102,7 @@ def target_entity_for_cluster(
 
 def provider_wait_seconds(reason: str, status: dict[str, Any], fallback_seconds: float) -> float:
     now_s = time.time()
-    next_attempt = float(status.get("next_mistral_attempt_epoch_s") or 0.0)
+    next_attempt = float(status.get("next_model_attempt_epoch_s") or 0.0)
     rate_limited_until = float(status.get("rate_limited_until_epoch_s") or 0.0)
     target = 0.0
     if reason in {"provider_locked", "adaptive_pacing"}:
@@ -591,16 +591,16 @@ def extract_claims_with_model(
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
     logger = get_logger(__name__)
-    mixtral_cfg = config.get("mixtral", {}) if isinstance(config, dict) else {}
-    validation_retries = max(0, int(mixtral_cfg.get("claim_extraction_validation_retries", 1)))
-    provider_retries = max(validation_retries, int(mixtral_cfg.get("claim_extraction_provider_retries", 2)))
+    model_provider_cfg = config.get("model_provider", {}) if isinstance(config, dict) else {}
+    validation_retries = max(0, int(model_provider_cfg.get("claim_extraction_validation_retries", 1)))
+    provider_retries = max(validation_retries, int(model_provider_cfg.get("claim_extraction_provider_retries", 2)))
     validation_retry_sleep_seconds = max(
         0.0,
-        float(mixtral_cfg.get("claim_extraction_retry_sleep_seconds", mixtral_cfg.get("adaptive_min_interval_seconds", 2.0))),
+        float(model_provider_cfg.get("claim_extraction_retry_sleep_seconds", model_provider_cfg.get("adaptive_min_interval_seconds", 2.0))),
     )
     provider_retry_sleep_seconds = max(
         validation_retry_sleep_seconds,
-        float(mixtral_cfg.get("claim_extraction_provider_retry_sleep_seconds", mixtral_cfg.get("rate_limit_cooldown_seconds", 30))),
+        float(model_provider_cfg.get("claim_extraction_provider_retry_sleep_seconds", model_provider_cfg.get("rate_limit_cooldown_seconds", 30))),
     )
     validation_feedback = ""
     last_error = "provider returned no valid `claims` JSON"
@@ -609,15 +609,15 @@ def extract_claims_with_model(
     while True:
         prompt = build_claim_extraction_prompt(entity, cluster, evidence, memory_for_entity, validation_feedback)
         call_kwargs = model_call_kwargs(config, "stage_09_claim_drafting")
-        response = call_mixtral_chat(
+        response = call_model_chat(
             prompt=prompt,
             **call_kwargs,
         )
         if isinstance(response, dict) and isinstance(response.get("claims"), list):
             return [claim for claim in response["claims"] if isinstance(claim, dict)]
         if response is None:
-            status = get_mixtral_runtime_status()
-            reason = str(status.get("last_mistral_skip_reason") or "provider_unavailable")
+            status = get_model_runtime_status()
+            reason = str(status.get("last_model_skip_reason") or "provider_unavailable")
             sleep_s = provider_wait_seconds(reason, status, provider_retry_sleep_seconds)
             if reason in PACING_SKIP_REASONS:
                 if sleep_s:

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, stable_id, write_json, write_jsonl
-from pipeline.mixtral_anchor_provider import build_prompt, call_mixtral_chat, load_seed_entities
+from pipeline.model_provider import build_prompt, call_model_chat, load_seed_entities
 from pipeline.thematic_profile import update_runtime_profile
 
 
@@ -622,30 +622,30 @@ def classify_with_provider(
                 anchors,
             )
         return heuristic_score, heuristic_reason, heuristic_track, heuristic_topics, anchors, [], []
-    if mode not in {"mixtral", "hybrid"}:
+    if mode not in {"model", "hybrid"}:
         return heuristic_score, heuristic_reason, heuristic_track, heuristic_topics, anchors, [], []
 
-    mixtral_cfg = provider_config.get("mixtral", {})
-    rate_state_path = Path(str(mixtral_cfg.get("rate_state_path", "artifacts/learning/mixtral_rate_runtime.json")))
+    model_provider_cfg = provider_config.get("model_provider", {})
+    rate_state_path = Path(str(model_provider_cfg.get("rate_state_path", "artifacts/learning/model_provider_rate_runtime.json")))
     prompt = build_prompt(text, profile, seed_entities, anchors)
-    model_response = call_mixtral_chat(
-        base_url=str(mixtral_cfg.get("base_url", "http://127.0.0.1:11434")),
-        model=str(mixtral_cfg.get("model", "mixtral")),
+    model_response = call_model_chat(
+        base_url=str(model_provider_cfg.get("base_url", "http://127.0.0.1:11434")),
+        model=str(model_provider_cfg.get("model", "llama3.1")),
         prompt=prompt,
-        temperature=float(mixtral_cfg.get("temperature", 0.0)),
-        timeout_seconds=int(mixtral_cfg.get("timeout_seconds", 60)),
-        provider=str(mixtral_cfg.get("provider", "auto")),
-        api_base_url=str(mixtral_cfg.get("api_base_url", "https://api.mistral.ai/v1")),
-        api_model=str(mixtral_cfg.get("api_model", "mistral-large-latest")),
-        api_retries=int(mixtral_cfg.get("api_retries", 2)),
-        auto_fallback_to_ollama=bool(mixtral_cfg.get("auto_fallback_to_ollama", True)),
-        rate_limit_cooldown_seconds=int(mixtral_cfg.get("rate_limit_cooldown_seconds", 90)),
+        temperature=float(model_provider_cfg.get("temperature", 0.0)),
+        timeout_seconds=int(model_provider_cfg.get("timeout_seconds", 60)),
+        provider=str(model_provider_cfg.get("provider", "auto")),
+        api_base_url=str(model_provider_cfg.get("api_base_url", "https://openrouter.ai/api/v1")),
+        api_model=str(model_provider_cfg.get("api_model", "qwen/qwen3.5-flash-02-23")),
+        api_retries=int(model_provider_cfg.get("api_retries", 2)),
+        auto_fallback_to_ollama=bool(model_provider_cfg.get("auto_fallback_to_ollama", True)),
+        rate_limit_cooldown_seconds=int(model_provider_cfg.get("rate_limit_cooldown_seconds", 90)),
         rate_state_path=rate_state_path,
-        min_interval_seconds=float(mixtral_cfg.get("adaptive_min_interval_seconds", 2.0)),
-        max_interval_seconds=float(mixtral_cfg.get("adaptive_max_interval_seconds", 120.0)),
-        success_decay=float(mixtral_cfg.get("adaptive_success_decay", 0.9)),
-        rate_limit_growth=float(mixtral_cfg.get("adaptive_rate_limit_growth", 1.8)),
-        ollama_unavailable_cooldown_seconds=int(mixtral_cfg.get("ollama_unavailable_cooldown_seconds", 120)),
+        min_interval_seconds=float(model_provider_cfg.get("adaptive_min_interval_seconds", 2.0)),
+        max_interval_seconds=float(model_provider_cfg.get("adaptive_max_interval_seconds", 120.0)),
+        success_decay=float(model_provider_cfg.get("adaptive_success_decay", 0.9)),
+        rate_limit_growth=float(model_provider_cfg.get("adaptive_rate_limit_growth", 1.8)),
+        ollama_unavailable_cooldown_seconds=int(model_provider_cfg.get("ollama_unavailable_cooldown_seconds", 120)),
     )
     if not isinstance(model_response, dict):
         logger.debug(
@@ -683,7 +683,7 @@ def classify_with_provider(
     if isinstance(suggested, dict):
         suggested_hist = [str(x).strip().lower() for x in (suggested.get("historical") or []) if str(x).strip()]
         suggested_music = [str(x).strip().lower() for x in (suggested.get("music") or []) if str(x).strip()]
-    reason = f"{heuristic_reason}; provider={'mixtral' if mode == 'mixtral' else 'hybrid'}; heuristic_prior_weight=0.15"
+    reason = f"{heuristic_reason}; provider={mode}; heuristic_prior_weight=0.15"
     logger.debug(
         "Stage 06 provider result: mode=%s model_score=%.3f model_track=%s model_anchors=%d merged_anchors=%d",
         mode,

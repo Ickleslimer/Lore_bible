@@ -23,7 +23,7 @@ DEFAULT_AUTO_REVIEW_MODEL = "deepseek/deepseek-v4-flash"
 
 # ---------------------------------------------------------------------------
 # OpenRouter helpers (self-contained so auto_review has no coupling to the
-# rate-limit / pacing state inside mixtral_anchor_provider). The
+# rate-limit / pacing state inside model_provider). The
 # _gemini_generate function name is retained for older tests/call sites.
 # ---------------------------------------------------------------------------
 

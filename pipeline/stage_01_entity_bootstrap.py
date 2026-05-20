@@ -15,7 +15,7 @@ from pipeline.entity_resolution import (
     is_blocked_seed_name,
     normalized_name_key,
 )
-from pipeline.mixtral_anchor_provider import build_stage_01_prompt, call_mixtral_chat, model_call_kwargs
+from pipeline.model_provider import build_stage_01_prompt, call_model_chat, model_call_kwargs
 from pipeline.thematic_profile import update_runtime_profile
 
 
@@ -82,12 +82,12 @@ def infer_entities(text: str) -> list[dict[str, Any]]:
     return sorted(entities, key=lambda x: (x["entity_type"], x["canonical_name"]))
 
 
-def infer_entities_mixtral(text: str, config: dict[str, Any]) -> dict[str, Any] | None:
+def infer_entities_with_model(text: str, config: dict[str, Any]) -> dict[str, Any] | None:
     logger = get_logger(__name__)
     excerpt_chars = int(config.get("stage_01_model_excerpt_chars", 24000))
     prompt = build_stage_01_prompt(text[:excerpt_chars])
     call_kwargs = model_call_kwargs(config, "stage_01_entity_bootstrap")
-    response = call_mixtral_chat(
+    response = call_model_chat(
         prompt=prompt,
         **call_kwargs,
     )
@@ -200,13 +200,13 @@ def run(
     logger.info("Stage 01: provider mode is '%s'.", stage_01_provider)
     entities = infer_entities(text)
     logger.debug("Stage 01: heuristic extraction produced %d entity seed(s).", len(entities))
-    if stage_01_provider in {"mixtral", "hybrid"}:
+    if stage_01_provider in {"model", "hybrid"}:
         logger.info("Stage 01: requesting model bootstrap extraction...")
-        model_result = infer_entities_mixtral(text, config)
+        model_result = infer_entities_with_model(text, config)
         if model_result and isinstance(model_result, dict):
             model_cards = list(model_result.get("entities", model_result.get("cards", [])))
             logger.info("Stage 01: model extraction produced %d entity seed(s).", len(model_cards))
-            if stage_01_provider == "mixtral":
+            if stage_01_provider == "model":
                 entities = model_cards
             else:
                 merged: dict[str, dict[str, Any]] = {normalized_name_key(c["canonical_name"]): c for c in entities}

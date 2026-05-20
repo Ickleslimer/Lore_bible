@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -12,7 +12,7 @@ from unittest.mock import patch
 from pipeline.common import stable_id
 from pipeline.auto_review import AutoReviewResult, _auto_review_claims, _auto_review_conversation_entities
 from pipeline.entity_resolution import normalized_name_key, resolve_entities
-from pipeline.mixtral_anchor_provider import (
+from pipeline.model_provider import (
     _call_anthropic_chat,
     _call_gemini_chat,
     _call_openrouter_chat,
@@ -289,7 +289,7 @@ def run_b3_for_test(
                 ]
             },
         )
-    with patch("pipeline.stage_04_conversation_segmentation.call_mixtral_chat", side_effect=model_payloads):
+    with patch("pipeline.stage_04_conversation_segmentation.call_model_chat", side_effect=model_payloads):
         run_stage_04(
             root / "messages.jsonl",
             root / "relevant.jsonl",
@@ -429,7 +429,7 @@ class PipelineV2Tests(unittest.TestCase):
                     "confidence": 0.85,
                 }
 
-            with patch("pipeline.stage_05_conversation_patch_notes.call_mixtral_chat", side_effect=fake_patch_note):
+            with patch("pipeline.stage_05_conversation_patch_notes.call_model_chat", side_effect=fake_patch_note):
                 run_stage_05(
                     root / "messages.jsonl",
                     root / "segments.json",
@@ -560,7 +560,7 @@ class PipelineV2Tests(unittest.TestCase):
                     "confidence": 0.85,
                 }
 
-            with patch("pipeline.stage_05_conversation_patch_notes.call_mixtral_chat", side_effect=fake_patch_note):
+            with patch("pipeline.stage_05_conversation_patch_notes.call_model_chat", side_effect=fake_patch_note):
                 run_stage_05(
                     root / "messages.jsonl",
                     root / "segments.json",
@@ -609,7 +609,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(root / "config.json", {"conversation_patch_notes": {"retry_sleep_seconds": 0, "provider_retry_sleep_seconds": 0}})
 
             with patch(
-                "pipeline.stage_05_conversation_patch_notes.call_mixtral_chat",
+                "pipeline.stage_05_conversation_patch_notes.call_model_chat",
                 return_value={
                     "status": "draft",
                     "summary": "The segment suggests Alternate Reality Florida as a possible location.",
@@ -884,7 +884,7 @@ class PipelineV2Tests(unittest.TestCase):
             captured["timeout"] = timeout
             return FakeResponse()
 
-        with patch("pipeline.mixtral_anchor_provider.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("pipeline.model_provider.urllib.request.urlopen", side_effect=fake_urlopen):
             payload = _call_gemini_chat(
                 "https://generativelanguage.googleapis.com/v1beta",
                 "fake-key",
@@ -930,9 +930,9 @@ class PipelineV2Tests(unittest.TestCase):
             return FakeResponse()
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("pipeline.mixtral_anchor_provider.urllib.request.urlopen", side_effect=fake_urlopen):
-                with patch("pipeline.mixtral_anchor_provider._NEXT_MISTRAL_ATTEMPT_EPOCH_S", 0.0):
-                    with patch("pipeline.mixtral_anchor_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
+            with patch("pipeline.model_provider.urllib.request.urlopen", side_effect=fake_urlopen):
+                with patch("pipeline.model_provider._NEXT_MODEL_ATTEMPT_EPOCH_S", 0.0):
+                    with patch("pipeline.model_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
                         payload = _call_openrouter_chat(
                             "https://openrouter.ai/api/v1",
                             "fake-key",
@@ -956,7 +956,7 @@ class PipelineV2Tests(unittest.TestCase):
 
     def test_model_routing_selects_qwen_instruct_for_synthesis(self) -> None:
         config = {
-            "mixtral": {
+            "model_provider": {
                 "provider": "openrouter",
                 "api_model": "qwen/qwen3.5-flash-02-23",
                 "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
@@ -967,7 +967,7 @@ class PipelineV2Tests(unittest.TestCase):
                         "api_model": "qwen/qwen3.5-flash-02-23",
                         "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
                     },
-                    "claude_sonnet": {
+                    "deep_reasoning": {
                         "provider": "openrouter",
                         "api_model": "qwen/qwen3-235b-a22b-2507",
                         "api_base_url": "https://openrouter.ai/api/v1",
@@ -976,7 +976,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
                 "tasks": {
                     "stage_09_claim_drafting": {"profile": "cheap", "batch_enabled": True},
-                    "stage_11_card_synthesis": {"profile": "claude_sonnet", "batch_enabled": False},
+                    "stage_11_card_synthesis": {"profile": "deep_reasoning", "batch_enabled": False},
                 },
             },
         }
@@ -1125,7 +1125,7 @@ class PipelineV2Tests(unittest.TestCase):
                 }
 
             with patch("pipeline.stage_04_conversation_segmentation.call_gemini_batch_json", side_effect=fake_batch) as batch:
-                with patch("pipeline.stage_04_conversation_segmentation.call_mixtral_chat", side_effect=AssertionError("sync model should not be used")):
+                with patch("pipeline.stage_04_conversation_segmentation.call_model_chat", side_effect=AssertionError("sync model should not be used")):
                     run_stage_04(
                         root / "messages.jsonl",
                         root / "relevant.jsonl",
@@ -1548,7 +1548,7 @@ class PipelineV2Tests(unittest.TestCase):
                 ]
             }
 
-            with patch("pipeline.stage_04_conversation_segmentation.call_mixtral_chat", side_effect=[invalid_payload, {"segments": []}]):
+            with patch("pipeline.stage_04_conversation_segmentation.call_model_chat", side_effect=[invalid_payload, {"segments": []}]):
                 with self.assertRaises(RuntimeError):
                     run_stage_04(
                         root / "messages.jsonl",
@@ -1593,7 +1593,7 @@ class PipelineV2Tests(unittest.TestCase):
                 ]
             }
 
-            with patch("pipeline.stage_04_conversation_segmentation.call_mixtral_chat", side_effect=[first_payload, KeyboardInterrupt]):
+            with patch("pipeline.stage_04_conversation_segmentation.call_model_chat", side_effect=[first_payload, KeyboardInterrupt]):
                 with self.assertRaises(KeyboardInterrupt):
                     run_stage_04(
                         root / "messages.jsonl",
@@ -1689,7 +1689,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             )
 
-            with patch("pipeline.stage_06_snippet_extraction.call_mixtral_chat", side_effect=AssertionError("Stage 06 should not call the model")) as mocked_model:
+            with patch("pipeline.stage_06_snippet_extraction.call_model_chat", side_effect=AssertionError("Stage 06 should not call the model")) as mocked_model:
                 run_stage_06(
                     root / "messages.jsonl",
                     root / "profiles.json",
@@ -2413,20 +2413,20 @@ class PipelineV2Tests(unittest.TestCase):
                 root / "config.json",
                 {
                     "model_routing": {
-                        "profiles": {"flash_regular": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
+                        "profiles": {"balanced_reasoning": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
                         "tasks": {
                             "stage_07_entity_resolution": {
-                                "profile": "flash_regular",
+                                "profile": "balanced_reasoning",
                                 "enabled": True,
                                 "max_evidence_per_call": 10,
                             }
                         },
                     },
-                    "mixtral": {"provider": "gemini", "timeout_seconds": 60},
+                    "model_provider": {"provider": "gemini", "timeout_seconds": 60},
                 },
             )
 
-            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_model_chat") as mock_model:
                 mock_model.return_value = {
                     "alias_mappings": [
                         {
@@ -2544,14 +2544,14 @@ class PipelineV2Tests(unittest.TestCase):
                 root / "config.json",
                 {
                     "model_routing": {
-                        "profiles": {"flash_regular": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
-                        "tasks": {"stage_07_entity_resolution": {"profile": "flash_regular", "enabled": True}},
+                        "profiles": {"balanced_reasoning": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
+                        "tasks": {"stage_07_entity_resolution": {"profile": "balanced_reasoning", "enabled": True}},
                     },
-                    "mixtral": {"provider": "gemini", "timeout_seconds": 60},
+                    "model_provider": {"provider": "gemini", "timeout_seconds": 60},
                 },
             )
 
-            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_model_chat") as mock_model:
                 mock_model.side_effect = AssertionError("alias grouping should not rerun after decisions")
                 run_stage_07(
                     root / "snippets.jsonl",
@@ -2612,21 +2612,21 @@ class PipelineV2Tests(unittest.TestCase):
                 root / "config.json",
                 {
                     "model_routing": {
-                        "profiles": {"flash_regular": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
+                        "profiles": {"balanced_reasoning": {"provider": "gemini", "api_model": "gemini-2.5-flash"}},
                         "tasks": {
                             "stage_07_entity_resolution": {
-                                "profile": "flash_regular",
+                                "profile": "balanced_reasoning",
                                 "enabled": True,
                                 "max_evidence_per_call": 10,
                                 "max_candidates_per_call": 10,
                             }
                         },
                     },
-                    "mixtral": {"provider": "gemini", "timeout_seconds": 60},
+                    "model_provider": {"provider": "gemini", "timeout_seconds": 60},
                 },
             )
 
-            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_model_chat") as mock_model:
                 mock_model.return_value = {
                     "alias_mappings": [
                         {
@@ -2708,11 +2708,11 @@ class PipelineV2Tests(unittest.TestCase):
                             }
                         }
                     },
-                    "mixtral": {"provider": "gemini", "timeout_seconds": 60},
+                    "model_provider": {"provider": "gemini", "timeout_seconds": 60},
                 },
             )
 
-            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_model_chat") as mock_model:
                 mock_model.return_value = [
                     {
                         "alias_text": "Enoch Faust Ersatzen",
@@ -2779,7 +2779,7 @@ class PipelineV2Tests(unittest.TestCase):
             )
             write_json(root / "config.json", {"model_routing": {"tasks": {"stage_07_entity_resolution": {"enabled": True}}}})
 
-            with patch("pipeline.stage_07_entity_resolution.call_mixtral_chat") as mock_model:
+            with patch("pipeline.stage_07_entity_resolution.call_model_chat") as mock_model:
                 mock_model.return_value = {
                     "_json_root": [
                         {
@@ -3287,7 +3287,7 @@ class PipelineV2Tests(unittest.TestCase):
             )
             write_json(root / "memory.json", {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
 
-            with patch("pipeline.stage_09_claim_drafting.call_mixtral_chat", return_value={"claims": [{"claim_text": "HECTR is a template ancestor for Krypteia AI systems.", "claim_type": "relationship", "source_snippet_ids": ["s1"], "confidence": 0.82, "contradiction_notes": ""}]}):
+            with patch("pipeline.stage_09_claim_drafting.call_model_chat", return_value={"claims": [{"claim_text": "HECTR is a template ancestor for Krypteia AI systems.", "claim_type": "relationship", "source_snippet_ids": ["s1"], "confidence": 0.82, "contradiction_notes": ""}]}):
                 run_stage_09(
                     root / "resolved_entities.json",
                     root / "lore_clusters.json",
@@ -3371,7 +3371,7 @@ class PipelineV2Tests(unittest.TestCase):
                 }
 
             with patch("pipeline.stage_09_claim_drafting.call_gemini_batch_json", side_effect=fake_batch) as batch:
-                with patch("pipeline.stage_09_claim_drafting.call_mixtral_chat", side_effect=AssertionError("sync model should not be used")):
+                with patch("pipeline.stage_09_claim_drafting.call_model_chat", side_effect=AssertionError("sync model should not be used")):
                     run_stage_09(
                         root / "resolved_entities.json",
                         root / "lore_clusters.json",
@@ -3438,10 +3438,10 @@ class PipelineV2Tests(unittest.TestCase):
                 ],
             )
             write_json(root / "memory.json", {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
-            write_json(root / "config.json", {"mixtral": {"claim_extraction_validation_retries": 0}})
+            write_json(root / "config.json", {"model_provider": {"claim_extraction_validation_retries": 0}})
 
             with patch(
-                "pipeline.stage_09_claim_drafting.call_mixtral_chat",
+                "pipeline.stage_09_claim_drafting.call_model_chat",
                 side_effect=[
                     {"not_claims": []},
                     {"claims": [{"claim_text": "HECTR is related to Krypteia AI systems.", "claim_type": "relationship", "confidence": 0.82, "contradiction_notes": ""}]},
@@ -3510,7 +3510,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["claim1"], "background": ["claim1"], "role_in_story": ["claim1"], "relationships": ["claim1"], "timeline": [], "open_questions": []},
             }
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -3532,7 +3532,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(canonical_cards, [])
 
             write_json(root / "card_decisions.json", {"decisions": [{"card_id": "card_hectr", "decision": "approve", "reviewer": "r", "rationale": "canon"}]})
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -3658,7 +3658,7 @@ class PipelineV2Tests(unittest.TestCase):
                 prompts.append(prompt)
                 return model_card
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", side_effect=fake_model):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", side_effect=fake_model):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -3776,7 +3776,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["claim_link"], "background": ["claim_link"], "role_in_story": [], "relationships": ["claim_link"], "timeline": [], "inspirations": [], "open_questions": []},
             }
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -3862,7 +3862,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             }
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -3956,7 +3956,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["old_claim", "new_claim"], "background": ["old_claim"], "role_in_story": ["new_claim"], "relationships": [], "timeline": [], "open_questions": [], "resolved_conflicts": [], "unresolved_conflicts": []},
             }
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -4023,7 +4023,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["alias_claim"], "background": ["alias_claim"], "role_in_story": [], "relationships": [], "timeline": [], "open_questions": [], "resolved_conflicts": [], "unresolved_conflicts": []},
             }
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -4107,7 +4107,7 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(root / "directives.json", {"directives": []})
             write_json(root / "memory.json", {"version": 1, "accepted_claims": [], "rejected_claims": [], "approved_aliases": [], "entity_merges": [], "approved_cards": [], "author_directives": [], "style_corrections": [], "updated_at_utc": "2026-05-16T00:00:00Z"})
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat") as model:
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat") as model:
                 with self.assertRaisesRegex(RuntimeError, "identity cluster proposal"):
                     run_stage_10(
                         root / "resolved_entities.json",
@@ -4176,7 +4176,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             }
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -4250,11 +4250,11 @@ class PipelineV2Tests(unittest.TestCase):
         ]
         config = {
             "model_routing": {
-                "default_profile": "claude_sonnet",
-                "profiles": {"claude_sonnet": {"provider": "anthropic", "api_model": "claude-sonnet-4-6"}},
-                "tasks": {"stage_10_identity_merge_cluster_judgement": {"profile": "claude_sonnet"}},
+                "default_profile": "deep_reasoning",
+                "profiles": {"deep_reasoning": {"provider": "anthropic", "api_model": "claude-sonnet-4-6"}},
+                "tasks": {"stage_10_identity_merge_cluster_judgement": {"profile": "deep_reasoning"}},
             },
-            "mixtral": {"synthesis_provider_retries": 0},
+            "model_provider": {"synthesis_provider_retries": 0},
         }
         judgement = {
             "clusters": [
@@ -4273,7 +4273,7 @@ class PipelineV2Tests(unittest.TestCase):
                 }
             ]
         }
-        with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=judgement):
+        with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=judgement):
             proposals = _build_identity_cluster_proposals(edges, entities, config)
 
         self.assertEqual(len(proposals), 1)
@@ -4332,7 +4332,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["claim1"], "background": ["claim1"], "role_in_story": [], "relationships": [], "timeline": [], "open_questions": []},
             }
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 with self.assertRaisesRegex(RuntimeError, "unsupported acronym expansion"):
                     run_stage_11(
                         root / "resolved_entities.json",
@@ -4407,7 +4407,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "support_map": {"summary": ["claim1"], "background": ["claim1"], "role_in_story": [], "relationships": [], "timeline": [], "open_questions": ["claim1"]},
             }
 
-            with patch("pipeline.stage_11_card_synthesis.call_mixtral_chat", return_value=model_card):
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", return_value=model_card):
                 run_stage_11(
                     root / "resolved_entities.json",
                     root / "claim_drafts.json",
@@ -4683,6 +4683,48 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(names[10], "Identity Merge")
         self.assertEqual(states[10], "done")
         self.assertEqual(states[11], "waiting")
+
+    def test_ui_pipeline_progress_uses_worker_failure_for_card_synthesis_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(root / "01_bootstrap" / "entity_seed.json", {"entities": []})
+            write_jsonl(root / "02_timeline" / "messages_normalized_per_thread.jsonl", [])
+            write_jsonl(root / "02_timeline" / "messages_global_timeline.jsonl", [])
+            write_json(root / "02_timeline" / "conversation_segments.json", {"segments": []})
+            write_json(
+                root / "02_timeline" / "conversation_patch_notes.json",
+                {"status": "complete", "conversation_count": 1, "notes_count": 1, "failure_count": 0, "notes": []},
+            )
+            write_jsonl(root / "03_relevance" / "snippets_candidates.jsonl", [])
+            write_json(root / "05_alias" / "resolved_entities.json", {"resolved_entities": []})
+            write_json(root / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": []})
+            write_json(
+                root / "07_review" / "identity_merge_proposals.json",
+                {"proposals": [{"proposal_id": "merge_1", "review_status": "approved"}]},
+            )
+            write_json(
+                root / "07_review" / "identity_merge_decisions.json",
+                {"decisions": [{"proposal_id": "merge_1", "decision": "approve"}]},
+            )
+            (root / "tauri_pipeline_worker.log").write_text(
+                "\n".join(
+                    [
+                        "03:24:22 | INFO | __main__ | [10/11] START Stage 10 Card Synthesis",
+                        "03:29:06 | INFO | pipeline.stage_g_merge_engine | Stage 10 progress: 5/242 synthesizing cards draft_cards=4 failures=1",
+                        "1779244235 | desktop: Pipeline stopped with exit code 1.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            snapshot = pipeline_progress_artifact_snapshot(root)
+            progress = pipeline_progress_from_logs(snapshot["logs"], snapshot["status"], snapshot["message"])
+
+        states = {stage["index"]: stage["state"] for stage in progress["stages"]}
+        self.assertEqual(progress["status"], "failed")
+        self.assertEqual(progress["summary"], "Failed at stage 11/12: Card Synthesis")
+        self.assertEqual(states[10], "done")
+        self.assertEqual(states[11], "failed")
 
     def test_ui_pipeline_progress_marks_claim_step_complete_when_review_is_bypassed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5813,13 +5855,13 @@ class PipelineV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / ".env").write_text(
-                'GEMINI_API_KEY="fake-gemini"\nMixtral_API_Key: "fake-mixtral"\n',
+                'GEMINI_API_KEY="fake-gemini"\nMODEL_API_KEY: "fake-model"\n',
                 encoding="utf-8",
             )
             with patch.dict("os.environ", {}, clear=True):
                 load_project_env(repo)
                 self.assertEqual(__import__("os").environ["GEMINI_API_KEY"], "fake-gemini")
-                self.assertEqual(__import__("os").environ["Mixtral_API_Key"], "fake-mixtral")
+                self.assertEqual(__import__("os").environ["MODEL_API_KEY"], "fake-model")
 
     def test_desktop_text_word_delete_boundaries(self) -> None:
         text = "The Lab answers quickly"
@@ -5907,8 +5949,8 @@ class PipelineV2Tests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with patch("urllib.request.urlopen", return_value=FakeResponse()):
-                with patch("pipeline.mixtral_anchor_provider._NEXT_MISTRAL_ATTEMPT_EPOCH_S", 0.0):
-                    with patch("pipeline.mixtral_anchor_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
+                with patch("pipeline.model_provider._NEXT_MODEL_ATTEMPT_EPOCH_S", 0.0):
+                    with patch("pipeline.model_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
                         parsed = _call_anthropic_chat(
                             "https://api.anthropic.com/v1",
                             "fake-key",
@@ -5946,8 +5988,8 @@ class PipelineV2Tests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with patch("urllib.request.urlopen", return_value=FakeResponse()):
-                with patch("pipeline.mixtral_anchor_provider._NEXT_MISTRAL_ATTEMPT_EPOCH_S", 0.0):
-                    with patch("pipeline.mixtral_anchor_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
+                with patch("pipeline.model_provider._NEXT_MODEL_ATTEMPT_EPOCH_S", 0.0):
+                    with patch("pipeline.model_provider._RATE_LIMITED_UNTIL_EPOCH_S", 0.0):
                         parsed = _call_anthropic_chat(
                             "https://api.anthropic.com/v1",
                             "fake-key",
@@ -6041,7 +6083,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             ]
 
-            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=mock_payloads) as model_call:
+            with patch("pipeline.story_questions.call_model_chat", side_effect=mock_payloads) as model_call:
                 with patch("pipeline.story_questions.load_review_memory", return_value={"story_question_answers": []}):
                     with patch("pipeline.story_questions.save_review_memory"):
                         generate_next_question(root, config_path)
@@ -6134,7 +6176,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "left_pending": [],
             }
 
-            with patch("pipeline.story_questions.call_mixtral_chat", return_value=model_payload) as model_call:
+            with patch("pipeline.story_questions.call_model_chat", return_value=model_payload) as model_call:
                 proposal = propose_story_answer_application(root, "Those were working names later updated.", config_path)
 
             prompt = model_call.call_args.kwargs["prompt"]
@@ -6224,8 +6266,8 @@ class PipelineV2Tests(unittest.TestCase):
                 "left_pending": [],
             }
 
-            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=[None, model_payload]) as model_call:
-                with patch("pipeline.story_questions.get_mixtral_runtime_status", return_value={"last_mistral_skip_reason": "content_parse_failed"}):
+            with patch("pipeline.story_questions.call_model_chat", side_effect=[None, model_payload]) as model_call:
+                with patch("pipeline.story_questions.get_model_runtime_status", return_value={"last_model_skip_reason": "content_parse_failed"}):
                     proposal = propose_story_answer_application(root, "Yes, Leonidas is the founder and current leader.", config_path)
 
             self.assertEqual(model_call.call_count, 2)
@@ -6318,7 +6360,7 @@ class PipelineV2Tests(unittest.TestCase):
             config_path = root / "config.json"
             write_json(config_path, {"story_questions": {"enabled": True, "provider": "anthropic", "model": "claude-sonnet-4-6"}})
 
-            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=AssertionError("confirmation should not call model")):
+            with patch("pipeline.story_questions.call_model_chat", side_effect=AssertionError("confirmation should not call model")):
                 proposal = propose_story_answer_application(root, "Correct on all counts.", config_path)
 
             self.assertEqual({item["claim_id"] for item in proposal["claim_decisions"]}, {"claim_leonidas_leader", "claim_hectr_commission"})
@@ -6410,7 +6452,7 @@ class PipelineV2Tests(unittest.TestCase):
                 "left_pending": [],
             }
 
-            with patch("pipeline.story_questions.call_mixtral_chat", return_value=model_payload):
+            with patch("pipeline.story_questions.call_model_chat", return_value=model_payload):
                 proposal = propose_story_answer_application(root, "This is Halayudtha.", config_path)
 
             self.assertEqual(proposal["claim_decisions"], [])
@@ -6581,7 +6623,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             ]
 
-            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=model_payloads) as model_call:
+            with patch("pipeline.story_questions.call_model_chat", side_effect=model_payloads) as model_call:
                 result = generate_all_questions(root, config_path)
 
             self.assertEqual(result["created_count"], 3)
@@ -6689,7 +6731,7 @@ class PipelineV2Tests(unittest.TestCase):
                     "expected_resolution": "Confirm or reject the role claim.",
                 }
 
-            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=fake_question) as model_call:
+            with patch("pipeline.story_questions.call_model_chat", side_effect=fake_question) as model_call:
                 question = generate_next_question(root, config_path)
 
             self.assertEqual(model_call.call_count, 1)
@@ -6801,7 +6843,7 @@ class PipelineV2Tests(unittest.TestCase):
                     "expected_resolution": "Resolve this tier.",
                 }
 
-            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=fake_question) as model_call:
+            with patch("pipeline.story_questions.call_model_chat", side_effect=fake_question) as model_call:
                 result = generate_all_questions(root, config_path)
 
             self.assertEqual(model_call.call_count, 3)
@@ -6942,7 +6984,7 @@ class PipelineV2Tests(unittest.TestCase):
                 },
             ]
 
-            with patch("pipeline.story_questions.call_mixtral_chat", side_effect=model_payloads):
+            with patch("pipeline.story_questions.call_model_chat", side_effect=model_payloads):
                 with patch("pipeline.story_questions.load_review_memory", return_value={"story_question_answers": []}):
                     with patch("pipeline.story_questions.save_review_memory"):
                         first_question = generate_next_question(root, config_path)

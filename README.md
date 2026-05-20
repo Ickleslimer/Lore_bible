@@ -120,28 +120,28 @@ Stages 04, 05, 09, 10, and 11 require a valid model response for their model-bac
 
 Configure providers in `config/pipeline_config.json`:
 
-- `anchor_provider`: `heuristic|mixtral|hybrid` for legacy Stage 06 relevance routing when Stage 04 metadata is unavailable.
+- `anchor_provider`: `heuristic|model|hybrid` for legacy Stage 06 relevance routing when Stage 04 metadata is unavailable.
 - `stage_06_anchor_provider`: defaults to `conversation_metadata`, which trusts Stage 04's model-approved conversation segments and avoids per-message model calls.
-- `stage_01_anchor_provider`: `heuristic|mixtral|hybrid` for ontology seed extraction.
-- `mixtral.provider`: `openrouter|gemini|anthropic|auto|mistral_api|ollama`. The setting name is historical; `openrouter` dispatches through OpenRouter's OpenAI-compatible chat API using `mixtral.api_model`.
-- `mixtral.api_model`: defaults here to `qwen/qwen3.5-flash-02-23` for low-cost/high-volume batch work.
-- `mixtral.adaptive_min_interval_seconds`: currently `0.5`; the runtime file will increase this automatically if rate limits appear.
-- `model_routing.profiles.flash_lite`: routes cheap/high-volume work to `qwen/qwen3.5-flash-02-23`.
-- `model_routing.profiles.flash_regular`: routes reasoning-sensitive Gemini-replacement work to `qwen/qwen3.5-flash-02-23`.
-- `model_routing.profiles.claude_opus`: routes low-volume work to Anthropic Claude Opus.
-- `model_routing.profiles.claude_sonnet`: routes low-volume reasoning work to Anthropic Claude Sonnet 4.6.
-- `model_routing.tasks.stage_04_conversation_segmentation`: currently uses synchronous Flash-Lite so segmentation progress remains visible.
-- `model_routing.tasks.stage_05_conversation_patch_notes`: currently uses synchronous Flash-Lite for chronological conversation development notes.
-- `model_routing.tasks.stage_09_claim_drafting`: currently uses synchronous Flash-Lite.
-- `model_routing.tasks.stage_10_identity_merge_proposals`: currently uses synchronous Claude Sonnet for identity/alias merge proposal detection.
-- `model_routing.tasks.stage_10_identity_merge_cluster_judgement`: currently uses synchronous Claude Sonnet to choose canonical names and aliases for collated identity clusters.
-- `model_routing.tasks.stage_11_card_architecture_agent`: currently uses synchronous Claude Sonnet for low-volume structural card-base reasoning before final drafting.
-- `model_routing.tasks.stage_11_card_synthesis`: currently uses synchronous Claude Sonnet for final card drafting, with validation retries to keep synthesis stateful and evidence-bound.
-- `model_routing.tasks.stage_09_story_questions`: currently uses Claude Sonnet for iterative question generation and answer-application proposals.
+- `stage_01_anchor_provider`: `heuristic|model|hybrid` for ontology seed extraction.
+- `model_provider.provider`: `openrouter|gemini|anthropic|auto|openai_compatible|api|ollama`. `openrouter` and `openai_compatible` dispatch through OpenAI-compatible chat APIs using `model_provider.api_model`.
+- `model_provider.api_model`: defaults here to `qwen/qwen3.5-flash-02-23` for low-cost/high-volume batch work.
+- `model_provider.adaptive_min_interval_seconds`: currently `0.5`; the runtime file will increase this automatically if rate limits appear.
+- `model_routing.profiles.high_volume`: routes cheap/high-volume work to `qwen/qwen3.5-flash-02-23`.
+- `model_routing.profiles.balanced_reasoning`: routes reasoning-sensitive work to `qwen/qwen3.5-flash-02-23`.
+- `model_routing.profiles.premium_reasoning`: routes low-volume work to the configured premium reasoning model.
+- `model_routing.profiles.deep_reasoning`: routes low-volume reasoning work to the configured deep reasoning model.
+- `model_routing.tasks.stage_04_conversation_segmentation`: currently uses synchronous high-volume profile so segmentation progress remains visible.
+- `model_routing.tasks.stage_05_conversation_patch_notes`: currently uses synchronous high-volume profile for chronological conversation development notes.
+- `model_routing.tasks.stage_09_claim_drafting`: currently uses synchronous high-volume profile.
+- `model_routing.tasks.stage_10_identity_merge_proposals`: currently uses the deep reasoning profile for identity/alias merge proposal detection.
+- `model_routing.tasks.stage_10_identity_merge_cluster_judgement`: currently uses the deep reasoning profile to choose canonical names and aliases for collated identity clusters.
+- `model_routing.tasks.stage_11_card_architecture_agent`: currently uses the deep reasoning profile for low-volume structural card-base reasoning before final drafting.
+- `model_routing.tasks.stage_11_card_synthesis`: currently uses the deep reasoning profile for final card drafting, with validation retries to keep synthesis stateful and evidence-bound.
+- `model_routing.tasks.stage_09_story_questions`: currently uses the deep reasoning profile for iterative question generation and answer-application proposals.
 - `story_questions`: controls the optional guided claim-review flow and writes `07_review/story_question_session.json`, `story_questions.jsonl`, `story_question_answers.jsonl`, `story_question_application_proposals.jsonl`, `story_question_applications.jsonl`, and `story_question_failures.json`.
 - `conversation_segmentation.max_gap_hours`: coarse DM window boundary before model topic segmentation; defaults to `12`.
 - `conversation_segmentation.self_user_id`: optional account override for 1:1 DM pair detection.
-- API keys are read from `OPENROUTER_API_KEY`, `OPENROUTER_KEY`, `OPEN_ROUTER_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `CLAUDE_API_KEY`, `MIXTRAL_API_KEY`, `MISTRAL_API_KEY`, or `.env`.
+- API keys are read from `OPENROUTER_API_KEY`, `OPENROUTER_KEY`, `OPEN_ROUTER_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, `CLAUDE_API_KEY`, `MODEL_API_KEY`, `MODEL_PROVIDER_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, or `.env`.
 
 ## Review Memory
 

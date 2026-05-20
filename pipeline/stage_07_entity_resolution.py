@@ -17,7 +17,7 @@ from pipeline.entity_resolution import (
     normalized_name_key,
     resolve_entities,
 )
-from pipeline.mixtral_anchor_provider import call_mixtral_chat, model_call_kwargs
+from pipeline.model_provider import call_model_chat, model_call_kwargs
 from pipeline.review_memory import load_review_memory
 from pipeline.review_memory import remember_conversation_entity_decisions, save_review_memory
 
@@ -1029,7 +1029,7 @@ def add_model_alias_resolution_proposals(
             offset,
         )
         try:
-            response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(provider_config, "stage_07_entity_resolution"))
+            response = call_model_chat(prompt=prompt, **model_call_kwargs(provider_config, "stage_07_entity_resolution"))
         except Exception as exc:
             failures.append(
                 {
@@ -1073,7 +1073,7 @@ def add_model_alias_resolution_proposals(
             offset,
         )
         try:
-            response = call_mixtral_chat(prompt=prompt, **model_call_kwargs(provider_config, "stage_07_entity_resolution"))
+            response = call_model_chat(prompt=prompt, **model_call_kwargs(provider_config, "stage_07_entity_resolution"))
         except Exception as exc:
             failures.append(
                 {

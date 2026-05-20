@@ -16,7 +16,7 @@ from pipeline.card_architecture_agent import (
 )
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json, write_jsonl
 from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalized_name_key
-from pipeline.mixtral_anchor_provider import call_mixtral_chat, get_mixtral_runtime_status, model_call_kwargs
+from pipeline.model_provider import call_model_chat, get_model_runtime_status, model_call_kwargs
 from pipeline.review_memory import (
     load_review_memory,
     remember_approved_cards,
@@ -156,7 +156,7 @@ IDENTITY_CLUSTER_CANONICAL_SCHEMA = {
 
 def provider_wait_seconds(reason: str, status: dict[str, Any], fallback_seconds: float) -> float:
     now_s = time.time()
-    next_attempt = float(status.get("next_mistral_attempt_epoch_s") or 0.0)
+    next_attempt = float(status.get("next_model_attempt_epoch_s") or 0.0)
     rate_limited_until = float(status.get("rate_limited_until_epoch_s") or 0.0)
     target = 0.0
     if reason in {"provider_locked", "adaptive_pacing"}:
@@ -943,14 +943,14 @@ def _refine_identity_clusters_with_model(clusters: list[dict[str, Any]], config:
 
     logger = get_logger("pipeline.stage_10_identity_merge")
     call_kwargs = model_call_kwargs(config, "stage_10_identity_merge_cluster_judgement")
-    mixtral_cfg = config.get("mixtral", {}) if isinstance(config, dict) else {}
-    provider_retries = max(0, int(mixtral_cfg.get("identity_merge_provider_retries", mixtral_cfg.get("synthesis_provider_retries", 2))))
+    model_provider_cfg = config.get("model_provider", {}) if isinstance(config, dict) else {}
+    provider_retries = max(0, int(model_provider_cfg.get("identity_merge_provider_retries", model_provider_cfg.get("synthesis_provider_retries", 2))))
     provider_retry_sleep_seconds = max(
         0.0,
         float(
-            mixtral_cfg.get(
+            model_provider_cfg.get(
                 "identity_merge_provider_retry_sleep_seconds",
-                mixtral_cfg.get("synthesis_provider_retry_sleep_seconds", mixtral_cfg.get("rate_limit_cooldown_seconds", 30)),
+                model_provider_cfg.get("synthesis_provider_retry_sleep_seconds", model_provider_cfg.get("rate_limit_cooldown_seconds", 30)),
             )
         ),
     )
@@ -999,10 +999,10 @@ def _refine_identity_clusters_with_model(clusters: list[dict[str, Any]], config:
                 batch_total,
                 len(batch),
             )
-            response = call_mixtral_chat(prompt=prompt, json_schema=IDENTITY_CLUSTER_CANONICAL_SCHEMA, **call_kwargs)
+            response = call_model_chat(prompt=prompt, json_schema=IDENTITY_CLUSTER_CANONICAL_SCHEMA, **call_kwargs)
             if response is None:
-                status = get_mixtral_runtime_status()
-                reason = str(status.get("last_mistral_skip_reason") or "provider_unavailable")
+                status = get_model_runtime_status()
+                reason = str(status.get("last_model_skip_reason") or "provider_unavailable")
                 sleep_s = provider_wait_seconds(reason, status, provider_retry_sleep_seconds)
                 if reason in PACING_SKIP_REASONS:
                     if sleep_s:
@@ -1233,14 +1233,14 @@ def detect_identity_merge_proposals(
     call_kwargs = model_call_kwargs(config, "stage_10_identity_merge_proposals")
     batch_size = 50
     batch_failures = 0
-    mixtral_cfg = config.get("mixtral", {}) if isinstance(config, dict) else {}
-    provider_retries = max(0, int(mixtral_cfg.get("identity_merge_provider_retries", mixtral_cfg.get("synthesis_provider_retries", 2))))
+    model_provider_cfg = config.get("model_provider", {}) if isinstance(config, dict) else {}
+    provider_retries = max(0, int(model_provider_cfg.get("identity_merge_provider_retries", model_provider_cfg.get("synthesis_provider_retries", 2))))
     provider_retry_sleep_seconds = max(
         0.0,
         float(
-            mixtral_cfg.get(
+            model_provider_cfg.get(
                 "identity_merge_provider_retry_sleep_seconds",
-                mixtral_cfg.get("synthesis_provider_retry_sleep_seconds", mixtral_cfg.get("rate_limit_cooldown_seconds", 30)),
+                model_provider_cfg.get("synthesis_provider_retry_sleep_seconds", model_provider_cfg.get("rate_limit_cooldown_seconds", 30)),
             )
         ),
     )
@@ -1274,14 +1274,14 @@ def detect_identity_merge_proposals(
             provider_failures = 0
             while True:
                 logger.info("Sending identity merge prompt to LLM (batch %d/%d, claims=%d)...", batch_number, batch_total, len(batch))
-                response = call_mixtral_chat(
+                response = call_model_chat(
                     prompt=prompt,
                     json_schema=IDENTITY_MERGE_SCHEMA,
                     **call_kwargs,
                 )
                 if response is None:
-                    status = get_mixtral_runtime_status()
-                    reason = str(status.get("last_mistral_skip_reason") or "provider_unavailable")
+                    status = get_model_runtime_status()
+                    reason = str(status.get("last_model_skip_reason") or "provider_unavailable")
                     sleep_s = provider_wait_seconds(reason, status, provider_retry_sleep_seconds)
                     if reason in PACING_SKIP_REASONS:
                         if sleep_s:
@@ -1743,16 +1743,16 @@ def synthesize_card_with_model(
     entities_by_name: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     logger = get_logger(__name__)
-    mixtral_cfg = config.get("mixtral", {}) if isinstance(config, dict) else {}
-    validation_retries = max(0, int(mixtral_cfg.get("synthesis_validation_retries", 1)))
-    provider_retries = max(validation_retries, int(mixtral_cfg.get("synthesis_provider_retries", 2)))
+    model_provider_cfg = config.get("model_provider", {}) if isinstance(config, dict) else {}
+    validation_retries = max(0, int(model_provider_cfg.get("synthesis_validation_retries", 1)))
+    provider_retries = max(validation_retries, int(model_provider_cfg.get("synthesis_provider_retries", 2)))
     validation_retry_sleep_seconds = max(
         0.0,
-        float(mixtral_cfg.get("synthesis_validation_retry_sleep_seconds", mixtral_cfg.get("adaptive_min_interval_seconds", 2.0))),
+        float(model_provider_cfg.get("synthesis_validation_retry_sleep_seconds", model_provider_cfg.get("adaptive_min_interval_seconds", 2.0))),
     )
     provider_retry_sleep_seconds = max(
         validation_retry_sleep_seconds,
-        float(mixtral_cfg.get("synthesis_provider_retry_sleep_seconds", mixtral_cfg.get("rate_limit_cooldown_seconds", 30))),
+        float(model_provider_cfg.get("synthesis_provider_retry_sleep_seconds", model_provider_cfg.get("rate_limit_cooldown_seconds", 30))),
     )
     validation_feedback = ""
     last_error: RuntimeError | None = None
@@ -1768,13 +1768,13 @@ def synthesize_card_with_model(
             entities_by_name,
         )
         call_kwargs = model_call_kwargs(config, "stage_11_card_synthesis")
-        response = call_mixtral_chat(
+        response = call_model_chat(
             prompt=prompt,
             **call_kwargs,
         )
         if response is None:
-            status = get_mixtral_runtime_status()
-            reason = str(status.get("last_mistral_skip_reason") or "provider_unavailable")
+            status = get_model_runtime_status()
+            reason = str(status.get("last_model_skip_reason") or "provider_unavailable")
             sleep_s = provider_wait_seconds(reason, status, provider_retry_sleep_seconds)
             if reason in PACING_SKIP_REASONS:
                 if sleep_s:

@@ -11,7 +11,7 @@
   </div>
   <div class="stage-rail">
     {#each progress?.stages ?? [] as stage}
-      <div class={`stage-node ${stage.state}`} title={`${stage.short_label} ${stage.name}`}>
+      <div class={`stage-node ${stage.state}`} class:row-end={stage.index % 6 === 0} title={`${stage.short_label} ${stage.name}`}>
         <span class="dot">{stage.short_label}</span>
         <span>{stage.name}</span>
       </div>

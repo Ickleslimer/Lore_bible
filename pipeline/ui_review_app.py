@@ -124,6 +124,7 @@ REVIEW_GATE_LOG_MARKERS = (
     "identity merge proposal",
     "card architecture proposal",
 )
+WORKER_FAILURE_RE = re.compile(r"desktop:\s+Pipeline stopped with exit code\s+(-?\d+)", re.IGNORECASE)
 
 
 def is_pipeline_progress_log_line(line: str) -> bool:
@@ -131,6 +132,7 @@ def is_pipeline_progress_log_line(line: str) -> bool:
     return (
         STAGE_LOG_RE.search(line) is not None
         or STAGE_HEARTBEAT_RE.search(line) is not None
+        or WORKER_FAILURE_RE.search(line) is not None
         or any(marker in lowered for marker in REVIEW_GATE_LOG_MARKERS)
     )
 
@@ -139,7 +141,9 @@ def _display_stage_index(raw_index: int, stage_text: str) -> int:
     lowered = stage_text.lower()
     if "identity merge" in lowered or "identity cluster" in lowered:
         return 10
-    if "card synthesis" in lowered or "card architecture" in lowered or "draft sync" in lowered:
+    if "stage_g_merge_engine" in lowered and ("model call" in lowered or "progress" in lowered):
+        return 11
+    if "card synthesis" in lowered or "synthesizing cards" in lowered or "card architecture" in lowered or "draft sync" in lowered:
         return 11
     if "notion export" in lowered:
         return 12
@@ -190,7 +194,7 @@ def pipeline_progress_from_logs(
     if status == "succeeded":
         completed = {stage["index"] for stage in PIPELINE_STAGES}
         current_index = None
-    elif status in {"failed", "review_required"} and review_index is not None:
+    elif status == "review_required" and review_index is not None:
         current_index = review_index
     elif status == "running" and current_index is None and len(completed) < total_stages:
         current_index = min(len(completed) + 1, total_stages)
@@ -203,7 +207,12 @@ def pipeline_progress_from_logs(
             current_index = total_stages
 
     logs_text = "\n".join(logs).lower()
-    review_gate = status == "review_required" or (status == "failed" and any(marker in logs_text for marker in REVIEW_GATE_LOG_MARKERS))
+    has_worker_failure = WORKER_FAILURE_RE.search("\n".join(logs)) is not None
+    review_gate = status == "review_required" or (
+        status == "failed"
+        and not has_worker_failure
+        and any(marker in logs_text for marker in REVIEW_GATE_LOG_MARKERS)
+    )
     stages: list[dict[str, Any]] = []
     current_name = ""
     for stage in PIPELINE_STAGES:
@@ -258,6 +267,32 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
     stage_total = len(PIPELINE_STAGES)
     bypass_payload = _read_json_or_default(root / "07_review" / "review_gate_bypass.json", {})
     claim_review_bypassed = isinstance(bypass_payload, dict) and bool(bypass_payload.get("claim_review"))
+    worker_log_path = root / "tauri_pipeline_worker.log"
+    worker_progress_logs: list[str] = []
+    worker_exit_code: int | None = None
+    if worker_log_path.exists():
+        try:
+            worker_lines = worker_log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-240:]
+        except Exception:
+            worker_lines = []
+        for line in worker_lines:
+            if is_pipeline_progress_log_line(line):
+                worker_progress_logs.append(line)
+            failure_match = WORKER_FAILURE_RE.search(line)
+            if failure_match:
+                try:
+                    worker_exit_code = int(failure_match.group(1))
+                except ValueError:
+                    worker_exit_code = 1
+
+    def worker_failure_snapshot_if_any() -> dict[str, Any] | None:
+        if worker_exit_code is None or worker_exit_code == 0 or not worker_progress_logs:
+            return None
+        return {
+            "status": "failed",
+            "message": f"Pipeline stopped with exit code {worker_exit_code}.",
+            "logs": [*logs, *worker_progress_logs],
+        }
 
     def mark_done(index: int, name: str) -> None:
         logs.append(f"[{index}/{stage_total}] START Stage {index:02d} {name}")
@@ -310,6 +345,9 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
     if (root / "05_alias" / "resolved_entities.json").exists() or (root / "05_alias" / "conversation_entity_proposals.json").exists():
         mark_start(7, "Entity Resolution")
         if counts.get("conversation_entities", 0) > 0:
+            worker_failure = worker_failure_snapshot_if_any()
+            if worker_failure is not None:
+                return worker_failure
             logs.append(f"[7/{stage_total}] REVIEW Stage 07 Entity Resolution")
             return {
                 "status": "review_required",
@@ -327,6 +365,9 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
             if claim_review_bypassed:
                 logs.append(f"[9/{stage_total}] DONE  Stage 09 Claim Drafting")
             else:
+                worker_failure = worker_failure_snapshot_if_any()
+                if worker_failure is not None:
+                    return worker_failure
                 logs.append(f"[9/{stage_total}] REVIEW Stage 09 Claim Drafting")
                 identity_pending = mark_identity_merge_if_known()
                 if identity_pending:
@@ -344,6 +385,9 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
             logs.append(f"[9/{stage_total}] DONE  Stage 09 Claim Drafting")
 
     if not claim_review_bypassed and counts.get("claims", 0) > 0 and not (root / "06_drafts" / "card_drafts" / "claim_drafts.json").exists():
+        worker_failure = worker_failure_snapshot_if_any()
+        if worker_failure is not None:
+            return worker_failure
         mark_start(9, "Claim Drafting")
         logs.append(f"[9/{stage_total}] REVIEW Stage 09 Claim Drafting")
         return {
@@ -353,12 +397,18 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
         }
 
     if mark_identity_merge_if_known() or counts.get("identity_merges", 0) > 0:
+        worker_failure = worker_failure_snapshot_if_any()
+        if worker_failure is not None:
+            return worker_failure
         return {
             "status": "review_required",
             "message": f"Paused for identity review: {counts['identity_merges']} identity cluster proposal(s) need review.",
             "logs": logs,
         }
     if counts.get("card_architecture", 0) > 0:
+        worker_failure = worker_failure_snapshot_if_any()
+        if worker_failure is not None:
+            return worker_failure
         mark_start(11, "Card Synthesis")
         logs.append(f"[11/{stage_total}] REVIEW Stage 11 Card Synthesis")
         return {
@@ -369,6 +419,9 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
     if (root / "07_review" / "card_drafts.json").exists() or (root / "07_review" / "canonical_cards.json").exists():
         mark_start(11, "Card Synthesis")
         if counts.get("cards", 0) > 0:
+            worker_failure = worker_failure_snapshot_if_any()
+            if worker_failure is not None:
+                return worker_failure
             logs.append(f"[11/{stage_total}] REVIEW Stage 11 Card Synthesis")
             return {
                 "status": "review_required",
@@ -377,6 +430,9 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
             }
         logs.append(f"[11/{stage_total}] DONE  Stage 11 Card Synthesis")
     if counts.get("cards", 0) > 0:
+        worker_failure = worker_failure_snapshot_if_any()
+        if worker_failure is not None:
+            return worker_failure
         mark_start(11, "Card Synthesis")
         logs.append(f"[11/{stage_total}] REVIEW Stage 11 Card Synthesis")
         return {
@@ -386,6 +442,9 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
         }
     if (root / "08_notion" / "notion_import.ndjson").exists():
         mark_done(12, "Notion Export")
+    worker_failure = worker_failure_snapshot_if_any()
+    if worker_failure is not None:
+        return worker_failure
     if logs:
         status = "succeeded" if any(f"[12/{stage_total}] DONE" in line for line in logs) else "idle"
         return {"status": status, "message": "", "logs": logs}
