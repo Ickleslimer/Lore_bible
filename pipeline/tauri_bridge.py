@@ -95,6 +95,161 @@ def _active_root(repo_root: Path, payload: dict[str, Any]) -> Path:
     return repo_root / "artifacts"
 
 
+def _resolve_configured_path(repo_root: Path, value: Any, default: str = "") -> Path:
+    raw = str(value or default).strip()
+    path = _plain_windows_path(raw or default)
+    if not path.is_absolute():
+        path = repo_root / path
+    return _resolve_plain(path)
+
+
+def _path_for_config(repo_root: Path, path: Path) -> str:
+    resolved = _resolve_plain(path)
+    try:
+        return resolved.relative_to(_resolve_plain(repo_root)).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def _read_env_lines(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def _unquote_env_value(value: str) -> str:
+    text = value.strip()
+    if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+        text = text[1:-1]
+    return text.strip()
+
+
+def _openrouter_key_from_env(repo_root: Path) -> tuple[str, str]:
+    names = ("OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY")
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value, f"process:{name}"
+    for line in _read_env_lines(repo_root / ".env"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip() in names and value.strip():
+            return _unquote_env_value(value), f".env:{key.strip()}"
+    return "", ""
+
+
+def _key_preview(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    if len(text) <= 10:
+        return "*" * len(text)
+    return f"{text[:6]}...{text[-4:]}"
+
+
+def _write_openrouter_key(repo_root: Path, api_key: str) -> None:
+    clean = api_key.strip().strip('"').strip("'")
+    if not clean:
+        return
+    env_path = repo_root / ".env"
+    names = {"OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPEN_ROUTER_API_KEY"}
+    lines = _read_env_lines(env_path)
+    updated = False
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key, _value = stripped.split("=", 1)
+            if key.strip() in names:
+                if not updated:
+                    out.append(f"OPENROUTER_API_KEY={clean}")
+                    updated = True
+                continue
+        out.append(line)
+    if not updated:
+        if out and out[-1].strip():
+            out.append("")
+        out.append(f"OPENROUTER_API_KEY={clean}")
+    env_path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+
+
+def app_config_payload(repo_root: Path) -> dict[str, Any]:
+    config_path = repo_root / "config" / "pipeline_config.json"
+    config = read_json(config_path) if config_path.exists() else {}
+    if not isinstance(config, dict):
+        config = {}
+    paths = config.get("paths", {}) if isinstance(config.get("paths", {}), dict) else {}
+    bootstrap_config_value = str(paths.get("docx_lore_bible") or "theriac-coda---lore-bible.docx")
+    bootstrap_doc_path = _resolve_configured_path(repo_root, bootstrap_config_value, "theriac-coda---lore-bible.docx")
+    openrouter_key, openrouter_source = _openrouter_key_from_env(repo_root)
+    return {
+        "repo_root": str(repo_root),
+        "config_path": str(config_path),
+        "env_path": str(repo_root / ".env"),
+        "bootstrap_doc_path": str(bootstrap_doc_path),
+        "bootstrap_doc_config_value": bootstrap_config_value,
+        "bootstrap_doc_exists": bootstrap_doc_path.exists(),
+        "openrouter_key_present": bool(openrouter_key),
+        "openrouter_key_source": openrouter_source,
+        "openrouter_key_preview": _key_preview(openrouter_key),
+    }
+
+
+def handle_app_config(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    return app_config_payload(repo_root)
+
+
+def handle_save_app_config(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    config_path = repo_root / "config" / "pipeline_config.json"
+    config = read_json(config_path) if config_path.exists() else {}
+    if not isinstance(config, dict):
+        config = {}
+    paths = config.get("paths", {}) if isinstance(config.get("paths", {}), dict) else {}
+
+    bootstrap_raw = str(payload.get("bootstrap_doc_path") or "").strip()
+    if bootstrap_raw:
+        bootstrap_path = _resolve_configured_path(repo_root, bootstrap_raw)
+        if not bootstrap_path.exists():
+            raise ValueError(f"Bootstrap DOCX not found: {bootstrap_path}")
+        if bootstrap_path.suffix.lower() != ".docx":
+            raise ValueError("Bootstrap document must be a .docx file.")
+        paths["docx_lore_bible"] = _path_for_config(repo_root, bootstrap_path)
+    config["paths"] = paths
+    config["desktop_config_updated_at_utc"] = now_utc_iso()
+    write_json(config_path, config)
+
+    openrouter_key = str(payload.get("openrouter_api_key") or "").strip()
+    if openrouter_key:
+        _write_openrouter_key(repo_root, openrouter_key)
+
+    return app_config_payload(repo_root)
+
+
+def handle_select_bootstrap_doc(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    initial = str(payload.get("initial_path") or "").strip()
+    initial_path = _resolve_configured_path(repo_root, initial or "theriac-coda---lore-bible.docx")
+    initial_dir = initial_path.parent if initial_path.parent.exists() else repo_root
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except Exception as exc:
+        raise RuntimeError(f"Could not open file picker: {exc}") from exc
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        selected = filedialog.askopenfilename(
+            title="Select bootstrap DOCX",
+            initialdir=str(initial_dir),
+            filetypes=[("Word documents", "*.docx"), ("All files", "*.*")],
+        )
+    finally:
+        root.destroy()
+    return {"path": str(_resolve_plain(selected)) if selected else ""}
+
+
 def _run_state(repo_root: Path, active_root: Path) -> dict[str, Any]:
     repo_root = _resolve_plain(repo_root)
     active_root = _resolve_plain(active_root)
@@ -180,25 +335,165 @@ def _entity_rows(root: Path) -> list[dict[str, Any]]:
     return _json_safe(sort_candidate_inventory_rows(rows, "bucket", False))
 
 
-def _load_identity_merged_entities_preview(root: Path) -> dict[str, Any]:
+def _clean_text_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            out.append(text)
+            seen.add(text)
+    return out
+
+
+def _review_memory_path_for_root(root: Path, repo_root: Path | None = None) -> Path | None:
+    candidates: list[Path] = []
+    if repo_root is not None:
+        candidates.append(repo_root / "canon" / "review_memory.json")
+    for candidate in (root, *root.parents):
+        if _looks_like_project_root(candidate):
+            candidates.append(candidate / "canon" / "review_memory.json")
+            break
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _build_identity_preview_from_merge_records(
+    entities: list[dict[str, Any]],
+    merge_records: list[dict[str, Any]],
+    *,
+    identity_merge_proposal_count: int,
+) -> dict[str, Any]:
+    from pipeline.stage_11_card_synthesis import apply_entity_merges_to_entities
+
+    merged_entities, target_map, sources_by_target = apply_entity_merges_to_entities(entities, merge_records)
+    original_entity_by_id = {str(entity.get("entity_id", "")): entity for entity in entities}
+    records_by_target: dict[str, list[dict[str, Any]]] = {}
+    for record in merge_records:
+        target_id = str(record.get("target_entity_id", "")).strip()
+        final_target_id = target_map.get(target_id, target_id)
+        if final_target_id:
+            records_by_target.setdefault(final_target_id, []).append(record)
+
+    enriched_entities: list[dict[str, Any]] = []
+    for entity in merged_entities:
+        entity_id = str(entity.get("entity_id", "")).strip()
+        records = records_by_target.get(entity_id, [])
+        source_ids = sources_by_target.get(entity_id, [])
+        merged_from_entities = []
+        for source_id in source_ids:
+            source = original_entity_by_id.get(source_id, {})
+            if source:
+                merged_from_entities.append(
+                    {
+                        "entity_id": source_id,
+                        "card_id": str(source.get("card_id", "")),
+                        "canonical_name": str(source.get("canonical_name", "")),
+                        "entity_type": normalize_entity_type(source.get("entity_type", "term")),
+                        "aliases": _clean_text_list(source.get("aliases", [])),
+                    }
+                )
+        statuses = _clean_text_list([record.get("review_status", "") for record in records])
+        claim_ids = _clean_text_list([claim_id for record in records for claim_id in record.get("source_claim_ids", []) or []])
+        snippet_ids = _clean_text_list([snippet_id for record in records for snippet_id in record.get("source_snippet_ids", []) or []])
+        enriched_entities.append(
+            {
+                **entity,
+                "identity_merge_preview_status": "mixed" if len(set(statuses)) > 1 else (statuses[0] if statuses else "unchanged"),
+                "identity_merge_preview_record_count": len(records),
+                "identity_merge_preview_records": records,
+                "identity_merge_proposal_ids": _clean_text_list([record.get("proposal_id", "") for record in records]),
+                "identity_merge_evidence_claim_ids": claim_ids,
+                "identity_merge_source_snippet_ids": snippet_ids,
+                "merged_from_entities": merged_from_entities,
+            }
+        )
+
+    pending_count = sum(1 for record in merge_records if str(record.get("review_status", "")).lower() == "pending")
+    approved_count = sum(1 for record in merge_records if str(record.get("review_status", "")).lower() in {"approve", "accepted", "approved"})
+    return {
+        "generated_at_utc": now_utc_iso(),
+        "mode": "approved_memory_and_identity_merge_preview",
+        "source_entity_count": len(entities),
+        "merged_entity_count": len(enriched_entities),
+        "merge_record_count": len(merge_records),
+        "identity_merge_proposal_count": identity_merge_proposal_count,
+        "pending_identity_merge_count": pending_count,
+        "approved_identity_merge_count": approved_count,
+        "target_map": target_map,
+        "sources_by_target": sources_by_target,
+        "merge_records": merge_records,
+        "entities": sorted(enriched_entities, key=lambda entity: str(entity.get("canonical_name", "")).lower()),
+    }
+
+
+def _load_identity_merged_entities_preview(root: Path, repo_root: Path | None = None) -> dict[str, Any]:
     from pipeline.stage_11_card_synthesis import (
         _load_identity_merge_decisions,
         _load_identity_merge_proposals,
+        approved_entity_merges_from_memory,
         build_identity_merged_entities_preview,
+        identity_merge_records_from_proposals,
     )
 
     paths = ArtifactPaths(root)
     preview_path = paths.identity_merged_entities_preview
+    review_memory_path = _review_memory_path_for_root(root, repo_root)
+    memory_payload = _load_json_payload(review_memory_path, {}) if review_memory_path is not None and review_memory_path.exists() else {}
+    memory_records = approved_entity_merges_from_memory(memory_payload if isinstance(memory_payload, dict) else {})
     if preview_path.exists():
         payload = _load_json_payload(preview_path, {"entities": []})
         if isinstance(payload.get("entities"), list):
-            return payload
+            if not memory_records:
+                return payload
+            try:
+                preview_mtime = preview_path.stat().st_mtime
+                source_paths = [
+                    path
+                    for path in [
+                        review_memory_path,
+                        paths.identity_merge_proposals,
+                        paths.identity_merge_decisions,
+                        paths.resolved_entities,
+                    ]
+                    if path is not None and path.exists()
+                ]
+                if payload.get("mode") == "approved_memory_and_identity_merge_preview" and all(
+                    path.stat().st_mtime <= preview_mtime for path in source_paths
+                ):
+                    return payload
+            except OSError:
+                pass
     if not paths.identity_merge_proposals.exists() or not paths.resolved_entities.exists():
         return {"status": "missing", "entities": []}
     proposals = _load_identity_merge_proposals(paths.identity_merge_proposals) or []
     decisions = _load_identity_merge_decisions(paths.identity_merge_decisions)
     entities = load_entity_records(paths.resolved_entities)
-    payload = build_identity_merged_entities_preview(entities, proposals, decisions, include_pending=True)
+    if memory_records:
+        proposal_records = identity_merge_records_from_proposals(proposals, decisions, include_pending=True)
+        records_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
+        for record in [*proposal_records, *memory_records]:
+            source_id = str(record.get("source_entity_id", "")).strip()
+            target_id = str(record.get("target_entity_id", "")).strip()
+            if not source_id or not target_id or source_id == target_id:
+                continue
+            normalized = {
+                **record,
+                "review_status": str(record.get("review_status") or "approve").strip().lower(),
+                "proposal_id": str(record.get("proposal_id") or record.get("merge_id") or ""),
+            }
+            records_by_pair[(source_id, target_id)] = normalized
+        payload = _build_identity_preview_from_merge_records(
+            entities,
+            list(records_by_pair.values()),
+            identity_merge_proposal_count=len(proposals),
+        )
+    else:
+        payload = build_identity_merged_entities_preview(entities, proposals, decisions, include_pending=True)
     write_json(preview_path, payload)
     return payload
 
@@ -241,11 +536,28 @@ def _accepted_claim_counts_by_target(root: Path, target_map: dict[str, str] | No
     return counts
 
 
-def _merged_entity_rows(root: Path) -> dict[str, Any]:
-    payload = _load_identity_merged_entities_preview(root)
+def _merged_entity_rows(root: Path, repo_root: Path | None = None) -> dict[str, Any]:
+    payload = _load_identity_merged_entities_preview(root, repo_root)
     entities = payload.get("entities", []) if isinstance(payload, dict) else []
     if not isinstance(entities, list):
         entities = []
+    review_memory_path = _review_memory_path_for_root(root, repo_root)
+    memory_payload = _load_json_payload(review_memory_path, {}) if review_memory_path is not None else {}
+    removed_ids = {
+        str(item.get("entity_id", "")).strip()
+        for item in memory_payload.get("removed_entities", [])
+        if isinstance(item, dict) and str(item.get("entity_id", "")).strip()
+    }
+    removed_card_ids = {
+        str(item.get("card_id", "")).strip()
+        for item in memory_payload.get("removed_entities", [])
+        if isinstance(item, dict) and str(item.get("card_id", "")).strip()
+    }
+    removed_name_keys = {
+        normalized_name_key(str(item.get("canonical_name", "")))
+        for item in memory_payload.get("removed_entities", [])
+        if isinstance(item, dict) and str(item.get("canonical_name", "")).strip()
+    }
     target_map = payload.get("target_map", {}) if isinstance(payload.get("target_map"), dict) else {}
     claim_counts = _accepted_claim_counts_by_target(root, {str(k): str(v) for k, v in target_map.items()})
     rows: list[dict[str, Any]] = []
@@ -254,18 +566,38 @@ def _merged_entity_rows(root: Path) -> dict[str, Any]:
             continue
         entity_id = str(entity.get("entity_id", "")).strip()
         canonical_name = str(entity.get("canonical_name") or entity_id).strip()
+        if (
+            entity_id in removed_ids
+            or str(entity.get("card_id", "")).strip() in removed_card_ids
+            or normalized_name_key(canonical_name) in removed_name_keys
+        ):
+            continue
         merged_from = entity.get("merged_from_entities", []) if isinstance(entity.get("merged_from_entities"), list) else []
         merge_status = str(entity.get("identity_merge_preview_status") or "unchanged")
         merge_claim_ids = [str(item) for item in entity.get("identity_merge_evidence_claim_ids", []) or [] if str(item).strip()]
         accepted_claim_count = claim_counts.get(entity_id, 0)
+        alias_values = _clean_text_list(
+            [
+                *[str(alias) for alias in entity.get("aliases", []) or []],
+                *[
+                    str(source.get("canonical_name") or source.get("entity_id") or "")
+                    for source in merged_from
+                    if isinstance(source, dict)
+                ],
+                *[
+                    str(alias)
+                    for source in merged_from
+                    if isinstance(source, dict)
+                    for alias in source.get("aliases", []) or []
+                ],
+            ]
+        )
+        alias_values = [alias for alias in alias_values if normalized_name_key(alias) != normalized_name_key(canonical_name)]
         if merged_from:
-            reason = "Merged from " + ", ".join(
-                str(source.get("canonical_name") or source.get("entity_id") or "").strip()
-                for source in merged_from[:6]
-                if isinstance(source, dict)
-            )
+            reason = "Merged aliases are listed on the card."
         else:
             reason = "Resolved entity with no proposed identity merge."
+        item = {**entity, "aliases": alias_values}
         rows.append(
             {
                 "row_id": f"merged_entity:{entity_id}",
@@ -278,12 +610,12 @@ def _merged_entity_rows(root: Path) -> dict[str, Any]:
                 "canonical_name": canonical_name,
                 "proposed_entity_type": normalize_entity_type(entity.get("entity_type") or "term"),
                 "evidence_count": accepted_claim_count + len(merge_claim_ids),
-                "topics": [f"merged from {len(merged_from)}"] if merged_from else [],
+                "topics": [],
                 "tracks": [],
                 "triage_reason": reason,
                 "review_priority": merge_status,
                 "decision": merge_status,
-                "item": entity,
+                "item": item,
             }
         )
     rows.sort(key=lambda row: (row["bucket"] != "merged", str(row["candidate_name"]).lower()))
@@ -501,13 +833,13 @@ def _stable_graph_id(prefix: str, value: str) -> str:
     return f"{prefix}:{digest}"
 
 
-def _relationship_graph_entities(root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, str], dict[str, str]]:
+def _relationship_graph_entities(root: Path, repo_root: Path | None = None) -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, str], dict[str, str]]:
     paths = ArtifactPaths(root)
     nodes: dict[str, dict[str, Any]] = {}
     name_map: dict[str, str] = {}
     card_map: dict[str, str] = {}
     target_map: dict[str, str] = {}
-    preview = _load_identity_merged_entities_preview(root)
+    preview = _load_identity_merged_entities_preview(root, repo_root)
     entities = preview.get("entities", []) if isinstance(preview.get("entities"), list) else []
     if isinstance(preview.get("target_map"), dict):
         target_map = {str(key): str(value) for key, value in preview.get("target_map", {}).items()}
@@ -567,10 +899,10 @@ def _relationship_graph_entities(root: Path) -> tuple[dict[str, dict[str, Any]],
     return nodes, name_map, card_map, target_map
 
 
-def _relationship_graph(root: Path) -> dict[str, Any]:
+def _relationship_graph(root: Path, repo_root: Path | None = None) -> dict[str, Any]:
     migrate_run_artifacts_to_numbered(root)
     paths = ArtifactPaths(root)
-    nodes, name_map, card_map, target_map = _relationship_graph_entities(root)
+    nodes, name_map, card_map, target_map = _relationship_graph_entities(root, repo_root)
     edges: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     source_counts: dict[str, int] = {}
 
@@ -870,7 +1202,7 @@ def handle_claim_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[str
 def handle_entity_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     active = _active_root(repo_root, payload)
     rows = _entity_rows(active) if active.exists() else []
-    merged = _merged_entity_rows(active) if active.exists() else {"rows": [], "metadata": {"available": False}}
+    merged = _merged_entity_rows(active, repo_root) if active.exists() else {"rows": [], "metadata": {"available": False}}
     merged_rows = merged.get("rows", []) if isinstance(merged, dict) else []
     metadata = merged.get("metadata", {}) if isinstance(merged, dict) else {}
     return {
@@ -890,7 +1222,7 @@ def handle_entity_evidence(repo_root: Path, payload: dict[str, Any]) -> dict[str
     if not row_id:
         raise ValueError("Missing row_id.")
     if view == "merged" or row_id.startswith("merged_entity:"):
-        merged = _merged_entity_rows(active)
+        merged = _merged_entity_rows(active, repo_root)
         rows = merged.get("rows", []) if isinstance(merged, dict) else []
     else:
         rows = _entity_rows(active) if active.exists() else []
@@ -954,7 +1286,7 @@ def handle_draft_cards(repo_root: Path, payload: dict[str, Any]) -> dict[str, An
 
 def handle_entity_relationships(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     active = _active_root(repo_root, payload)
-    return _relationship_graph(active) if active.exists() else {"active_root": str(active), "nodes": [], "edges": [], "metadata": {}}
+    return _relationship_graph(active, repo_root) if active.exists() else {"active_root": str(active), "nodes": [], "edges": [], "metadata": {}}
 
 
 def handle_card_agent_activity(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
@@ -962,6 +1294,36 @@ def handle_card_agent_activity(repo_root: Path, payload: dict[str, Any]) -> dict
 
     active = _active_root(repo_root, payload)
     return card_agent_activity_payload(active) if active.exists() else {"active_root": str(active), "transactions": [], "total": 0}
+
+
+def handle_card_agent_progress(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    from pipeline.cardbase_agent import card_agent_progress_payload
+
+    active = _active_root(repo_root, payload)
+    max_lines = max(1, int(payload.get("max_lines") or 80))
+    return card_agent_progress_payload(active, max_lines=max_lines)
+
+
+def handle_run_card_agent_request(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    from pipeline.cardbase_agent import card_agent_activity_payload, run_card_agent_request
+
+    active = _active_root(repo_root, payload)
+    instruction_text = str(payload.get("instruction_text") or payload.get("request_text") or "").strip()
+    if not instruction_text:
+        raise ValueError("Missing instruction_text.")
+    result = run_card_agent_request(
+        artifacts_root=active,
+        instruction_text=instruction_text,
+        requester=str(payload.get("requester") or "desktop_user"),
+        target_text=str(payload.get("target_text") or ""),
+        rationale=str(payload.get("rationale") or ""),
+        review_memory_path=repo_root / "canon" / "review_memory.json",
+        config_path=repo_root / "config" / "pipeline_config.json",
+        max_steps=max(1, int(payload.get("max_steps") or 16)),
+    )
+    activity = card_agent_activity_payload(active)
+    activity["last_run"] = result
+    return activity
 
 
 def handle_undo_card_agent_transaction(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1113,6 +1475,9 @@ def handle_entity_decision(repo_root: Path, payload: dict[str, Any]) -> dict[str
 
 COMMANDS = {
     "state": handle_state,
+    "app_config": handle_app_config,
+    "save_app_config": handle_save_app_config,
+    "select_bootstrap_doc": handle_select_bootstrap_doc,
     "select_run": handle_select_run,
     "create_run": handle_create_run,
     "identity_clusters": handle_identity_clusters,
@@ -1126,6 +1491,8 @@ COMMANDS = {
     "draft_cards": handle_draft_cards,
     "entity_relationships": handle_entity_relationships,
     "card_agent_activity": handle_card_agent_activity,
+    "card_agent_progress": handle_card_agent_progress,
+    "run_card_agent_request": handle_run_card_agent_request,
     "undo_card_agent_transaction": handle_undo_card_agent_transaction,
 }
 

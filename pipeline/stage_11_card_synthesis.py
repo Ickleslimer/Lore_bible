@@ -3054,6 +3054,7 @@ def run(
         author_claims_path=author_claims_path,
         card_drafts_path=out_card_drafts_json,
         canonical_cards_path=out_cards_json,
+        claim_review_decisions_path=in_claim_decisions_json,
         config=config,
     )
     if card_agent_result.get("processed_count"):
@@ -3064,6 +3065,9 @@ def run(
         )
         existing_canonical_cards = _load_existing_canonical_cards(out_cards_json)
         memory = load_review_memory(in_review_memory_json)
+        entities = load_entity_records(in_entities_json)
+        entity_by_id = {str(e.get("entity_id")): e for e in entities}
+        entities_by_name = {normalized_name_key(e.get("canonical_name", "")): e for e in entities}
         author_claims, author_claim_failures = load_author_claims(author_claims_path, entities)
         write_json(
             out_card_drafts_json.with_name("author_claim_failures.json"),

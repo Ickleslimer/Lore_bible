@@ -50,6 +50,18 @@ export interface AppState {
   runs: ReviewRun[];
 }
 
+export interface AppConfigResponse {
+  repo_root: string;
+  config_path: string;
+  env_path: string;
+  bootstrap_doc_path: string;
+  bootstrap_doc_config_value: string;
+  bootstrap_doc_exists: boolean;
+  openrouter_key_present: boolean;
+  openrouter_key_source?: string;
+  openrouter_key_preview?: string;
+}
+
 export interface PipelineRuntimeStatus {
   status: "idle" | "running" | "succeeded" | "failed" | "cancelled" | string;
   message: string;
@@ -271,6 +283,30 @@ export interface CardAgentTransaction {
   error?: string;
   steps?: Array<Record<string, unknown>>;
   write_set?: Array<Record<string, unknown>>;
+  affected?: {
+    entities?: string[];
+    cards?: string[];
+    claims?: string[];
+    [key: string]: unknown;
+  };
+  change_summary?: {
+    affected?: {
+      entities?: string[];
+      cards?: string[];
+      claims?: string[];
+      [key: string]: unknown;
+    };
+    artifacts?: Array<Record<string, unknown>>;
+    lines?: Array<{
+      sentence?: string;
+      kind?: string;
+      collection?: string;
+      artifact?: string;
+      id?: string;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
   validation?: Record<string, unknown>;
   reverses_transaction_id?: string;
   [key: string]: unknown;
@@ -281,4 +317,16 @@ export interface CardAgentActivityResponse {
   transactions: CardAgentTransaction[];
   total: number;
   source_path?: string;
+  last_run?: Record<string, unknown>;
+}
+
+export interface CardAgentProgressTail {
+  active_root: string;
+  source_path?: string;
+  latest_line: string;
+  latest_progress_line?: string;
+  lines: string[];
+  events?: Array<Record<string, unknown>>;
+  total_scanned: number;
+  updated_at_epoch: string;
 }

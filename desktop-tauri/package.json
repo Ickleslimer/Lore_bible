@@ -3,12 +3,24 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": "^22.0.0 || ^23.0.0 || ^24.0.0",
+    "npm": ">=10.9.0"
+  },
   "scripts": {
+    "preinstall": "node scripts/check-node-version.mjs",
+    "predev": "node scripts/check-node-version.mjs",
     "dev": "tauri dev",
+    "prebuild": "node scripts/check-node-version.mjs",
     "build": "tauri build && node scripts/copy-release-exe.mjs",
+    "predev:vite": "node scripts/check-node-version.mjs",
     "dev:vite": "vite --host 127.0.0.1",
+    "prebuild:vite": "node scripts/check-node-version.mjs",
     "build:vite": "vite build",
     "copy:exe": "node scripts/copy-release-exe.mjs",
+    "preaudit": "node scripts/check-node-version.mjs",
+    "audit": "npm audit --audit-level=moderate",
+    "precheck": "node scripts/check-node-version.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {

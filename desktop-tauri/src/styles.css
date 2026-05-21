@@ -203,6 +203,12 @@ textarea {
   margin-bottom: 18px;
 }
 
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .topbar h2 {
   max-width: 900px;
   overflow-wrap: anywhere;
@@ -1099,6 +1105,10 @@ button.compact {
   margin-top: 10px;
 }
 
+.alias-chip-list {
+  align-items: center;
+}
+
 .entity-card-details {
   display: grid;
   gap: 10px;
@@ -1168,6 +1178,21 @@ button.compact {
   padding: 3px 8px;
   font-size: 12px;
   font-weight: 700;
+}
+
+.chip-toggle {
+  min-height: 24px;
+  border-color: #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.chip-toggle:hover:not(:disabled) {
+  background: #dbeafe;
 }
 
 .inventory-reason {
@@ -1370,6 +1395,114 @@ button.compact {
   gap: 12px;
 }
 
+.agent-run-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid #d7dee9;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+  padding: 16px;
+}
+
+.agent-run-panel header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-run-panel h3 {
+  margin: 3px 0 0;
+  font-size: 20px;
+}
+
+.request-count {
+  flex: 0 0 auto;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #64748b;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.agent-request-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.agent-run-panel label {
+  display: grid;
+  gap: 6px;
+  color: #475569;
+  font-weight: 750;
+}
+
+.agent-run-panel label span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-run-panel textarea {
+  min-height: 104px;
+}
+
+.agent-request-field textarea {
+  min-height: 226px;
+  resize: vertical;
+}
+
+.agent-context-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-run-panel .compact-textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.agent-run-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-run-status {
+  min-width: 0;
+}
+
+.agent-run-status p {
+  margin: 0;
+  color: #475569;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.agent-run-status p.ok {
+  color: #047857;
+}
+
+.agent-run-status p.warn {
+  color: #c2410c;
+}
+
+.agent-run-status p.bad {
+  color: #b91c1c;
+}
+
+.agent-run-buttons {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .agent-stats article,
 .empty-agent-panel,
 .agent-transaction {
@@ -1479,6 +1612,194 @@ button.compact {
 .agent-reversal {
   color: #047857;
   font-weight: 750;
+}
+
+.agent-change-log {
+  display: none;
+}
+
+.agent-change-lines {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-change-lines li {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.change-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.change-dot.ok {
+  background: #059669;
+}
+
+.change-dot.warn {
+  background: #d97706;
+}
+
+.change-dot.bad {
+  background: #dc2626;
+}
+
+.agent-change-log summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.agent-change-log summary span:last-child {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.agent-change-body {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.agent-change-section {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-change-section h5 {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  color: #475569;
+}
+
+.agent-affected-groups,
+.agent-artifact-list,
+.agent-change-collection,
+.agent-change-bucket {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-affected-group {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-id-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.agent-id-list code,
+.agent-change-item code {
+  border: 1px solid #dbe3ef;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #1e293b;
+  padding: 2px 5px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.agent-artifact-change {
+  display: grid;
+  gap: 8px;
+  border-left: 3px solid #cbd5e1;
+  padding-left: 10px;
+}
+
+.agent-artifact-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.agent-artifact-header strong {
+  color: #0f172a;
+  overflow-wrap: anywhere;
+}
+
+.agent-changed-fields {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.agent-change-collection {
+  border-top: 1px dashed #dbe3ef;
+  padding-top: 8px;
+}
+
+.agent-change-bucket strong {
+  color: #334155;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.agent-change-item {
+  display: grid;
+  gap: 5px;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.agent-field-changes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.agent-field-changes span {
+  border-radius: 6px;
+  background: #f1f5f9;
+  padding: 3px 6px;
+}
+
+.agent-change-item dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.agent-change-item dl div {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.agent-change-item dt {
+  color: #64748b;
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.agent-change-item dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .draft-card-preview header {
@@ -1684,6 +2005,111 @@ button.compact {
   overflow-wrap: anywhere;
 }
 
+.agent-progress-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 23, 42, 0.34);
+  padding: 24px;
+}
+
+.config-window {
+  display: grid;
+  gap: 14px;
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid #d7dee9;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.2);
+  padding: 18px;
+}
+
+.config-window-header,
+.config-window-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.config-window-header h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0 0;
+  font-size: 21px;
+}
+
+.config-form {
+  display: grid;
+  gap: 14px;
+}
+
+.config-field {
+  display: grid;
+  gap: 7px;
+  color: #475569;
+  font-weight: 760;
+}
+
+.config-field > span,
+.config-field small {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.config-field small {
+  color: #047857;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.config-field small.bad {
+  color: #b45309;
+}
+
+.path-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.config-paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.config-paths div {
+  min-width: 0;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 9px;
+}
+
+.config-paths code {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #334155;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .progress-lines {
   display: grid;
   gap: 6px;
@@ -1730,6 +2156,15 @@ button.compact {
   border-color: #fecaca;
   background: #fff5f5;
   color: #991b1b;
+}
+
+.success-banner {
+  border: 1px solid #bbf7d0;
+  border-radius: 14px;
+  background: #f0fdf4;
+  color: #047857;
+  padding: 14px 16px;
+  font-weight: 800;
 }
 
 .warning-banner {
@@ -1783,5 +2218,13 @@ button.compact {
 
   .draft-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-request-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-request-field textarea {
+    min-height: 160px;
   }
 }

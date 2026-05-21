@@ -9,7 +9,10 @@ from pipeline.common import get_logger, read_json, read_jsonl, setup_logging
 from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
-from pipeline.stage_07_entity_resolution import run as run_stage_07
+from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
+from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
+from pipeline.stage_07c_theme_miner import run as run_stage_07c
+from pipeline.stage_07d_theme_reclassification import run as run_stage_07d
 from pipeline.stage_09_claim_drafting import run as run_stage_09
 
 
@@ -110,7 +113,7 @@ def main() -> None:
         logger,
         7,
         total_stages,
-        "Stage 07 Entity Resolution",
+        "Stage 07A Entity Candidate Harvest",
         run_stage_07,
         paths.snippets,
         paths.entity_seed,
@@ -118,9 +121,48 @@ def main() -> None:
         paths.entity_timelines,
         paths.resolved_entities,
         Path("canon/review_memory.json"),
-        paths.conversation_entity_proposals,
-        paths.conversation_entity_decisions,
+        paths.entity_candidate_harvest,
         Path("config/pipeline_config.json"),
+    )
+
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07B Entity Adjudication",
+        run_stage_07b,
+        paths.entity_candidate_harvest,
+        paths.entity_adjudication_recommendations,
+        paths.externality_cache,
+        Path("config/pipeline_config.json"),
+        Path("canon/theme_profile.json"),
+    )
+
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07C Theme Miner",
+        run_stage_07c,
+        paths.entity_candidate_harvest,
+        paths.entity_adjudication_recommendations,
+        paths.resolved_entities,
+        Path("canon/review_memory.json"),
+        Path("canon/theme_profile.json"),
+        paths.theme_profile_update_report,
+        Path("config/pipeline_config.json"),
+    )
+
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07D Theme-Aware Candidate Reclassification",
+        run_stage_07d,
+        paths.entity_candidate_harvest,
+        paths.entity_adjudication_recommendations,
+        Path("canon/theme_profile.json"),
+        paths.theme_candidate_reclassification,
     )
 
     _run_stage(

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { RefreshCcw } from "lucide-svelte";
+  import { RefreshCcw, Settings } from "lucide-svelte";
+  import AppConfigModal from "./components/AppConfigModal.svelte";
   import CardAgentActivityPanel from "./components/CardAgentActivityPanel.svelte";
   import DraftCardsPanel from "./components/DraftCardsPanel.svelte";
   import EntityInventoryPanel from "./components/EntityInventoryPanel.svelte";
@@ -24,6 +25,7 @@
   let clusterLoading = false;
   let inventoryLoading = false;
   let error = "";
+  let configOpen = false;
   type ActiveTab = "pipeline" | "claims" | "entities" | "identity" | "relationships" | "drafts" | "agent" | "overview";
   let activeTab: ActiveTab = "pipeline";
 
@@ -150,6 +152,14 @@
     activeTab = tab;
   }
 
+  function openConfig() {
+    configOpen = true;
+  }
+
+  function closeConfig() {
+    configOpen = false;
+  }
+
   function runName(path: string | undefined) {
     if (!path) return "Loading";
     return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -200,9 +210,14 @@
           <p class="run-path" title={state.active_root}>{state.active_label}</p>
         {/if}
       </div>
-      <button class="icon-button" disabled={busy} on:click={refresh} title="Refresh">
-        <RefreshCcw size={18} />
-      </button>
+      <div class="topbar-actions">
+        <button class="icon-button" disabled={busy} on:click={openConfig} title="Configuration">
+          <Settings size={18} />
+        </button>
+        <button class="icon-button" disabled={busy} on:click={refresh} title="Refresh">
+          <RefreshCcw size={18} />
+        </button>
+      </div>
     </header>
 
     {#if error}
@@ -250,7 +265,7 @@
       {:else if activeTab === "drafts"}
         <DraftCardsPanel artifactsRoot={state.active_root} disabled={busy} />
       {:else if activeTab === "agent"}
-        <CardAgentActivityPanel artifactsRoot={state.active_root} disabled={busy} />
+        <CardAgentActivityPanel artifactsRoot={state.active_root} disabled={busy} on:changed={refresh} />
       {:else}
         <section class="overview-grid">
           {#each Object.entries(state.counts) as [key, value]}
@@ -263,4 +278,8 @@
       {/if}
     {/if}
   </section>
+
+  {#if configOpen}
+    <AppConfigModal on:close={closeConfig} on:saved={refresh} />
+  {/if}
 </main>

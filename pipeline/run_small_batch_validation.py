@@ -14,7 +14,10 @@ from pipeline.stage_04_conversation_segmentation import run as run_stage_04
 from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
-from pipeline.stage_07_entity_resolution import run as run_stage_07
+from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
+from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
+from pipeline.stage_07c_theme_miner import run as run_stage_07c
+from pipeline.stage_07d_theme_reclassification import run as run_stage_07d
 from pipeline.stage_09_claim_drafting import run as run_stage_09
 from pipeline.stage_10_identity_merge import run as run_stage_10
 from pipeline.stage_11_card_synthesis import run as run_stage_11
@@ -310,7 +313,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         logger,
         7,
         total_stages,
-        "Stage 07 Entity Resolution",
+        "Stage 07A Entity Candidate Harvest",
         run_stage_07,
         paths.snippets,
         paths.entity_seed,
@@ -318,17 +321,76 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         paths.entity_timelines,
         paths.resolved_entities,
         base_dir.parent / "canon" / "review_memory.json",
-        paths.conversation_entity_proposals,
-        paths.conversation_entity_decisions,
+        paths.entity_candidate_harvest,
         base_dir.parent / "config" / "pipeline_config.json",
     )
     logger.info(
-        "Stage 07 summary: resolved_entities=%d seed_only_entities=%d conversation_entity_proposals=%d aliases=%d entity_timelines=%d",
+        "Stage 07A summary: resolved_entities=%d seed_only_entities=%d entity_candidates=%d aliases=%d entity_timelines=%d",
         len(read_json(paths.resolved_entities).get("resolved_entities", [])),
         len(read_json(paths.resolved_entities).get("seed_only_entities", [])),
-        len(read_json(paths.conversation_entity_proposals).get("proposals", [])),
+        len(read_json(paths.entity_candidate_harvest).get("candidates", [])),
         len(read_json(paths.alias_map).get("aliases", [])),
         len(read_json(paths.entity_timelines).get("entity_timelines", {})),
+    )
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07B Entity Adjudication",
+        run_stage_07b,
+        paths.entity_candidate_harvest,
+        paths.entity_adjudication_recommendations,
+        paths.externality_cache,
+        base_dir.parent / "config" / "pipeline_config.json",
+        base_dir.parent / "canon" / "theme_profile.json",
+    )
+    stage_07b = read_json(paths.entity_adjudication_recommendations)
+    logger.info(
+        "Stage 07B summary: recommendations=%d web_selected=%d web_calls=%d cache_hits=%d failures=%d",
+        len(stage_07b.get("recommendations", [])),
+        int(stage_07b.get("summary", {}).get("web_selected_candidate_count", 0)),
+        int(stage_07b.get("summary", {}).get("web_call_count", 0)),
+        int(stage_07b.get("summary", {}).get("cache_hit_count", 0)),
+        int(stage_07b.get("summary", {}).get("failure_count", 0)),
+    )
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07C Theme Miner",
+        run_stage_07c,
+        paths.entity_candidate_harvest,
+        paths.entity_adjudication_recommendations,
+        paths.resolved_entities,
+        base_dir.parent / "canon" / "review_memory.json",
+        base_dir.parent / "canon" / "theme_profile.json",
+        paths.theme_profile_update_report,
+        base_dir.parent / "config" / "pipeline_config.json",
+    )
+    stage_07c = read_json(paths.theme_profile_update_report)
+    logger.info(
+        "Stage 07C summary: themes=%d evidence_packets=%d applied_updates=%d failures=%d",
+        int(stage_07c.get("summary", {}).get("theme_count", 0)),
+        int(stage_07c.get("inputs", {}).get("evidence_packet_count", 0)),
+        int(stage_07c.get("summary", {}).get("applied_update_count", 0)),
+        int(stage_07c.get("summary", {}).get("failure_count", 0)),
+    )
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07D Theme-Aware Candidate Reclassification",
+        run_stage_07d,
+        paths.entity_candidate_harvest,
+        paths.entity_adjudication_recommendations,
+        base_dir.parent / "canon" / "theme_profile.json",
+        paths.theme_candidate_reclassification,
+    )
+    stage_07d = read_json(paths.theme_candidate_reclassification)
+    logger.info(
+        "Stage 07D summary: reclassifications=%d theme_matched=%d",
+        len(stage_07d.get("candidate_reclassifications", [])),
+        int(stage_07d.get("summary", {}).get("theme_matched_candidate_count", 0)),
     )
 
     _run_stage(

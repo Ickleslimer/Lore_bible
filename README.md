@@ -68,7 +68,13 @@ Start the desktop review app:
 theriac-lore-tauri.exe
 ```
 
-The Tauri/Svelte desktop app is the primary review surface. It includes the run selector for previous CLI-generated batches, pipeline run controls, cancellation, progress tracking, identity-cluster review, and candidate browsing. Select `New Run` before starting a full run to create a fresh timestamped artifact folder under `artifacts/runs/`. During claim review, use `Story Questions` for the optional guided review session. `Propose Updates` calls the configured story model; `Approve Proposal` only commits the already proposed decisions and does not make another model call. Use `Card Agent` for freeform card-base commissions such as moving a standalone draft into another card section; resume Stage 11 to generate proposed architecture actions, then approve/reject those actions before card writing.
+The Tauri/Svelte desktop app is the primary review surface. It includes the run selector for previous CLI-generated batches, pipeline run controls, cancellation, progress tracking, identity-cluster review, and candidate browsing. Select `New Run` before starting a full run to create a fresh timestamped artifact folder under `artifacts/runs/`. During claim review, use `Story Questions` for the optional guided review session. `Propose Updates` calls the configured story model; `Approve Proposal` only commits the already proposed decisions and does not make another model call. Use `Card Agent` for freeform card-base commissions such as identity merges or moving a standalone draft into another card section. The Agent tab can run the Cardbase Agent on demand without resuming the pipeline; Stage 11 still processes any pending request rows for compatibility before card writing.
+
+Run the Cardbase Agent from the CLI without resuming the pipeline:
+
+```bash
+python -m pipeline.run_cardbase_agent --artifacts-root "artifacts/runs/<run_folder>" --request "Pandora's mother is Izanami"
+```
 
 For Stage 11 draft-card reading in Notion, add these to `.env`:
 
@@ -82,9 +88,12 @@ Start the new Tauri/Svelte desktop app during development:
 
 ```bash
 cd desktop-tauri
+nvm use
 npm install
 npm run dev
 ```
+
+The desktop app is pinned to even-numbered Node LTS lines. Use Node.js 24 LTS by default; Node.js 22 LTS is also supported. Avoid Node.js 23, which is end-of-life and can make npm emit experimental CommonJS/ESM warnings from npm internals.
 
 Build the Tauri/Svelte app:
 

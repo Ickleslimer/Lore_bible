@@ -135,7 +135,7 @@ def model_task_settings(provider_config: dict[str, Any] | None, task_name: str) 
 
 def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) -> dict[str, Any]:
     cfg = model_task_settings(provider_config, task_name)
-    return {
+    kwargs = {
         "base_url": str(cfg.get("base_url", "http://127.0.0.1:11434")),
         "model": str(cfg.get("model", "llama3.1")),
         "temperature": float(cfg.get("temperature", 0.0)),
@@ -154,6 +154,11 @@ def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) ->
         "ollama_unavailable_cooldown_seconds": int(cfg.get("ollama_unavailable_cooldown_seconds", 120)),
         "max_tokens": int(cfg.get("max_tokens", 4096)),
     }
+    if isinstance(cfg.get("tools"), list):
+        kwargs["tools"] = cfg["tools"]
+    if isinstance(cfg.get("json_schema"), dict):
+        kwargs["json_schema"] = cfg["json_schema"]
+    return kwargs
 
 
 def model_batch_enabled(provider_config: dict[str, Any] | None, task_name: str) -> bool:
@@ -556,6 +561,7 @@ def _call_openai_compatible_chat(
     max_tokens: int | None = None,
     response_format_json: bool = False,
     json_schema: dict[str, Any] | None = None,
+    tools: list[dict[str, Any]] | None = None,
     extra_headers: dict[str, str] | None = None,
     provider_label: str = "OpenAI-Compatible API",
 ) -> dict[str, Any] | None:
@@ -641,6 +647,8 @@ def _call_openai_compatible_chat(
     }
     if max_tokens is not None:
         payload["max_tokens"] = max(256, int(max_tokens))
+    if tools:
+        payload["tools"] = tools
     if json_schema:
         payload["response_format"] = {
             "type": "json_schema",
@@ -851,6 +859,7 @@ def _call_openrouter_chat(
     rate_limit_growth: float = 1.8,
     max_tokens: int = 4096,
     json_schema: dict[str, Any] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     return _call_openai_compatible_chat(
         api_base_url,
@@ -869,6 +878,7 @@ def _call_openrouter_chat(
         max_tokens=max_tokens,
         response_format_json=True,
         json_schema=json_schema,
+        tools=tools,
         extra_headers={
             "HTTP-Referer": "https://github.com/theriac/lore-bible",
             "X-Title": "THERIAC Lore Bible",
@@ -1440,6 +1450,7 @@ def call_model_chat(
     ollama_unavailable_cooldown_seconds: int = 120,
     max_tokens: int = 4096,
     json_schema: dict[str, Any] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
     global _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S, _LAST_OLLAMA_SKIP_LOG_EPOCH_S, _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S, _LAST_API_FAILURE_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
@@ -1531,6 +1542,7 @@ def call_model_chat(
             rate_limit_growth=rate_limit_growth,
             max_tokens=max_tokens,
             json_schema=json_schema,
+            tools=tools,
         )
 
     if resolved_provider in {"openai_compatible", "api"}:
@@ -1556,6 +1568,7 @@ def call_model_chat(
             max_tokens=max_tokens,
             response_format_json=True,
             json_schema=json_schema,
+            tools=tools,
         )
 
     if resolved_provider == "ollama":
@@ -1601,6 +1614,7 @@ def call_model_chat(
             max_tokens=max_tokens,
             response_format_json=True,
             json_schema=json_schema,
+            tools=tools,
         )
         if api_result is not None:
             return api_result

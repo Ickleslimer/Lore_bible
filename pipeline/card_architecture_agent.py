@@ -123,6 +123,7 @@ def append_card_edit_request(
     requester: str = "author",
     target_text: str = "",
     rationale: str = "",
+    source: str = "",
     timestamp_utc: str | None = None,
 ) -> dict[str, Any]:
     clean = re.sub(r"\s+", " ", str(instruction_text or "")).strip()
@@ -138,6 +139,9 @@ def append_card_edit_request(
         "status": "pending",
         "created_at_utc": created_at,
     }
+    clean_source = re.sub(r"\s+", " ", str(source or "")).strip()
+    if clean_source:
+        row["source"] = clean_source
     path = ArtifactPaths(artifacts_root).card_edit_requests
     rows = load_card_edit_requests(path) if path.exists() else []
     rows.append(row)

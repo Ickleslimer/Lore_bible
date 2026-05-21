@@ -150,6 +150,26 @@ class ArtifactPaths:
         return self.stage07 / "resolved_entities.json"
 
     @property
+    def entity_candidate_harvest(self) -> Path:
+        return self.stage07 / "entity_candidate_harvest.json"
+
+    @property
+    def entity_adjudication_recommendations(self) -> Path:
+        return self.stage07 / "entity_adjudication_recommendations.json"
+
+    @property
+    def externality_cache(self) -> Path:
+        return self.stage07 / "externality_cache.json"
+
+    @property
+    def theme_profile_update_report(self) -> Path:
+        return self.stage07 / "theme_profile_update_report.json"
+
+    @property
+    def theme_candidate_reclassification(self) -> Path:
+        return self.stage07 / "theme_candidate_reclassification.json"
+
+    @property
     def conversation_entity_proposals(self) -> Path:
         return self.stage07 / "conversation_entity_proposals.json"
 
@@ -212,6 +232,10 @@ class ArtifactPaths:
     @property
     def card_agent_transactions(self) -> Path:
         return self.stage11 / "card_agent_transactions.jsonl"
+
+    @property
+    def card_agent_progress(self) -> Path:
+        return self.stage11 / "card_agent_progress.jsonl"
 
     @property
     def card_architecture_proposals(self) -> Path:

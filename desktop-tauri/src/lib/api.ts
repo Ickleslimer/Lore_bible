@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppState,
+  AppConfigResponse,
   BridgeResponse,
   CardAgentActivityResponse,
+  CardAgentProgressTail,
   DraftCardsResponse,
   EntityEvidenceResponse,
   IdentityClustersResponse,
@@ -35,6 +37,18 @@ export async function loadState(artifactsRoot?: string): Promise<AppState> {
   const state = await bridge<AppState>("state", artifactsRoot ? { artifacts_root: artifactsRoot } : {});
   setRepoRoot(state.repo_root);
   return state;
+}
+
+export async function loadAppConfig(): Promise<AppConfigResponse> {
+  return bridge<AppConfigResponse>("app_config", {});
+}
+
+export async function saveAppConfig(payload: Record<string, unknown>): Promise<AppConfigResponse> {
+  return bridge<AppConfigResponse>("save_app_config", payload);
+}
+
+export async function selectBootstrapDoc(initialPath?: string): Promise<{ path: string }> {
+  return bridge<{ path: string }>("select_bootstrap_doc", initialPath ? { initial_path: initialPath } : {});
 }
 
 export async function selectRun(artifactsRoot: string): Promise<AppState> {
@@ -95,6 +109,14 @@ export async function loadEntityRelationships(artifactsRoot: string): Promise<Re
 
 export async function loadCardAgentActivity(artifactsRoot: string): Promise<CardAgentActivityResponse> {
   return bridge<CardAgentActivityResponse>("card_agent_activity", { artifacts_root: artifactsRoot });
+}
+
+export async function loadCardAgentProgress(artifactsRoot: string, maxLines = 80): Promise<CardAgentProgressTail> {
+  return bridge<CardAgentProgressTail>("card_agent_progress", { artifacts_root: artifactsRoot, max_lines: maxLines });
+}
+
+export async function runCardAgentRequest(payload: Record<string, unknown>): Promise<CardAgentActivityResponse> {
+  return bridge<CardAgentActivityResponse>("run_card_agent_request", payload);
 }
 
 export async function undoCardAgentTransaction(payload: Record<string, unknown>): Promise<CardAgentActivityResponse> {

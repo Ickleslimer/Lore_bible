@@ -24,6 +24,7 @@ def empty_review_memory() -> dict[str, Any]:
         "author_directives": [],
         "card_architecture_actions": [],
         "card_redirects": [],
+        "removed_entities": [],
         "story_question_answers": [],
         "style_corrections": [],
         "updated_at_utc": now_utc_iso(),
@@ -49,6 +50,7 @@ def load_review_memory(path: Path | None) -> dict[str, Any]:
         "author_directives",
         "card_architecture_actions",
         "card_redirects",
+        "removed_entities",
         "story_question_answers",
         "style_corrections",
     ]:

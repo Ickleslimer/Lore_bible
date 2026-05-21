@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "theriac/theme_candidate_reclassification.schema.json",
+  "title": "ThemeAwareCandidateReclassification",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at_utc",
+    "stage",
+    "inputs",
+    "policy",
+    "summary",
+    "candidate_reclassifications"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "generated_at_utc": { "type": "string" },
+    "stage": { "type": "string" },
+    "inputs": { "type": "object", "additionalProperties": true },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "theme_match_changes_prior_not_final_decision": { "type": "boolean" },
+        "transitive_thematic_learning_not_transitive_canon": { "type": "boolean" },
+        "human_review_remains_canon_gate": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "summary": { "type": "object", "additionalProperties": true },
+    "candidate_reclassifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "candidate_name",
+          "normalized_key",
+          "base_recommended_action",
+          "externality_class",
+          "theme_matches",
+          "theme_prior_boost",
+          "theme_adjusted_lore_prior",
+          "theme_adjusted_recommended_action",
+          "why_not_auto_promote"
+        ],
+        "properties": {
+          "reclassification_id": { "type": "string" },
+          "candidate_id": { "type": "string" },
+          "candidate_name": { "type": "string" },
+          "normalized_key": { "type": "string" },
+          "base_recommended_action": { "type": "string" },
+          "base_recommended_track": { "type": "string" },
+          "base_local_lore_prior": { "type": "number", "minimum": 0, "maximum": 1 },
+          "base_external_reference_prior": { "type": "number", "minimum": 0, "maximum": 1 },
+          "externality_class": { "type": "string" },
+          "theme_matches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "theme_id": { "type": "string" },
+                "label": { "type": "string" },
+                "status": { "type": "string" },
+                "match_strength": { "type": "number", "minimum": 0, "maximum": 1 },
+                "matched_indicators": { "type": "array", "items": { "type": "string" } },
+                "reason": { "type": "string" },
+                "prior_boost": { "type": "number", "minimum": 0, "maximum": 1 }
+              },
+              "additionalProperties": true
+            }
+          },
+          "theme_prior_boost": { "type": "number", "minimum": 0, "maximum": 1 },
+          "externality_penalty": { "type": "number", "minimum": 0, "maximum": 1 },
+          "theme_adjusted_lore_prior": { "type": "number", "minimum": 0, "maximum": 1 },
+          "theme_adjusted_recommended_action": { "type": "string" },
+          "theme_adjusted_recommended_track": { "type": "string" },
+          "why_not_auto_promote": { "type": "string" },
+          "human_review_question": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

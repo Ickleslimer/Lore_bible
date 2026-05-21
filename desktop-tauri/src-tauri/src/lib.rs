@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
@@ -145,7 +145,11 @@ fn read_log_tail(path: &Path, max_lines: usize) -> Vec<String> {
     lines
 }
 
-fn bounded_log_preview(lines: Vec<String>, max_lines: usize, max_chars_per_line: usize) -> Vec<String> {
+fn bounded_log_preview(
+    lines: Vec<String>,
+    max_lines: usize,
+    max_chars_per_line: usize,
+) -> Vec<String> {
     let start = lines.len().saturating_sub(max_lines);
     lines
         .into_iter()
@@ -181,7 +185,11 @@ fn is_progress_log_line(line: &str) -> bool {
         || lower.contains("traceback")
 }
 
-fn progress_log_preview(lines: &[String], max_lines: usize, max_chars_per_line: usize) -> Vec<String> {
+fn progress_log_preview(
+    lines: &[String],
+    max_lines: usize,
+    max_chars_per_line: usize,
+) -> Vec<String> {
     let filtered = lines
         .iter()
         .filter(|line| is_progress_log_line(line))
@@ -205,15 +213,25 @@ fn pipeline_snapshot(state: &SharedPipelineState, include_logs: bool) -> Value {
 }
 
 #[tauri::command]
-fn python_bridge(
+async fn python_bridge(
     repo_root: Option<String>,
     command: String,
     payload: Value,
 ) -> Result<BridgeEnvelope, String> {
     let root = find_repo_root(repo_root)?;
+    tauri::async_runtime::spawn_blocking(move || run_python_bridge_request(root, command, payload))
+        .await
+        .map_err(|err| format!("Python bridge task failed: {err}"))?
+}
+
+fn run_python_bridge_request(
+    root: PathBuf,
+    bridge_command: String,
+    payload: Value,
+) -> Result<BridgeEnvelope, String> {
     let request = json!({
         "repo_root": root,
-        "command": command,
+        "command": bridge_command,
         "payload": payload,
     });
     let mut command = Command::new(python_executable());
@@ -268,11 +286,19 @@ fn pipeline_log_tail(
             .and_then(|guard| guard.artifacts_root.clone())
     });
     let lines = root
-        .map(|raw| read_log_tail(&worker_log_path(&PathBuf::from(raw)), max_lines.unwrap_or(250)))
+        .map(|raw| {
+            read_log_tail(
+                &worker_log_path(&PathBuf::from(raw)),
+                max_lines.unwrap_or(250),
+            )
+        })
         .unwrap_or_default();
     let total_lines = lines.len();
     let preview = bounded_log_preview(lines, 30, 360);
-    write_diagnostic(None, &format!("pipeline_log_tail returned {} line(s)", preview.len()));
+    write_diagnostic(
+        None,
+        &format!("pipeline_log_tail returned {} line(s)", preview.len()),
+    );
     json!({ "logs": preview, "total_lines": total_lines })
 }
 
@@ -289,7 +315,12 @@ fn pipeline_progress_tail(
             .and_then(|guard| guard.artifacts_root.clone())
     });
     let lines = root
-        .map(|raw| read_log_tail(&worker_log_path(&PathBuf::from(raw)), max_lines.unwrap_or(120)))
+        .map(|raw| {
+            read_log_tail(
+                &worker_log_path(&PathBuf::from(raw)),
+                max_lines.unwrap_or(120),
+            )
+        })
         .unwrap_or_default();
     let latest_line = lines.last().cloned().unwrap_or_default();
     let latest_preview = bounded_log_preview(vec![latest_line], 1, 260)
@@ -354,8 +385,48 @@ fn pipeline_start(
     thread::spawn(move || {
         run_pipeline_worker(worker_state, root, artifacts, resume, ignore_pending);
     });
-    write_diagnostic(None, "pipeline_start returned to UI after background thread dispatch");
+    write_diagnostic(
+        None,
+        "pipeline_start returned to UI after background thread dispatch",
+    );
     Ok(pipeline_snapshot(&state, true))
+}
+
+fn configured_path(root: &Path, raw: Option<String>, fallback: &str) -> PathBuf {
+    let value = raw
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| fallback.to_string());
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    }
+}
+
+fn configured_pipeline_inputs(root: &Path) -> (PathBuf, PathBuf) {
+    let config_path = root.join("config").join("pipeline_config.json");
+    let mut docx: Option<String> = None;
+    let mut conversations: Option<String> = None;
+    if let Ok(text) = std::fs::read_to_string(config_path) {
+        if let Ok(config) = serde_json::from_str::<Value>(&text) {
+            if let Some(paths) = config.get("paths").and_then(|value| value.as_object()) {
+                docx = paths
+                    .get("docx_lore_bible")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+                conversations = paths
+                    .get("discord_conversations_root")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+            }
+        }
+    }
+    (
+        configured_path(root, docx, "theriac-coda---lore-bible.docx"),
+        configured_path(root, conversations, "discord_conversations"),
+    )
 }
 
 fn run_pipeline_worker(
@@ -366,8 +437,7 @@ fn run_pipeline_worker(
     ignore_pending: bool,
 ) {
     write_diagnostic(Some(&root), "background worker preparing Python command");
-    let docx = root.join("theriac-coda---lore-bible.docx");
-    let conversations = root.join("discord_conversations");
+    let (docx, conversations) = configured_pipeline_inputs(&root);
     if !docx.exists() {
         let mut guard = state.lock().expect("pipeline state poisoned");
         guard.status = "failed".to_string();
@@ -378,7 +448,10 @@ fn run_pipeline_worker(
     if !conversations.exists() {
         let mut guard = state.lock().expect("pipeline state poisoned");
         guard.status = "failed".to_string();
-        guard.message = format!("Conversations folder not found: {}", conversations.display());
+        guard.message = format!(
+            "Conversations folder not found: {}",
+            conversations.display()
+        );
         guard.finished_at = Some(now_string());
         return;
     }
@@ -502,7 +575,10 @@ fn run_pipeline_worker(
         &artifacts,
         &format!("{} | desktop: {}", now_string(), guard.message),
     );
-    write_diagnostic(Some(&root), &format!("pipeline worker finished: {}", guard.message));
+    write_diagnostic(
+        Some(&root),
+        &format!("pipeline worker finished: {}", guard.message),
+    );
 }
 
 #[tauri::command]
@@ -527,10 +603,14 @@ fn pipeline_cancel(state: tauri::State<'_, SharedPipelineState>) -> Result<Value
         guard.child_pid = None;
         guard.finished_at = Some(now_string());
         if !output.stdout.is_empty() {
-            guard.logs.push(String::from_utf8_lossy(&output.stdout).trim().to_string());
+            guard
+                .logs
+                .push(String::from_utf8_lossy(&output.stdout).trim().to_string());
         }
         if !output.stderr.is_empty() {
-            guard.logs.push(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            guard
+                .logs
+                .push(String::from_utf8_lossy(&output.stderr).trim().to_string());
         }
     }
     Ok(pipeline_snapshot(&state, true))
@@ -600,7 +680,10 @@ mod tests {
 
         let lines = read_log_tail(&path, 5);
 
-        assert_eq!(lines, vec!["line 7", "line 8", "line 9", "line 10", "line 11"]);
+        assert_eq!(
+            lines,
+            vec!["line 7", "line 8", "line 9", "line 10", "line 11"]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

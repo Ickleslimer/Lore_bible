@@ -14,7 +14,10 @@ from pipeline.stage_04_conversation_segmentation import run as run_stage_04
 from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
-from pipeline.stage_07_entity_resolution import run as run_stage_07
+from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
+from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
+from pipeline.stage_07c_theme_miner import run as run_stage_07c
+from pipeline.stage_07d_theme_reclassification import run as run_stage_07d
 from pipeline.stage_09_claim_drafting import run as run_stage_09
 from pipeline.stage_10_identity_merge import run as run_stage_10
 from pipeline.stage_11_card_synthesis import run as run_stage_11
@@ -222,7 +225,11 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
         p.resolved_entities,
         p.alias_map,
         p.entity_timelines,
-        p.conversation_entity_proposals,
+        p.entity_candidate_harvest,
+        p.entity_adjudication_recommendations,
+        p.externality_cache,
+        p.theme_profile_update_report,
+        p.theme_candidate_reclassification,
     ]
     stage8 = [p.snippet_clusters_lore, p.snippet_clusters_meta]
     stage9 = [p.claim_drafts]
@@ -247,11 +254,8 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     if _missing(stage6) or _newer_than_outputs(stage5 + stage4, stage6):
         return 6, "Stage 06 snippets are missing or older than conversation patch notes."
 
-    conversation_decisions = p.conversation_entity_decisions
     if _missing(stage7):
-        return 7, "Stage 07 entity resolution artifacts are missing."
-    if _has_decisions(conversation_decisions) and _newer_than_outputs([conversation_decisions], stage7):
-        return 7, "Stage 07 decisions changed after entity resolution; rerunning entity resolution."
+        return 7, "Stage 07A/07B entity candidate harvest/adjudication artifacts are missing."
 
     if _missing(stage8) or _newer_than_outputs(stage6 + [stage7[0]], stage8):
         return 8, "Stage 08 grouping artifacts are missing or stale."
@@ -536,7 +540,7 @@ def main() -> None:
             logger,
             7,
             total_stages,
-            "Stage 07 Entity Resolution",
+            "Stage 07A Entity Candidate Harvest",
             run_stage_07,
             p.snippets,
             p.entity_seed,
@@ -544,20 +548,79 @@ def main() -> None:
             p.entity_timelines,
             p.resolved_entities,
             Path("canon/review_memory.json"),
-            p.conversation_entity_proposals,
-            p.conversation_entity_decisions,
+            p.entity_candidate_harvest,
             Path("config/pipeline_config.json"),
         )
         logger.info(
-            "Stage 07 summary: resolved_entities=%d seed_only_entities=%d conversation_entity_proposals=%d aliases=%d entity_timelines=%d",
+            "Stage 07A summary: resolved_entities=%d seed_only_entities=%d entity_candidates=%d aliases=%d entity_timelines=%d",
             len(read_json(p.resolved_entities).get("resolved_entities", [])),
             len(read_json(p.resolved_entities).get("seed_only_entities", [])),
-            len(read_json(p.conversation_entity_proposals).get("proposals", [])),
+            len(read_json(p.entity_candidate_harvest).get("candidates", [])),
             len(read_json(p.alias_map).get("aliases", [])),
             len(read_json(p.entity_timelines).get("entity_timelines", {})),
         )
+        _run_stage(
+            logger,
+            7,
+            total_stages,
+            "Stage 07B Entity Adjudication",
+            run_stage_07b,
+            p.entity_candidate_harvest,
+            p.entity_adjudication_recommendations,
+            p.externality_cache,
+            Path("config/pipeline_config.json"),
+            Path("canon/theme_profile.json"),
+        )
+        stage_07b = read_json(p.entity_adjudication_recommendations)
+        logger.info(
+            "Stage 07B summary: recommendations=%d web_selected=%d web_calls=%d cache_hits=%d failures=%d",
+            len(stage_07b.get("recommendations", [])),
+            int(stage_07b.get("summary", {}).get("web_selected_candidate_count", 0)),
+            int(stage_07b.get("summary", {}).get("web_call_count", 0)),
+            int(stage_07b.get("summary", {}).get("cache_hit_count", 0)),
+            int(stage_07b.get("summary", {}).get("failure_count", 0)),
+        )
+        _run_stage(
+            logger,
+            7,
+            total_stages,
+            "Stage 07C Theme Miner",
+            run_stage_07c,
+            p.entity_candidate_harvest,
+            p.entity_adjudication_recommendations,
+            p.resolved_entities,
+            Path("canon/review_memory.json"),
+            Path("canon/theme_profile.json"),
+            p.theme_profile_update_report,
+            Path("config/pipeline_config.json"),
+        )
+        stage_07c = read_json(p.theme_profile_update_report)
+        logger.info(
+            "Stage 07C summary: themes=%d evidence_packets=%d applied_updates=%d failures=%d",
+            int(stage_07c.get("summary", {}).get("theme_count", 0)),
+            int(stage_07c.get("inputs", {}).get("evidence_packet_count", 0)),
+            int(stage_07c.get("summary", {}).get("applied_update_count", 0)),
+            int(stage_07c.get("summary", {}).get("failure_count", 0)),
+        )
+        _run_stage(
+            logger,
+            7,
+            total_stages,
+            "Stage 07D Theme-Aware Candidate Reclassification",
+            run_stage_07d,
+            p.entity_candidate_harvest,
+            p.entity_adjudication_recommendations,
+            Path("canon/theme_profile.json"),
+            p.theme_candidate_reclassification,
+        )
+        stage_07d = read_json(p.theme_candidate_reclassification)
+        logger.info(
+            "Stage 07D summary: reclassifications=%d theme_matched=%d",
+            len(stage_07d.get("candidate_reclassifications", [])),
+            int(stage_07d.get("summary", {}).get("theme_matched_candidate_count", 0)),
+        )
     else:
-        logger.info("[7/%d] SKIP  Stage 07 Entity Resolution (resume starts at Stage %02d)", total_stages, start_stage)
+        logger.info("[7/%d] SKIP  Stage 07A-07D Entity Candidate Harvest + Adjudication + Themes (resume starts at Stage %02d)", total_stages, start_stage)
 
     if start_stage <= 8:
         _run_stage(

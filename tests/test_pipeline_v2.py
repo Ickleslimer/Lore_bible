@@ -10,10 +10,10 @@ from typing import Any
 from unittest.mock import patch
 
 from pipeline.artifact_paths import ArtifactPaths
-from pipeline.cardbase_agent import load_card_agent_transactions, run_pending_card_agent_requests, undo_card_agent_transaction
-from pipeline.common import stable_id
+from pipeline.cardbase_agent import card_agent_activity_payload, card_agent_progress_payload, load_card_agent_transactions, run_card_agent_request, run_pending_card_agent_requests, undo_card_agent_transaction
+from pipeline.common import read_jsonl, stable_id
 from pipeline.auto_review import AutoReviewResult, _auto_review_claims, _auto_review_conversation_entities
-from pipeline.entity_resolution import normalized_name_key, resolve_entities
+from pipeline.entity_resolution import card_id_for_entity, normalized_name_key, resolve_entities
 from pipeline.model_provider import (
     _call_gemini_chat,
     _call_openrouter_chat,
@@ -40,6 +40,10 @@ from pipeline.stage_04_conversation_segmentation import normalize_model_segments
 from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
+from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07a
+from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
+from pipeline.stage_07c_theme_miner import run as run_stage_07c
+from pipeline.stage_07d_theme_reclassification import run as run_stage_07d
 from pipeline.stage_07_entity_resolution import annotate_conversation_entity_proposals, infer_type_evidence_for_candidate, normalize_entity_type, run as run_stage_07
 from pipeline.stage_09_claim_drafting import build_claim_extraction_prompt, run as run_stage_09
 from pipeline.stage_10_identity_merge import run as run_stage_10
@@ -95,6 +99,94 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
 
+def qwen_harvest_response(keys: list[str], entity_type_by_key: dict[str, str] | None = None) -> dict[str, Any]:
+    entity_type_by_key = entity_type_by_key or {}
+    return {
+        "candidates": [
+            {
+                "normalized_name_key": key,
+                "candidate_name": key.title(),
+                "proposed_entity_type": entity_type_by_key.get(key, "term"),
+                "denotation_class": "mixed_or_uncertain",
+                "recommended_track": "unknown",
+                "local_lore_prior": 0.5,
+                "external_reference_prior": 0.1,
+                "confidence": 0.75,
+                "canonical_name": None,
+                "alias_of": None,
+                "signal_flags": {},
+                "reasoning_summary": f"Qwen local-evidence annotation for {key}.",
+                "human_review_question": f"Should {key} be treated as THERIAC lore, meta, or something else?",
+            }
+            for key in keys
+        ]
+    }
+
+
+def web_adjudication_response(
+    key: str,
+    *,
+    candidate_name: str | None = None,
+    externality_class: str = "external_fictional_ip",
+    recommended_action: str = "demote_meta",
+) -> dict[str, Any]:
+    return {
+        "recommendations": [
+            {
+                "candidate_name": candidate_name or key.title(),
+                "normalized_key": key,
+                "recommended_action": recommended_action,
+                "recommended_track": "meta" if recommended_action == "demote_meta" else "mixed",
+                "recommended_entity_type": "inspiration_reference",
+                "canonical_name": None,
+                "alias_of": None,
+                "confidence": 0.96,
+                "externality_class": externality_class,
+                "local_lore_prior": 0.15,
+                "external_reference_prior": 0.98,
+                "theme_matches": [],
+                "in_world_signals": [],
+                "meta_signals": ["Strong external match"],
+                "web_findings": [
+                    {
+                        "query": candidate_name or key.title(),
+                        "finding": "Known external reference.",
+                        "externality_weight": 0.98,
+                    }
+                ],
+                "reasoning_summary": "Externality detected by web search; human review still decides canon.",
+                "human_review_question": f"Is {candidate_name or key.title()} a THERIAC lore element or only an external reference?",
+            }
+        ]
+    }
+
+
+def theme_miner_response() -> dict[str, Any]:
+    return {
+        "theme_updates": [
+            {
+                "action": "create_theme",
+                "theme_id": "theme_sumerian_mythology",
+                "label": "Sumerian mythology",
+                "theme_type": "mythological_lineage",
+                "status": "active",
+                "confidence": 0.87,
+                "canon_relevance": "lore_pattern",
+                "description": "Sumerian mythological names and motifs are used for AI systems or lab architecture.",
+                "evidence_entities": ["Ninhursag", "Inanna"],
+                "evidence_claim_ids": [],
+                "evidence_snippet_ids": ["s_ninhursag"],
+                "positive_indicators": ["Sumerian deity name", "Mesopotamian religious term", "Enki"],
+                "negative_indicators": ["Used only as external mythology comparison"],
+                "related_themes": [],
+                "disambiguation_notes": ["Sumerian origin alone is not enough for canon promotion."],
+                "pattern_notes": ["Treat future Sumerian names as plausible only when local context suggests in-world use."],
+                "provenance_summary": "Local adjudication treats Sumerian deity names as plausible THERIAC lore candidates.",
+            }
+        ]
+    }
+
+
 def write_pipeline_artifacts_through_stage9(root: Path, claims: list[dict] | None = None) -> None:
     write_json(root / "01_bootstrap" / "entity_seed.json", {"entities": []})
     write_json(root / "02_timeline" / "summary.json", {})
@@ -110,6 +202,11 @@ def write_pipeline_artifacts_through_stage9(root: Path, claims: list[dict] | Non
     write_json(root / "05_alias" / "resolved_entities.json", {"resolved_entities": []})
     write_json(root / "05_alias" / "alias_map.json", {"aliases": []})
     write_json(root / "05_alias" / "entity_timelines.json", {"entity_timelines": {}})
+    write_json(root / "05_alias" / "entity_candidate_harvest.json", {"schema_version": 1, "candidates": []})
+    write_json(root / "05_alias" / "entity_adjudication_recommendations.json", {"schema_version": 1, "recommendations": []})
+    write_json(root / "05_alias" / "externality_cache.json", {"schema_version": 1, "entries": {}})
+    write_json(root / "05_alias" / "theme_profile_update_report.json", {"schema_version": 1, "summary": {"theme_count": 0}})
+    write_json(root / "05_alias" / "theme_candidate_reclassification.json", {"schema_version": 1, "candidate_reclassifications": []})
     write_json(root / "05_alias" / "conversation_entity_proposals.json", {"proposals": []})
     write_json(root / "04_grouping" / "snippet_clusters_lore.json", {"clusters": []})
     write_json(root / "04_grouping" / "snippet_clusters_meta.json", {"clusters": []})
@@ -946,6 +1043,7 @@ class PipelineV2Tests(unittest.TestCase):
                             rate_state_path=Path(tmp) / "rate.json",
                             min_interval_seconds=0.0,
                             max_tokens=1234,
+                            tools=[{"type": "openrouter:web_search", "parameters": {"max_results": 3}}],
                         )
 
         self.assertEqual(payload, {"segments": [], "ok": True})
@@ -955,6 +1053,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(body["model"], "qwen/qwen3.5-flash-02-23")
         self.assertEqual(body["response_format"], {"type": "json_object"})
         self.assertEqual(body["max_tokens"], 1234)
+        self.assertEqual(body["tools"], [{"type": "openrouter:web_search", "parameters": {"max_results": 3}}])
 
     def test_model_routing_selects_qwen_instruct_for_synthesis(self) -> None:
         config = {
@@ -996,11 +1095,19 @@ class PipelineV2Tests(unittest.TestCase):
 
         agent_kwargs = model_call_kwargs(config, "stage_11_card_architecture_agent")
         identity_kwargs = model_call_kwargs(config, "stage_10_identity_merge_cluster_judgement")
+        harvest_kwargs = model_call_kwargs(config, "stage_07a_entity_candidate_harvest")
+        adjudication_kwargs = model_call_kwargs(config, "stage_07b_entity_adjudication_web")
+        theme_miner_kwargs = model_call_kwargs(config, "stage_07c_theme_miner")
 
         self.assertEqual(agent_kwargs["provider"], "openrouter")
         self.assertEqual(agent_kwargs["api_model"], "google/gemini-3.1-pro-preview")
         self.assertIn("openrouter_gemini_31_deep_reasoning", str(agent_kwargs["rate_state_path"]))
         self.assertEqual(identity_kwargs["api_model"], "google/gemini-3.1-pro-preview")
+        self.assertEqual(harvest_kwargs["provider"], "openrouter")
+        self.assertEqual(harvest_kwargs["api_model"], "qwen/qwen3-235b-a22b-2507")
+        self.assertEqual(adjudication_kwargs["api_model"], "google/gemini-3.1-pro-preview")
+        self.assertEqual(adjudication_kwargs["tools"][0]["type"], "openrouter:web_search")
+        self.assertEqual(theme_miner_kwargs["api_model"], "google/gemini-3.1-pro-preview")
         self.assertEqual(config["story_questions"]["provider"], "openrouter")
         self.assertEqual(config["story_questions"]["model"], "google/gemini-3.1-pro-preview")
 
@@ -1943,6 +2050,675 @@ class PipelineV2Tests(unittest.TestCase):
             payload = json.loads((root / "resolved_entities.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["resolved_entities"], [])
             self.assertEqual(payload["seed_only_entities"][0]["canonical_name"], "Path A: Destructive Path")
+
+    def test_stage_07a_emits_qwen_annotated_harvest_without_review_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(root / "entity_seed.json", {"entities": []})
+            write_json(
+                root / "config.json",
+                {
+                    "model_routing": {
+                        "tasks": {
+                            "stage_07a_entity_candidate_harvest": {
+                                "provider": "openrouter",
+                                "api_model": "qwen/qwen3-235b-a22b-2507",
+                                "api_base_url": "https://openrouter.ai/api/v1",
+                                "temperature": 0.0,
+                                "max_tokens": 8192,
+                                "max_candidates_per_call": 24,
+                            }
+                        }
+                    }
+                },
+            )
+            write_jsonl(
+                root / "snippets.jsonl",
+                [
+                    {
+                        "snippet_id": "s_glass",
+                        "timestamp_start_utc": "2026-04-01T00:00:00Z",
+                        "timestamp_end_utc": "2026-04-01T00:01:00Z",
+                        "display_text_normalized": "The Glass Orchard is a possible early route concept.",
+                        "candidate_entities": ["Glass Orchard"],
+                        "candidate_topics": ["quest"],
+                        "knowledge_track": "lore",
+                        "relevance_score": 0.82,
+                    }
+                ],
+            )
+
+            with patch(
+                "pipeline.stage_07a_entity_candidate_harvest.call_model_chat",
+                return_value=qwen_harvest_response(["glass orchard"], {"glass orchard": "quest"}),
+            ) as model:
+                run_stage_07a(
+                    root / "snippets.jsonl",
+                    root / "entity_seed.json",
+                    root / "aliases.json",
+                    root / "timelines.json",
+                    root / "resolved_entities.json",
+                    None,
+                    root / "entity_candidate_harvest.json",
+                    root / "config.json",
+                )
+
+            harvest = json.loads((root / "entity_candidate_harvest.json").read_text(encoding="utf-8"))
+            resolved = json.loads((root / "resolved_entities.json").read_text(encoding="utf-8"))
+            self.assertEqual(model.call_count, 1)
+            self.assertEqual(model.call_args.kwargs["api_model"], "qwen/qwen3-235b-a22b-2507")
+            self.assertEqual(harvest["summary"]["candidate_count"], 1)
+            self.assertEqual(harvest["summary"]["model_annotated_candidate_count"], 1)
+            self.assertEqual(harvest["policy"]["model_name"], "qwen/qwen3-235b-a22b-2507")
+            self.assertEqual(harvest["candidates"][0]["candidate_name"], "Glass Orchard")
+            self.assertEqual(harvest["candidates"][0]["model_annotation_status"], "annotated")
+            self.assertEqual(harvest["candidates"][0]["proposed_entity_type"], "quest")
+            self.assertEqual(harvest["candidates"][0]["legacy_triage_hint"]["triage_status"], "review_required")
+            self.assertEqual(resolved["resolved_entities"], [])
+            self.assertFalse((root / "conversation_entity_proposals.json").exists())
+
+    def test_stage_07a_harvests_broad_candidates_with_local_signal_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "entity_seed.json",
+                {
+                    "entities": [
+                        {"entity_seed_id": "seed_hectr", "canonical_name": "HECTR", "entity_type": "character", "aliases": [], "seed_status": "active"}
+                    ]
+                },
+            )
+            write_jsonl(
+                root / "snippets.jsonl",
+                [
+                    {
+                        "snippet_id": "s_generic",
+                        "timestamp_start_utc": "2026-04-01T00:00:00Z",
+                        "timestamp_end_utc": "2026-04-01T00:01:00Z",
+                        "display_text_normalized": "NPC is used here as a generic label near HECTR.",
+                        "candidate_entities": ["NPC"],
+                        "candidate_topics": ["entity"],
+                        "knowledge_track": "lore",
+                        "relevance_score": 0.5,
+                    },
+                    {
+                        "snippet_id": "s_adam",
+                        "timestamp_start_utc": "2026-04-01T00:02:00Z",
+                        "timestamp_end_utc": "2026-04-01T00:03:00Z",
+                        "display_text_normalized": "Adam Smasher is an inspiration reference for the boss silhouette.",
+                        "candidate_entities": ["Adam Smasher"],
+                        "candidate_topics": ["production"],
+                        "knowledge_track": "meta",
+                        "patch_relationship_type": "inspiration",
+                        "relevance_score": 0.7,
+                    },
+                    {
+                        "snippet_id": "s_alad",
+                        "timestamp_start_utc": "2026-04-01T00:04:00Z",
+                        "timestamp_end_utc": "2026-04-01T00:05:00Z",
+                        "display_text_normalized": "Warframe's Alad V is an external media reference, not a THERIAC person.",
+                        "candidate_entities": ["Alad V"],
+                        "candidate_topics": ["production"],
+                        "knowledge_track": "meta",
+                        "relevance_score": 0.7,
+                    },
+                    {
+                        "snippet_id": "s_artist",
+                        "timestamp_start_utc": "2026-04-01T00:06:00Z",
+                        "timestamp_end_utc": "2026-04-01T00:07:00Z",
+                        "display_text_normalized": "Mira is the character artist for the game and is on board for visuals.",
+                        "candidate_entities": ["Mira"],
+                        "candidate_topics": ["production"],
+                        "knowledge_track": "meta",
+                        "relevance_score": 0.6,
+                    },
+                    {
+                        "snippet_id": "s_name",
+                        "timestamp_start_utc": "2026-04-01T00:08:00Z",
+                        "timestamp_end_utc": "2026-04-01T00:09:00Z",
+                        "display_text_normalized": "Game Name might change later.",
+                        "candidate_entities": ["Game Name"],
+                        "candidate_topics": ["production"],
+                        "knowledge_track": "meta",
+                        "relevance_score": 0.4,
+                    },
+                ],
+            )
+
+            with patch(
+                "pipeline.stage_07a_entity_candidate_harvest.call_model_chat",
+                return_value=qwen_harvest_response(["npc", "adam smasher", "alad v", "mira", "game name"]),
+            ):
+                run_stage_07a(
+                    root / "snippets.jsonl",
+                    root / "entity_seed.json",
+                    root / "aliases.json",
+                    root / "timelines.json",
+                    root / "resolved_entities.json",
+                    None,
+                    root / "entity_candidate_harvest.json",
+                )
+
+            harvest = json.loads((root / "entity_candidate_harvest.json").read_text(encoding="utf-8"))
+            candidates = {item["normalized_name_key"]: item for item in harvest["candidates"]}
+            self.assertTrue(candidates["npc"]["signal_flags"]["generic_phrase"])
+            self.assertTrue(candidates["adam smasher"]["signal_flags"]["inspiration_marker"])
+            self.assertTrue(candidates["alad v"]["signal_flags"]["external_media_marker"])
+            self.assertTrue(candidates["mira"]["signal_flags"]["meta_team_marker"])
+            self.assertTrue(candidates["game name"]["signal_flags"]["generic_phrase"])
+            self.assertIn("HECTR", [item["canonical_name"] for item in candidates["npc"]["known_entities_co_mentioned"]])
+
+    def test_stage_07a_prior_approved_memory_entity_resolves_from_review_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(root / "entity_seed.json", {"entities": []})
+            write_json(
+                root / "review_memory.json",
+                {
+                    "version": 1,
+                    "approved_conversation_entities": [
+                        {
+                            "proposal_id": "proposal_glass",
+                            "candidate_name": "Glass Orchard",
+                            "canonical_name": "The Glass Orchard",
+                            "entity_type": "quest",
+                            "aliases": ["Glass Orchard"],
+                        }
+                    ],
+                    "rejected_conversation_entities": [],
+                },
+            )
+            write_jsonl(
+                root / "snippets.jsonl",
+                [
+                    {
+                        "snippet_id": "s_glass",
+                        "timestamp_start_utc": "2026-04-01T00:00:00Z",
+                        "timestamp_end_utc": "2026-04-01T00:01:00Z",
+                        "display_text_normalized": "The Glass Orchard opens as a possible early route.",
+                        "candidate_entities": ["Glass Orchard"],
+                        "candidate_topics": ["quest"],
+                        "knowledge_track": "lore",
+                        "relevance_score": 0.82,
+                    }
+                ],
+            )
+
+            with patch(
+                "pipeline.stage_07a_entity_candidate_harvest.call_model_chat",
+                return_value=qwen_harvest_response(["glass orchard"], {"glass orchard": "quest"}),
+            ):
+                run_stage_07a(
+                    root / "snippets.jsonl",
+                    root / "entity_seed.json",
+                    root / "aliases.json",
+                    root / "timelines.json",
+                    root / "resolved_entities.json",
+                    root / "review_memory.json",
+                    root / "entity_candidate_harvest.json",
+                )
+
+            resolved = json.loads((root / "resolved_entities.json").read_text(encoding="utf-8"))["resolved_entities"]
+            harvest = json.loads((root / "entity_candidate_harvest.json").read_text(encoding="utf-8"))
+            self.assertEqual([entity["canonical_name"] for entity in resolved], ["The Glass Orchard"])
+            self.assertTrue(harvest["candidates"][0]["signal_flags"]["prior_approved_memory_match"])
+
+    def test_stage_07b_web_adjudicates_only_selected_externality_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "entity_candidate_harvest.json",
+                {
+                    "schema_version": 1,
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate_adam",
+                            "candidate_name": "Adam Smasher",
+                            "normalized_name_key": "adam smasher",
+                            "source_snippet_ids": ["s_adam"],
+                            "evidence_count": 1,
+                            "sample_texts": ["Adam Smasher is an inspiration reference for the boss silhouette."],
+                            "proposed_entity_type": "term",
+                            "type_conflicts": [],
+                            "signal_flags": {"inspiration_marker": True, "external_media_marker": True},
+                            "model_denotation_class": "likely_external_reference",
+                            "recommended_track": "meta",
+                            "local_lore_prior": 0.15,
+                            "external_reference_prior": 0.7,
+                            "model_confidence": 0.83,
+                            "model_reasoning_summary": "Local text frames this as inspiration.",
+                        },
+                        {
+                            "candidate_id": "candidate_lab",
+                            "candidate_name": "The Lab",
+                            "normalized_name_key": "the lab",
+                            "source_snippet_ids": ["s_lab"],
+                            "evidence_count": 1,
+                            "sample_texts": ["The Lab stores the prototype body."],
+                            "proposed_entity_type": "location",
+                            "type_conflicts": [],
+                            "signal_flags": {},
+                            "model_denotation_class": "likely_lore_entity",
+                            "recommended_track": "lore",
+                            "local_lore_prior": 0.82,
+                            "external_reference_prior": 0.05,
+                            "model_confidence": 0.91,
+                            "model_reasoning_summary": "Local text treats this as an in-world place.",
+                        },
+                    ],
+                },
+            )
+            write_json(
+                root / "config.json",
+                {
+                    "model_routing": {
+                        "tasks": {
+                            "stage_07b_entity_adjudication_web": {
+                                "provider": "openrouter",
+                                "api_model": "google/gemini-3.1-pro-preview",
+                                "api_base_url": "https://openrouter.ai/api/v1",
+                                "temperature": 0.0,
+                                "max_tokens": 3500,
+                                "tools": [{"type": "openrouter:web_search", "parameters": {"max_results": 3}}],
+                            }
+                        }
+                    }
+                },
+            )
+
+            with patch(
+                "pipeline.stage_07b_entity_adjudication.call_model_chat",
+                return_value=web_adjudication_response("adam smasher", candidate_name="Adam Smasher"),
+            ) as model:
+                run_stage_07b(
+                    root / "entity_candidate_harvest.json",
+                    root / "entity_adjudication_recommendations.json",
+                    root / "externality_cache.json",
+                    root / "config.json",
+                )
+
+            self.assertEqual(model.call_count, 1)
+            self.assertEqual(model.call_args.kwargs["tools"][0]["type"], "openrouter:web_search")
+            self.assertIn("json_schema", model.call_args.kwargs)
+            payload = json.loads((root / "entity_adjudication_recommendations.json").read_text(encoding="utf-8"))
+            recommendations = {item["normalized_key"]: item for item in payload["recommendations"]}
+            self.assertEqual(payload["summary"]["web_selected_candidate_count"], 1)
+            self.assertEqual(payload["summary"]["web_call_count"], 1)
+            self.assertTrue(payload["policy"]["web_search_detects_externality_not_canon"])
+            self.assertEqual(recommendations["adam smasher"]["externality_class"], "external_fictional_ip")
+            self.assertEqual(recommendations["adam smasher"]["recommended_action"], "demote_meta")
+            self.assertEqual(recommendations["adam smasher"]["adjudication_status"], "web_adjudicated")
+            self.assertEqual(recommendations["the lab"]["adjudication_status"], "local_only_not_selected")
+            self.assertEqual(recommendations["the lab"]["web_findings"], [])
+
+    def test_stage_07b_reuses_externality_cache_without_web_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "entity_candidate_harvest.json",
+                {
+                    "schema_version": 1,
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate_adam",
+                            "candidate_name": "Adam Smasher",
+                            "normalized_name_key": "adam smasher",
+                            "source_snippet_ids": ["s_adam"],
+                            "evidence_count": 1,
+                            "sample_texts": ["Adam Smasher is an inspiration reference for the boss silhouette."],
+                            "proposed_entity_type": "term",
+                            "type_conflicts": [],
+                            "signal_flags": {"inspiration_marker": True},
+                            "model_denotation_class": "likely_external_reference",
+                            "recommended_track": "meta",
+                            "local_lore_prior": 0.15,
+                            "external_reference_prior": 0.7,
+                            "model_confidence": 0.83,
+                        }
+                    ],
+                },
+            )
+            write_json(
+                root / "config.json",
+                {
+                    "model_routing": {
+                        "tasks": {
+                            "stage_07b_entity_adjudication_web": {
+                                "provider": "openrouter",
+                                "api_model": "google/gemini-3.1-pro-preview",
+                                "tools": [{"type": "openrouter:web_search"}],
+                            }
+                        }
+                    }
+                },
+            )
+
+            with patch(
+                "pipeline.stage_07b_entity_adjudication.call_model_chat",
+                return_value=web_adjudication_response("adam smasher", candidate_name="Adam Smasher"),
+            ):
+                run_stage_07b(
+                    root / "entity_candidate_harvest.json",
+                    root / "entity_adjudication_recommendations.json",
+                    root / "externality_cache.json",
+                    root / "config.json",
+                )
+
+            with patch(
+                "pipeline.stage_07b_entity_adjudication.call_model_chat",
+                side_effect=AssertionError("cached externality should not call web model"),
+            ):
+                run_stage_07b(
+                    root / "entity_candidate_harvest.json",
+                    root / "entity_adjudication_recommendations.json",
+                    root / "externality_cache.json",
+                    root / "config.json",
+                )
+
+            payload = json.loads((root / "entity_adjudication_recommendations.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["summary"]["cache_hit_count"], 1)
+            self.assertEqual(payload["summary"]["web_call_count"], 0)
+            self.assertEqual(payload["recommendations"][0]["cache_status"], "hit")
+
+    def test_stage_07c_theme_miner_updates_persistent_theme_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "entity_candidate_harvest.json",
+                {
+                    "schema_version": 1,
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate_ninhursag",
+                            "candidate_name": "Ninhursag",
+                            "normalized_name_key": "ninhursag",
+                            "source_snippet_ids": ["s_ninhursag"],
+                            "sample_texts": ["Ninhursag is being used as a Sumerian lab architecture name."],
+                            "proposed_entity_type": "term",
+                            "local_lore_prior": 0.68,
+                        }
+                    ],
+                },
+            )
+            write_json(
+                root / "entity_adjudication_recommendations.json",
+                {
+                    "schema_version": 1,
+                    "recommendations": [
+                        {
+                            "candidate_name": "Ninhursag",
+                            "normalized_key": "ninhursag",
+                            "recommended_action": "needs_author_review",
+                            "recommended_track": "lore_candidate",
+                            "recommended_entity_type": "term",
+                            "externality_class": "historical_or_mythological",
+                            "local_lore_prior": 0.68,
+                            "external_reference_prior": 0.8,
+                            "source_snippet_ids": ["s_ninhursag"],
+                            "in_world_signals": ["Local text suggests an in-world lab architecture name"],
+                            "web_findings": [{"query": "Ninhursag", "finding": "Ninhursag is a Sumerian mother goddess.", "externality_weight": 0.9}],
+                            "reasoning_summary": "Sumerian mythological externality, but local usage looks in-world.",
+                        }
+                    ],
+                },
+            )
+            write_json(root / "resolved_entities.json", {"resolved_entities": []})
+            write_json(root / "review_memory.json", {"accepted_claims": []})
+            write_json(root / "config.json", {"model_routing": {"tasks": {"stage_07c_theme_miner": {"provider": "openrouter", "api_model": "google/gemini-3.1-pro-preview"}}}})
+
+            with patch("pipeline.stage_07c_theme_miner.call_model_chat", return_value=theme_miner_response()) as model:
+                run_stage_07c(
+                    root / "entity_candidate_harvest.json",
+                    root / "entity_adjudication_recommendations.json",
+                    root / "resolved_entities.json",
+                    root / "review_memory.json",
+                    root / "theme_profile.json",
+                    root / "theme_profile_update_report.json",
+                    root / "config.json",
+                )
+
+            self.assertEqual(model.call_count, 1)
+            profile = json.loads((root / "theme_profile.json").read_text(encoding="utf-8"))
+            report = json.loads((root / "theme_profile_update_report.json").read_text(encoding="utf-8"))
+            self.assertTrue(profile["policy"]["transitive_thematic_learning_not_transitive_canon"])
+            self.assertEqual(profile["themes"][0]["theme_id"], "theme_sumerian_mythology")
+            self.assertEqual(profile["themes"][0]["status"], "active")
+            self.assertIn("Ninhursag", profile["themes"][0]["evidence_entities"])
+            self.assertEqual(report["summary"]["applied_update_count"], 1)
+
+    def test_stage_07d_theme_reclassification_boosts_prior_without_promoting_canon(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "entity_candidate_harvest.json",
+                {
+                    "schema_version": 1,
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate_enki",
+                            "candidate_name": "Enki",
+                            "normalized_name_key": "enki",
+                            "sample_texts": ["Enki may be a name for a non-human cognition subsystem."],
+                            "local_lore_prior": 0.52,
+                        }
+                    ],
+                },
+            )
+            write_json(
+                root / "entity_adjudication_recommendations.json",
+                {
+                    "schema_version": 1,
+                    "recommendations": [
+                        {
+                            "candidate_id": "candidate_enki",
+                            "candidate_name": "Enki",
+                            "normalized_key": "enki",
+                            "recommended_action": "needs_author_review",
+                            "recommended_track": "mixed",
+                            "recommended_entity_type": "term",
+                            "externality_class": "historical_or_mythological",
+                            "local_lore_prior": 0.52,
+                            "external_reference_prior": 0.82,
+                            "web_findings": [{"query": "Enki", "finding": "Enki is a Sumerian deity.", "externality_weight": 0.88}],
+                            "reasoning_summary": "Historical/mythological externality with local in-world hints.",
+                            "human_review_question": "Is Enki lore or comparison?",
+                        }
+                    ],
+                },
+            )
+            write_json(
+                root / "theme_profile.json",
+                {
+                    "schema_version": 1,
+                    "policy": {"theme_match_is_not_promotion_rule": True},
+                    "themes": [
+                        {
+                            "theme_id": "theme_sumerian_mythology",
+                            "label": "Sumerian mythology",
+                            "theme_type": "mythological_lineage",
+                            "status": "active",
+                            "confidence": 0.87,
+                            "canon_relevance": "lore_pattern",
+                            "description": "Sumerian deity names are used for AI systems.",
+                            "evidence_entities": ["Ninhursag", "Inanna"],
+                            "positive_indicators": ["Sumerian deity name", "Enki"],
+                            "negative_indicators": [],
+                            "related_themes": [],
+                            "disambiguation_notes": ["Sumerian origin alone is not enough for canon promotion."],
+                            "last_updated": "2026-05-21T00:00:00Z",
+                        }
+                    ],
+                },
+            )
+
+            run_stage_07d(
+                root / "entity_candidate_harvest.json",
+                root / "entity_adjudication_recommendations.json",
+                root / "theme_profile.json",
+                root / "theme_candidate_reclassification.json",
+            )
+
+            payload = json.loads((root / "theme_candidate_reclassification.json").read_text(encoding="utf-8"))
+            row = payload["candidate_reclassifications"][0]
+            self.assertTrue(payload["policy"]["theme_match_changes_prior_not_final_decision"])
+            self.assertEqual(row["normalized_key"], "enki")
+            self.assertEqual(row["theme_matches"][0]["theme_id"], "theme_sumerian_mythology")
+            self.assertGreater(row["theme_adjusted_lore_prior"], row["base_local_lore_prior"])
+            self.assertEqual(row["theme_adjusted_recommended_action"], "needs_author_review")
+            self.assertIn("Theme match changes relevance prior only", row["why_not_auto_promote"])
+
+    def test_run_from_stage_05_uses_stage_07a_to_07d_without_entity_review_gate(self) -> None:
+        import sys
+        import pipeline.run_from_stage_05 as resume
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            write_json(paths.entity_seed, {"entities": []})
+            write_jsonl(paths.relevant_messages, [])
+            write_json(paths.conversation_segments, {"segments": []})
+
+            def fake_stage_05(_messages: Path, _segments: Path, out_json: Path, out_jsonl: Path, out_failures: Path, _config: Path) -> None:
+                write_json(out_json, {"status": "complete", "conversation_count": 1, "notes_count": 1, "failure_count": 0, "notes": []})
+                write_jsonl(out_jsonl, [])
+                write_json(out_failures, {"failures": []})
+
+            def fake_stage_06(
+                _messages: Path,
+                _profiles_in: Path,
+                out_snippets: Path,
+                out_needs_review: Path,
+                out_profiles: Path,
+                *_args: Any,
+            ) -> None:
+                write_jsonl(
+                    out_snippets,
+                    [
+                        {
+                            "snippet_id": "s_glass",
+                            "timestamp_start_utc": "2026-04-01T00:00:00Z",
+                            "timestamp_end_utc": "2026-04-01T00:01:00Z",
+                            "display_text_normalized": "The Glass Orchard is a possible early route concept.",
+                            "candidate_entities": ["Glass Orchard"],
+                            "candidate_topics": ["quest"],
+                            "knowledge_track": "lore",
+                            "relevance_score": 0.82,
+                        }
+                    ],
+                )
+                write_jsonl(out_needs_review, [])
+                write_json(out_profiles, {"profiles": []})
+
+            def fake_stage_08(_snippets: Path, _entities: Path, out_lore: Path, out_meta: Path, *_args: Any) -> None:
+                write_json(out_lore, {"clusters": []})
+                write_json(out_meta, {"clusters": []})
+
+            def fake_stage_09(_entities: Path, _lore: Path, _meta: Path, _aliases: Path, _snippets: Path, out_dir: Path, *_args: Any) -> None:
+                write_json(out_dir / "claim_drafts.json", {"claims": []})
+                write_json(out_dir / "meta_cards_draft.json", {"meta_cards": []})
+
+            def fake_stage_07c(
+                _harvest: Path,
+                _adjudication: Path,
+                _resolved: Path,
+                _memory: Path,
+                _theme_profile: Path,
+                out_report: Path,
+                *_args: Any,
+            ) -> None:
+                write_json(out_report, {"schema_version": 1, "summary": {"theme_count": 0, "applied_update_count": 0}, "inputs": {"evidence_packet_count": 0}})
+
+            def fake_stage_07d(_harvest: Path, _adjudication: Path, _theme_profile: Path, out_reclassification: Path) -> None:
+                write_json(out_reclassification, {"schema_version": 1, "summary": {"theme_matched_candidate_count": 0}, "candidate_reclassifications": []})
+
+            with patch.object(sys, "argv", ["run_from_stage_05", "--artifacts-root", str(root)]), patch.object(
+                resume, "run_stage_05", side_effect=fake_stage_05
+            ), patch.object(resume, "run_stage_06", side_effect=fake_stage_06), patch.object(
+                resume, "run_stage_08", side_effect=fake_stage_08
+            ), patch.object(
+                resume, "run_stage_09", side_effect=fake_stage_09
+            ), patch.object(
+                resume, "run_stage_07c", side_effect=fake_stage_07c
+            ), patch.object(
+                resume, "run_stage_07d", side_effect=fake_stage_07d
+            ), patch(
+                "pipeline.stage_07a_entity_candidate_harvest.call_model_chat",
+                return_value=qwen_harvest_response(["glass orchard"], {"glass orchard": "quest"}),
+            ), patch(
+                "pipeline.stage_07b_entity_adjudication.call_model_chat",
+                return_value=web_adjudication_response("glass orchard", candidate_name="Glass Orchard", externality_class="none_detected", recommended_action="needs_author_review"),
+            ):
+                resume.main()
+
+            harvest = json.loads(paths.entity_candidate_harvest.read_text(encoding="utf-8"))
+            adjudication = json.loads(paths.entity_adjudication_recommendations.read_text(encoding="utf-8"))
+            self.assertEqual(harvest["candidates"][0]["candidate_name"], "Glass Orchard")
+            self.assertEqual(adjudication["summary"]["web_call_count"], 1)
+            self.assertTrue(paths.theme_profile_update_report.exists())
+            self.assertTrue(paths.theme_candidate_reclassification.exists())
+            self.assertFalse(paths.conversation_entity_proposals.exists())
+
+    def test_entity_candidate_harvest_schema_contract_lists_required_fields(self) -> None:
+        schema = json.loads(Path("schema/entity_candidate_harvest_schema.json").read_text(encoding="utf-8"))
+        self.assertIn("candidates", schema["required"])
+        candidate_required = set(schema["properties"]["candidates"]["items"]["required"])
+        for field in (
+            "candidate_id",
+            "candidate_name",
+            "normalized_name_key",
+            "surface_forms",
+            "source_snippet_ids",
+            "signal_flags",
+            "legacy_triage_hint",
+        ):
+            self.assertIn(field, candidate_required)
+        candidate_properties = schema["properties"]["candidates"]["items"]["properties"]
+        self.assertIn("model_annotation", candidate_properties)
+        self.assertIn("model_denotation_class", candidate_properties)
+        self.assertIn("human_review_question", candidate_properties)
+
+    def test_entity_adjudication_schema_contract_lists_required_fields(self) -> None:
+        schema = json.loads(Path("schema/entity_adjudication_schema.json").read_text(encoding="utf-8"))
+        self.assertIn("recommendations", schema["required"])
+        recommendation_required = set(schema["properties"]["recommendations"]["items"]["required"])
+        for field in (
+            "candidate_name",
+            "normalized_key",
+            "recommended_action",
+            "recommended_track",
+            "externality_class",
+            "web_findings",
+            "human_review_question",
+        ):
+            self.assertIn(field, recommendation_required)
+        externality_enum = schema["properties"]["recommendations"]["items"]["properties"]["externality_class"]["enum"]
+        self.assertIn("external_fictional_ip", externality_enum)
+        self.assertIn("historical_or_mythological", externality_enum)
+
+    def test_theme_profile_schema_contract_lists_required_fields(self) -> None:
+        schema = json.loads(Path("schema/theme_profile_schema.json").read_text(encoding="utf-8"))
+        self.assertIn("themes", schema["required"])
+        theme_required = set(schema["properties"]["themes"]["items"]["required"])
+        for field in (
+            "theme_id",
+            "label",
+            "status",
+            "confidence",
+            "evidence_entities",
+            "positive_indicators",
+            "disambiguation_notes",
+        ):
+            self.assertIn(field, theme_required)
+        self.assertIn("active", schema["properties"]["themes"]["items"]["properties"]["status"]["enum"])
+        self.assertIn("meta_only", schema["properties"]["themes"]["items"]["properties"]["status"]["enum"])
+
+    def test_theme_reclassification_schema_contract_lists_required_fields(self) -> None:
+        schema = json.loads(Path("schema/theme_candidate_reclassification_schema.json").read_text(encoding="utf-8"))
+        self.assertIn("candidate_reclassifications", schema["required"])
+        row_required = set(schema["properties"]["candidate_reclassifications"]["items"]["required"])
+        self.assertIn("theme_matches", row_required)
+        self.assertIn("theme_adjusted_lore_prior", row_required)
+        self.assertIn("why_not_auto_promote", row_required)
 
     def test_stage_07_proposes_text_observed_conversation_entity_not_in_seed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4024,6 +4800,23 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("card_redirects.json", changed_paths)
             self.assertIn("card_edit_requests.jsonl", changed_paths)
 
+            activity = card_agent_activity_payload(root)
+            activity_transaction = next(item for item in activity["transactions"] if item["transaction_id"] == transaction["transaction_id"])
+            self.assertIn("change_summary", activity_transaction)
+            self.assertTrue(all("text" not in item.get("before", {}) for item in activity_transaction["write_set"]))
+            memory_artifact = next(
+                item
+                for item in activity_transaction["change_summary"]["artifacts"]
+                if item["display_path"].endswith("canon\\review_memory.json") or item["display_path"].endswith("canon/review_memory.json")
+            )
+            changed_collections = {collection["name"]: collection for collection in memory_artifact["collections"]}
+            self.assertEqual(changed_collections["entity_merges"]["added"][0]["label"], "Pandora's mother -> Izanami")
+            self.assertEqual(changed_collections["approved_aliases"]["added"][0]["details"]["alias_text"], "Pandora's mother")
+            change_lines = [line["sentence"] for line in activity_transaction["change_summary"]["lines"]]
+            self.assertIn("Pandora's mother merged into Izanami.", change_lines)
+            self.assertIn("Pandora's mother added as an alias for Izanami.", change_lines)
+            self.assertIn("Claim added to Izanami: Pandora's mother is Izanami.", change_lines)
+
             undo = undo_card_agent_transaction(paths.stage11, transaction["transaction_id"], reviewer="test", rationale="Undo test.")
             self.assertEqual(undo["status"], "completed_reversal")
             self.assertEqual(undo["reverses_transaction_id"], transaction["transaction_id"])
@@ -4034,6 +4827,613 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertFalse((paths.stage11 / "card_redirects.json").exists())
             self.assertFalse((paths.stage11 / "card_architecture_applied.json").exists())
             self.assertEqual(len(load_card_agent_transactions(paths.stage11)), 2)
+
+    def test_cardbase_agent_runs_on_demand_without_stage_11_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            write_json(
+                paths.resolved_entities,
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_pandoras_mother",
+                            "card_id": "card_pandoras_mother",
+                            "canonical_name": "Pandora's mother",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                        {
+                            "entity_id": "entity_izanami",
+                            "card_id": "card_izanami",
+                            "canonical_name": "Izanami",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                    ]
+                },
+            )
+            claim = {
+                "claim_id": "claim_pandoras_mother_threshold",
+                "target_entity_id": "entity_pandoras_mother",
+                "target_card_id": "card_pandoras_mother",
+                "target_entity_name": "Pandora's mother",
+                "knowledge_track": "lore",
+                "claim_text": "Pandora's mother guards the threshold to Yomi.",
+                "claim_type": "background",
+                "source_snippet_ids": ["snippet_mother"],
+                "confidence": 0.92,
+                "status": "draft",
+            }
+            write_json(paths.claim_drafts, {"claims": [claim]})
+            write_json(paths.claim_review_decisions, {"decisions": [{"claim_id": claim["claim_id"], "decision": "accept"}]})
+            write_json(paths.author_claims, {"claims": []})
+            write_json(paths.card_drafts, {"cards": []})
+            write_json(
+                paths.canonical_cards,
+                {
+                    "cards": [
+                        {
+                            "card_id": "card_pandoras_mother",
+                            "canonical_name": "Pandora's mother",
+                            "details": {"entity_id": "entity_pandoras_mother", "wiki_links": []},
+                            "relationships": [],
+                        },
+                        {
+                            "card_id": "card_izanami",
+                            "canonical_name": "Izanami",
+                            "details": {"entity_id": "entity_izanami", "wiki_links": []},
+                            "relationships": [],
+                        },
+                    ]
+                },
+            )
+            memory_path = root / "canon" / "review_memory.json"
+            write_json(
+                memory_path,
+                {
+                    "version": 1,
+                    "accepted_claims": [],
+                    "rejected_claims": [],
+                    "approved_aliases": [],
+                    "entity_merges": [],
+                    "approved_cards": [],
+                    "author_directives": [],
+                    "style_corrections": [],
+                    "updated_at_utc": "2026-05-20T00:00:00Z",
+                },
+            )
+            tool_calls = [
+                {"tool_name": "search_entities", "arguments": {"query": "Pandora's mother"}, "rationale": "Find source."},
+                {"tool_name": "search_entities", "arguments": {"query": "Izanami"}, "rationale": "Find target."},
+                {"tool_name": "get_claims", "arguments": {"entity_id": "entity_pandoras_mother"}, "rationale": "Read source claims."},
+                {
+                    "tool_name": "apply_identity_merge",
+                    "arguments": {
+                        "source_entity_id": "entity_pandoras_mother",
+                        "target_entity_id": "entity_izanami",
+                        "claim_text": "Pandora's mother is Izanami",
+                        "rationale": "Direct author identity assertion.",
+                        "confidence": 1.0,
+                    },
+                    "rationale": "Apply the merge now.",
+                },
+                {"tool_name": "rewrite_references", "arguments": {"source_entity_id": "entity_pandoras_mother", "target_entity_id": "entity_izanami"}, "rationale": "Remove stale cards."},
+                {"tool_name": "check_consistency", "arguments": {"source_entity_id": "entity_pandoras_mother", "target_entity_id": "entity_izanami"}, "rationale": "Verify."},
+                {"tool_name": "finish", "arguments": {"final_response": "Done."}, "final_response": "Done.", "rationale": "Verified."},
+            ]
+
+            with patch("pipeline.cardbase_agent.call_model_chat", side_effect=tool_calls) as model:
+                result = run_card_agent_request(
+                    artifacts_root=root,
+                    instruction_text="Pandora's mother is Izanami",
+                    requester="test",
+                    review_memory_path=memory_path,
+                    config_path=root / "missing_config.json",
+                )
+
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(model.call_count, len(tool_calls))
+            requests = read_jsonl(paths.card_edit_requests)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0]["status"], "applied")
+            self.assertEqual(requests[0]["source"], "on_demand")
+            memory = json.loads(memory_path.read_text(encoding="utf-8"))
+            self.assertEqual(memory["entity_merges"][0]["source_entity_name"], "Pandora's mother")
+            self.assertEqual(memory["entity_merges"][0]["target_entity_name"], "Izanami")
+            self.assertEqual(memory["approved_aliases"][0]["alias_text"], "Pandora's mother")
+            author_claims = json.loads(paths.author_claims.read_text(encoding="utf-8"))["claims"]
+            self.assertEqual(author_claims[0]["target_entity_name"], "Izanami")
+            cards_after = json.loads(paths.canonical_cards.read_text(encoding="utf-8"))["cards"]
+            self.assertEqual([card["canonical_name"] for card in cards_after], ["Izanami"])
+            transactions = load_card_agent_transactions(paths.stage11)
+            self.assertEqual(len(transactions), 1)
+            self.assertEqual(transactions[0]["request_text"], "Pandora's mother is Izanami")
+            self.assertEqual([step["tool_name"] for step in transactions[0]["steps"]], [call["tool_name"] for call in tool_calls])
+
+    def test_cardbase_agent_canonical_rename_updates_targets_and_undo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            old_name = "Hierarchical Embedded Cognitive Template for Recursive Architectures"
+            old_card_id = card_id_for_entity(old_name)
+            new_card_id = card_id_for_entity("HECTR")
+            entities = [
+                {
+                    "entity_id": "entity_hectr",
+                    "card_id": old_card_id,
+                    "canonical_name": old_name,
+                    "entity_type": "character",
+                    "aliases": ["HECTR"],
+                    "resolution_status": "resolved",
+                },
+                {
+                    "entity_id": "entity_ruinr",
+                    "card_id": "card_ruinr",
+                    "canonical_name": "RUINR",
+                    "entity_type": "character",
+                    "aliases": [],
+                    "resolution_status": "resolved",
+                },
+            ]
+            claim = {
+                "claim_id": "claim_hectr_role",
+                "target_entity_id": "entity_hectr",
+                "target_card_id": old_card_id,
+                "target_entity_name": old_name,
+                "knowledge_track": "lore",
+                "claim_text": "HECTR is the repurposed war AI of the Krypteia.",
+                "claim_type": "background",
+                "source_snippet_ids": ["snippet_hectr"],
+                "confidence": 0.95,
+                "status": "draft",
+            }
+            write_json(paths.resolved_entities, {"resolved_entities": entities})
+            write_json(
+                paths.identity_merged_entities_preview,
+                {
+                    "source_entity_count": 2,
+                    "merged_entity_count": 2,
+                    "merge_record_count": 0,
+                    "target_map": {},
+                    "sources_by_target": {},
+                    "entities": entities,
+                },
+            )
+            write_json(paths.claim_drafts, {"claims": [claim]})
+            write_json(paths.claim_review_decisions, {"decisions": [{"claim_id": claim["claim_id"], "decision": "accept"}]})
+            write_json(
+                paths.author_claims,
+                {
+                    "claims": [
+                        {
+                            "claim_id": "author_claim_old_hectr",
+                            "target_entity_id": "entity_hectr",
+                            "target_card_id": old_card_id,
+                            "target_entity_name": old_name,
+                            "knowledge_track": "lore",
+                            "claim_text": "The canonical name is being shortened.",
+                            "claim_type": "lore_fact",
+                            "status": "accepted",
+                        }
+                    ]
+                },
+            )
+            write_json(paths.card_drafts, {"cards": []})
+            write_json(
+                paths.canonical_cards,
+                {
+                    "cards": [
+                        {
+                            "card_id": old_card_id,
+                            "canonical_name": old_name,
+                            "entity_type": "character",
+                            "aliases": ["HECTR"],
+                            "status": "canonical",
+                            "summary": "HECTR has a long generated title.",
+                            "details": {"entity_id": "entity_hectr", "accepted_claim_ids": ["claim_hectr_role"], "wiki_links": []},
+                            "relationships": [],
+                        },
+                        {
+                            "card_id": "card_ruinr",
+                            "canonical_name": "RUINR",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "status": "canonical",
+                            "summary": "RUINR relies on HECTR.",
+                            "details": {
+                                "entity_id": "entity_ruinr",
+                                "wiki_links": [
+                                    {
+                                        "target_entity_id": "entity_hectr",
+                                        "target_card_id": old_card_id,
+                                        "target_entity_name": old_name,
+                                        "relation_type": "depends_on",
+                                        "section": "relationships",
+                                    }
+                                ],
+                            },
+                            "relationships": [
+                                {
+                                    "target_entity_id": "entity_hectr",
+                                    "target_card_id": old_card_id,
+                                    "target_entity_name": old_name,
+                                    "relation_type": "depends_on",
+                                    "note": "RUINR is connected to the old HECTR title.",
+                                }
+                            ],
+                        },
+                    ]
+                },
+            )
+            memory_path = root / "canon" / "review_memory.json"
+            write_json(
+                memory_path,
+                {
+                    "version": 1,
+                    "accepted_claims": [],
+                    "rejected_claims": [],
+                    "approved_aliases": [],
+                    "entity_merges": [],
+                    "approved_cards": [],
+                    "author_directives": [],
+                    "style_corrections": [],
+                    "updated_at_utc": "2026-05-20T00:00:00Z",
+                },
+            )
+            pre_memory = json.loads(memory_path.read_text(encoding="utf-8"))
+            pre_entities = json.loads(paths.resolved_entities.read_text(encoding="utf-8"))
+            pre_claims = json.loads(paths.claim_drafts.read_text(encoding="utf-8"))
+            pre_author_claims = json.loads(paths.author_claims.read_text(encoding="utf-8"))
+            pre_cards = json.loads(paths.canonical_cards.read_text(encoding="utf-8"))
+            tool_calls = [
+                {"tool_name": "search_entities", "arguments": {"query": "HECTR"}, "rationale": "Find the entity currently known by the HECTR alias."},
+                {"tool_name": "get_entity", "arguments": {"entity_id": "entity_hectr"}, "rationale": "Confirm the current canonical name."},
+                {"tool_name": "get_claims", "arguments": {"entity_id": "entity_hectr"}, "rationale": "Inspect claims before renaming."},
+                {"tool_name": "get_relationships", "arguments": {"entity_id": "entity_hectr"}, "rationale": "Inspect inbound references."},
+                {
+                    "tool_name": "apply_canonical_rename",
+                    "arguments": {
+                        "entity_id": "entity_hectr",
+                        "canonical_name": "HECTR",
+                        "claim_text": "HECTR is the canonical name.",
+                        "rationale": "The author requests HECTR as the canonical card name.",
+                        "confidence": 1.0,
+                    },
+                    "rationale": "Apply the canonical rename.",
+                },
+                {"tool_name": "check_consistency", "arguments": {"renamed_entity_id": "entity_hectr", "canonical_name": "HECTR"}, "rationale": "Verify the rename."},
+                {"tool_name": "finish", "arguments": {"final_response": "HECTR is now canonical."}, "final_response": "HECTR is now canonical.", "rationale": "Rename verified."},
+            ]
+
+            with patch("pipeline.cardbase_agent.call_model_chat", side_effect=tool_calls):
+                result = run_card_agent_request(
+                    artifacts_root=root,
+                    instruction_text="Can you make HECTR the canonical name?",
+                    requester="test",
+                    review_memory_path=memory_path,
+                    config_path=root / "missing_config.json",
+                )
+
+            self.assertEqual(result["status"], "completed")
+            entities_after = json.loads(paths.resolved_entities.read_text(encoding="utf-8"))["resolved_entities"]
+            hectr = next(entity for entity in entities_after if entity["entity_id"] == "entity_hectr")
+            self.assertEqual(hectr["canonical_name"], "HECTR")
+            self.assertEqual(hectr["card_id"], new_card_id)
+            self.assertIn(old_name, hectr["aliases"])
+            claims_after = json.loads(paths.claim_drafts.read_text(encoding="utf-8"))["claims"]
+            self.assertEqual(claims_after[0]["target_entity_name"], "HECTR")
+            self.assertEqual(claims_after[0]["target_card_id"], new_card_id)
+            author_claims_after = json.loads(paths.author_claims.read_text(encoding="utf-8"))["claims"]
+            self.assertTrue(all(claim["target_entity_name"] == "HECTR" for claim in author_claims_after))
+            cards_after = json.loads(paths.canonical_cards.read_text(encoding="utf-8"))["cards"]
+            self.assertIn(new_card_id, {card["card_id"] for card in cards_after})
+            self.assertNotIn(old_card_id, {card["card_id"] for card in cards_after})
+            ruinr = next(card for card in cards_after if card["card_id"] == "card_ruinr")
+            self.assertEqual(ruinr["relationships"][0]["target_entity_name"], "HECTR")
+            self.assertEqual(ruinr["relationships"][0]["target_card_id"], new_card_id)
+            self.assertEqual(ruinr["details"]["wiki_links"][0]["target_entity_name"], "HECTR")
+            self.assertEqual(ruinr["details"]["wiki_links"][0]["target_card_id"], new_card_id)
+            memory = json.loads(memory_path.read_text(encoding="utf-8"))
+            self.assertEqual(memory["canonical_renames"][0]["old_canonical_name"], old_name)
+            self.assertEqual(memory["canonical_renames"][0]["canonical_name"], "HECTR")
+            self.assertEqual(memory["approved_aliases"][0]["alias_text"], old_name)
+            redirects = json.loads((paths.stage11 / "card_redirects.json").read_text(encoding="utf-8"))["redirects"]
+            self.assertEqual(redirects[0]["source_entity_name"], old_name)
+            self.assertEqual(redirects[0]["target_entity_name"], "HECTR")
+            transaction = load_card_agent_transactions(paths.stage11)[0]
+            self.assertEqual(transaction["status"], "completed")
+            self.assertIn("apply_canonical_rename", [step["tool_name"] for step in transaction["steps"]])
+            self.assertTrue(transaction["validation"]["ok"])
+
+            undo = undo_card_agent_transaction(paths.stage11, transaction["transaction_id"], reviewer="test", rationale="Undo rename.")
+            self.assertEqual(undo["status"], "completed_reversal")
+            self.assertEqual(json.loads(memory_path.read_text(encoding="utf-8")), pre_memory)
+            self.assertEqual(json.loads(paths.resolved_entities.read_text(encoding="utf-8")), pre_entities)
+            self.assertEqual(json.loads(paths.claim_drafts.read_text(encoding="utf-8")), pre_claims)
+            self.assertEqual(json.loads(paths.author_claims.read_text(encoding="utf-8")), pre_author_claims)
+            self.assertEqual(json.loads(paths.canonical_cards.read_text(encoding="utf-8")), pre_cards)
+            self.assertEqual(json.loads((paths.stage11 / "card_redirects.json").read_text(encoding="utf-8"))["redirects"], [])
+
+    def test_cardbase_agent_removal_rejects_claims_and_removes_card(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            write_json(
+                paths.resolved_entities,
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_morgan_blackhand",
+                            "card_id": "card_morgan_blackhand",
+                            "canonical_name": "Morgan Blackhand",
+                            "entity_type": "character",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                        {
+                            "entity_id": "entity_theriac",
+                            "card_id": "card_theriac",
+                            "canonical_name": "Theriac",
+                            "entity_type": "organization",
+                            "aliases": [],
+                            "resolution_status": "resolved",
+                        },
+                    ]
+                },
+            )
+            claims = [
+                {
+                    "claim_id": "claim_morgan_role",
+                    "target_entity_id": "entity_morgan_blackhand",
+                    "target_card_id": "card_morgan_blackhand",
+                    "target_entity_name": "Morgan Blackhand",
+                    "knowledge_track": "lore",
+                    "claim_text": "Morgan Blackhand is involved with THERIAC operations.",
+                    "claim_type": "role",
+                    "source_snippet_ids": ["snippet_morgan"],
+                    "confidence": 0.81,
+                    "status": "draft",
+                },
+                {
+                    "claim_id": "claim_theriac",
+                    "target_entity_id": "entity_theriac",
+                    "target_card_id": "card_theriac",
+                    "target_entity_name": "Theriac",
+                    "knowledge_track": "lore",
+                    "claim_text": "Theriac is the main project.",
+                    "claim_type": "background",
+                    "source_snippet_ids": ["snippet_theriac"],
+                    "confidence": 0.9,
+                    "status": "draft",
+                },
+            ]
+            write_json(paths.claim_drafts, {"claims": claims})
+            write_json(
+                paths.claim_review_decisions,
+                {
+                    "decisions": [
+                        {"claim_id": "claim_morgan_role", "decision": "accept", "reviewer": "r", "rationale": "old"},
+                        {"claim_id": "claim_theriac", "decision": "accept", "reviewer": "r", "rationale": "ok"},
+                    ]
+                },
+            )
+            write_json(paths.author_claims, {"claims": []})
+            write_json(paths.card_drafts, {"cards": []})
+            write_json(
+                paths.canonical_cards,
+                {
+                    "cards": [
+                        {
+                            "card_id": "card_morgan_blackhand",
+                            "canonical_name": "Morgan Blackhand",
+                            "details": {"entity_id": "entity_morgan_blackhand", "wiki_links": []},
+                            "relationships": [],
+                        },
+                        {
+                            "card_id": "card_theriac",
+                            "canonical_name": "Theriac",
+                            "details": {
+                                "entity_id": "entity_theriac",
+                                "wiki_links": [
+                                    {
+                                        "target_entity_id": "entity_morgan_blackhand",
+                                        "target_card_id": "card_morgan_blackhand",
+                                        "target_entity_name": "Morgan Blackhand",
+                                        "relation_type": "mentions",
+                                    }
+                                ],
+                            },
+                            "relationships": [
+                                {
+                                    "target_entity_id": "entity_morgan_blackhand",
+                                    "target_card_id": "card_morgan_blackhand",
+                                    "target_entity_name": "Morgan Blackhand",
+                                    "relation_type": "mentions",
+                                }
+                            ],
+                        },
+                    ]
+                },
+            )
+            memory_path = root / "canon" / "review_memory.json"
+            write_json(
+                memory_path,
+                {
+                    "version": 1,
+                    "accepted_claims": [claims[0]],
+                    "rejected_claims": [],
+                    "approved_aliases": [],
+                    "entity_merges": [],
+                    "approved_cards": [],
+                    "author_directives": [],
+                    "style_corrections": [],
+                    "updated_at_utc": "2026-05-21T00:00:00Z",
+                },
+            )
+            tool_calls = [
+                {"tool_name": "get_entity", "arguments": {"name": "Morgan Blackhand"}, "rationale": "Confirm the entity."},
+                {"tool_name": "get_claims", "arguments": {"entity_id": "entity_morgan_blackhand"}, "rationale": "Inspect claims before removal."},
+                {
+                    "tool_name": "remove_entity_from_cardbase",
+                    "arguments": {
+                        "entity_id": "entity_morgan_blackhand",
+                        "rationale": "Author says Morgan Blackhand is not a THERIAC character and should be removed.",
+                        "confidence": 1.0,
+                    },
+                    "rationale": "Remove the non-THERIAC character and reject its claims.",
+                },
+                {"tool_name": "check_consistency", "arguments": {"removed_entity_id": "entity_morgan_blackhand"}, "rationale": "Verify removal."},
+                {"tool_name": "finish", "arguments": {"final_response": "Removed Morgan Blackhand."}, "final_response": "Removed Morgan Blackhand.", "rationale": "Removal verified."},
+            ]
+
+            with patch("pipeline.cardbase_agent.call_model_chat", side_effect=tool_calls):
+                result = run_card_agent_request(
+                    artifacts_root=root,
+                    instruction_text="Morgan Blackhand is not a Theriac character and should be removed.",
+                    requester="test",
+                    review_memory_path=memory_path,
+                    config_path=root / "missing_config.json",
+                )
+
+            self.assertEqual(result["status"], "completed")
+            decisions = json.loads(paths.claim_review_decisions.read_text(encoding="utf-8"))["decisions"]
+            self.assertEqual(decisions[-1]["claim_id"], "claim_morgan_role")
+            self.assertEqual(decisions[-1]["decision"], "reject")
+            self.assertEqual(decisions[-1]["reviewer"], "cardbase_agent")
+            self.assertNotEqual(decisions[-1]["claim_id"], "claim_theriac")
+            cards_after = json.loads(paths.canonical_cards.read_text(encoding="utf-8"))["cards"]
+            self.assertNotIn("card_morgan_blackhand", {card["card_id"] for card in cards_after})
+            resolved_after = json.loads(paths.resolved_entities.read_text(encoding="utf-8"))["resolved_entities"]
+            self.assertNotIn("Morgan Blackhand", [entity["canonical_name"] for entity in resolved_after])
+            theriac_card = next(card for card in cards_after if card["card_id"] == "card_theriac")
+            self.assertEqual(theriac_card["relationships"], [])
+            self.assertEqual(theriac_card["details"]["wiki_links"], [])
+            self.assertEqual(json.loads(paths.author_claims.read_text(encoding="utf-8"))["claims"], [])
+            memory = json.loads(memory_path.read_text(encoding="utf-8"))
+            self.assertEqual(memory["accepted_claims"], [])
+            self.assertEqual(memory["rejected_claims"][0]["claim_id"], "claim_morgan_role")
+            self.assertEqual(memory["removed_entities"][0]["canonical_name"], "Morgan Blackhand")
+            transaction = load_card_agent_transactions(paths.stage11)[0]
+            self.assertEqual(transaction["status"], "completed")
+            self.assertIn("remove_entity_from_cardbase", [step["tool_name"] for step in transaction["steps"]])
+            progress = card_agent_progress_payload(root, max_lines=20)
+            self.assertGreaterEqual(progress["total_scanned"], len(tool_calls) + 2)
+            self.assertIn("completed", progress["latest_line"])
+            self.assertTrue(any("remove_entity_from_cardbase" in line for line in progress["lines"]))
+            changed_paths = {Path(item["path"]).name for item in transaction["write_set"] if item.get("changed")}
+            self.assertIn("claim_review_decisions.json", changed_paths)
+            self.assertIn("canonical_cards.json", changed_paths)
+            self.assertIn("resolved_entities.json", changed_paths)
+
+    def test_desktop_merged_entity_inventory_hides_removed_entities_from_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            active = repo / "artifacts" / "runs" / "run_removed"
+            paths = ArtifactPaths(active)
+            write_json(
+                paths.identity_merged_entities_preview,
+                {
+                    "generated_at_utc": "2026-05-21T00:00:00Z",
+                    "mode": "test",
+                    "source_entity_count": 2,
+                    "merged_entity_count": 2,
+                    "merge_record_count": 0,
+                    "target_map": {},
+                    "sources_by_target": {},
+                    "entities": [
+                        {
+                            "entity_id": "entity_morgan_blackhand",
+                            "card_id": "card_morgan_blackhand",
+                            "canonical_name": "Morgan Blackhand",
+                            "entity_type": "character",
+                            "aliases": [],
+                        },
+                        {
+                            "entity_id": "entity_theriac",
+                            "card_id": "card_theriac",
+                            "canonical_name": "Theriac",
+                            "entity_type": "organization",
+                            "aliases": [],
+                        },
+                    ],
+                },
+            )
+            write_json(paths.claim_drafts, {"claims": []})
+            write_json(paths.claim_review_decisions, {"decisions": []})
+            write_json(paths.author_claims, {"claims": []})
+            write_json(
+                repo / "canon" / "review_memory.json",
+                {
+                    "removed_entities": [
+                        {
+                            "entity_id": "entity_morgan_blackhand",
+                            "card_id": "card_morgan_blackhand",
+                            "canonical_name": "Morgan Blackhand",
+                        }
+                    ]
+                },
+            )
+
+            inventory = handle_request(
+                {
+                    "repo_root": str(repo),
+                    "command": "entity_inventory",
+                    "payload": {"artifacts_root": str(active)},
+                }
+            )
+
+            merged_names = [row["candidate_name"] for row in inventory["merged_rows"]]
+            self.assertNotIn("Morgan Blackhand", merged_names)
+            self.assertIn("Theriac", merged_names)
+
+    def test_tauri_app_config_saves_bootstrap_doc_and_openrouter_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            config_path = repo / "config" / "pipeline_config.json"
+            bootstrap_doc = repo / "docs" / "lore.docx"
+            bootstrap_doc.parent.mkdir(parents=True)
+            bootstrap_doc.write_bytes(b"not a real docx; config validation only")
+            write_json(
+                config_path,
+                {
+                    "paths": {
+                        "docx_lore_bible": "old.docx",
+                        "discord_conversations_root": "discord_conversations",
+                        "artifacts_root": "artifacts",
+                    },
+                    "model_provider": {"provider": "openrouter"},
+                },
+            )
+            (repo / ".env").write_text("OPENROUTER_KEY=old-key\nOTHER_VALUE=kept\n", encoding="utf-8")
+
+            saved = handle_request(
+                {
+                    "repo_root": str(repo),
+                    "command": "save_app_config",
+                    "payload": {
+                        "bootstrap_doc_path": str(bootstrap_doc),
+                        "openrouter_api_key": "sk-or-test-key",
+                    },
+                }
+            )
+
+            self.assertEqual(saved["bootstrap_doc_config_value"], "docs/lore.docx")
+            self.assertTrue(saved["bootstrap_doc_exists"])
+            self.assertTrue(saved["openrouter_key_present"])
+            self.assertNotIn("sk-or-test-key", json.dumps(saved))
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(config["paths"]["docx_lore_bible"], "docs/lore.docx")
+            env_text = (repo / ".env").read_text(encoding="utf-8")
+            self.assertIn("OPENROUTER_API_KEY=sk-or-test-key", env_text)
+            self.assertNotIn("OPENROUTER_KEY=old-key", env_text)
+            self.assertIn("OTHER_VALUE=kept", env_text)
+
+            loaded = handle_request({"repo_root": str(repo), "command": "app_config", "payload": {}})
+            self.assertEqual(loaded["bootstrap_doc_config_value"], "docs/lore.docx")
+            self.assertEqual(loaded["openrouter_key_preview"], "sk-or-...-key")
 
     def test_stage_11_cardbase_agent_merges_pandoras_mother_into_izanami_before_synthesis(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4171,6 +5571,151 @@ class PipelineV2Tests(unittest.TestCase):
             transactions = load_card_agent_transactions(paths.stage11)
             self.assertEqual(transactions[0]["status"], "completed")
             self.assertIn("apply_identity_merge", [step["tool_name"] for step in transactions[0]["steps"]])
+
+    def test_stage_11_uses_preexisting_memory_merges_to_skip_duplicate_card_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            write_json(
+                paths.resolved_entities,
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_laser",
+                            "card_id": "card_laser",
+                            "canonical_name": "Orbital Laser Weapon",
+                            "entity_type": "location",
+                            "aliases": ["Space Warship"],
+                        },
+                        {
+                            "entity_id": "entity_garuda",
+                            "card_id": "card_garuda",
+                            "canonical_name": "The Garuda",
+                            "entity_type": "location",
+                            "aliases": ["Garuda"],
+                        },
+                    ]
+                },
+            )
+            write_json(
+                paths.claim_drafts,
+                {
+                    "claims": [
+                        {
+                            "claim_id": "claim_laser",
+                            "target_entity_id": "entity_laser",
+                            "target_card_id": "card_laser",
+                            "target_entity_name": "Orbital Laser Weapon",
+                            "knowledge_track": "lore",
+                            "claim_type": "background",
+                            "claim_text": "The orbital laser weapon melts roads.",
+                        },
+                        {
+                            "claim_id": "claim_garuda",
+                            "target_entity_id": "entity_garuda",
+                            "target_card_id": "card_garuda",
+                            "target_entity_name": "The Garuda",
+                            "knowledge_track": "lore",
+                            "claim_type": "background",
+                            "claim_text": "The Garuda is a space-based weapon system.",
+                        },
+                    ]
+                },
+            )
+            write_json(
+                paths.claim_review_decisions,
+                {
+                    "decisions": [
+                        {"claim_id": "claim_laser", "decision": "accept"},
+                        {"claim_id": "claim_garuda", "decision": "accept"},
+                    ]
+                },
+            )
+            write_json(paths.card_review_decisions, {"decisions": []})
+            write_json(paths.author_directives, {"directives": []})
+            write_json(paths.canonical_cards, {"cards": []})
+            write_json(paths.identity_merge_proposals, {"proposals": []})
+            write_json(paths.identity_merge_decisions, {"decisions": []})
+            memory_path = root / "canon" / "review_memory.json"
+            write_json(
+                memory_path,
+                {
+                    "version": 1,
+                    "accepted_claims": [],
+                    "rejected_claims": [],
+                    "approved_aliases": [],
+                    "entity_merges": [
+                        {
+                            "merge_id": "merge_laser_garuda",
+                            "source_entity_id": "entity_laser",
+                            "source_card_id": "card_laser",
+                            "source_entity_name": "Orbital Laser Weapon",
+                            "target_entity_id": "entity_garuda",
+                            "target_card_id": "card_garuda",
+                            "target_entity_name": "The Garuda",
+                            "canonical_name": "The Garuda",
+                            "alias_text": "Orbital Laser Weapon",
+                            "merge_type": "cardbase_agent_identity_merge",
+                        }
+                    ],
+                    "approved_cards": [],
+                    "author_directives": [],
+                    "style_corrections": [],
+                    "updated_at_utc": "2026-05-20T00:00:00Z",
+                },
+            )
+            synthesis_prompts: list[str] = []
+
+            def fake_synthesis(prompt: str, **_kwargs: Any) -> dict[str, Any]:
+                synthesis_prompts.append(prompt)
+                return {
+                    "summary": "The Garuda is a space-based weapon that melts roads.",
+                    "sections": {
+                        "background": "The Garuda is a space-based weapon system that melts roads.",
+                        "role_in_story": "",
+                        "relationships": "",
+                        "timeline": "",
+                        "inspirations": "",
+                        "open_questions": "",
+                    },
+                    "relationships": [],
+                    "timeline": [],
+                    "wiki_links": [],
+                    "support_map": {
+                        "summary": ["claim_laser", "claim_garuda"],
+                        "background": ["claim_laser", "claim_garuda"],
+                        "role_in_story": [],
+                        "relationships": [],
+                        "timeline": [],
+                        "inspirations": [],
+                        "open_questions": [],
+                    },
+                }
+
+            with patch("pipeline.stage_11_card_synthesis.call_model_chat", side_effect=fake_synthesis):
+                run_stage_11(
+                    paths.resolved_entities,
+                    paths.claim_drafts,
+                    paths.claim_review_decisions,
+                    paths.card_review_decisions,
+                    paths.author_directives,
+                    memory_path,
+                    paths.card_drafts,
+                    paths.canonical_cards,
+                    paths.merge_log,
+                    None,
+                )
+
+            self.assertEqual(len(synthesis_prompts), 1)
+            draft_cards = json.loads(paths.card_drafts.read_text(encoding="utf-8"))["cards"]
+            self.assertEqual(len(draft_cards), 1)
+            self.assertEqual(draft_cards[0]["canonical_name"], "The Garuda")
+            self.assertIn("Orbital Laser Weapon", draft_cards[0]["aliases"])
+            self.assertNotIn("Orbital Laser Weapon", [card["canonical_name"] for card in draft_cards])
+            self.assertEqual(
+                set(draft_cards[0]["details"]["accepted_claim_ids"]),
+                {"claim_laser", "claim_garuda"},
+            )
 
     def test_stage_11_card_synthesis_prompt_includes_original_source_snippet_context(self) -> None:
         prompt = build_card_synthesis_prompt(
@@ -6406,7 +7951,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("__theriac_new_run__", html)
             self.assertIn("New run selected", html)
 
-    def test_pipeline_resume_starts_at_entity_resolution_after_entity_decisions(self) -> None:
+    def test_pipeline_resume_ignores_legacy_entity_decisions_after_07a_harvest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(root / "01_bootstrap" / "entity_seed.json", {"entities": []})
@@ -6423,6 +7968,11 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(root / "05_alias" / "resolved_entities.json", {"resolved_entities": []})
             write_json(root / "05_alias" / "alias_map.json", {"aliases": []})
             write_json(root / "05_alias" / "entity_timelines.json", {"entity_timelines": {}})
+            write_json(root / "05_alias" / "entity_candidate_harvest.json", {"schema_version": 1, "candidates": []})
+            write_json(root / "05_alias" / "entity_adjudication_recommendations.json", {"schema_version": 1, "recommendations": []})
+            write_json(root / "05_alias" / "externality_cache.json", {"schema_version": 1, "entries": {}})
+            write_json(root / "05_alias" / "theme_profile_update_report.json", {"schema_version": 1, "summary": {"theme_count": 0}})
+            write_json(root / "05_alias" / "theme_candidate_reclassification.json", {"schema_version": 1, "candidate_reclassifications": []})
             write_json(root / "05_alias" / "conversation_entity_proposals.json", {"proposals": [{"proposal_id": "p1"}]})
             write_json(root / "04_grouping" / "snippet_clusters_lore.json", {"clusters": []})
             write_json(root / "04_grouping" / "snippet_clusters_meta.json", {"clusters": []})
@@ -6439,8 +7989,8 @@ class PipelineV2Tests(unittest.TestCase):
 
             stage, reason = determine_resume_start_stage(root)
 
-            self.assertEqual(stage, 7)
-            self.assertIn("decisions changed", reason)
+            self.assertEqual(stage, 10)
+            self.assertIn("Stage 10", reason)
 
     def test_pipeline_resume_starts_at_patch_notes_when_stage_04_is_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6593,6 +8143,122 @@ class PipelineV2Tests(unittest.TestCase):
                 load_project_env(repo)
                 self.assertEqual(__import__("os").environ["GEMINI_API_KEY"], "fake-gemini")
                 self.assertEqual(__import__("os").environ["MODEL_API_KEY"], "fake-model")
+
+    def test_tauri_entity_views_include_card_agent_memory_merges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            active = repo / "artifacts" / "runs" / "run_1"
+            paths = ArtifactPaths(active)
+            write_json(
+                paths.resolved_entities,
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_laser",
+                            "card_id": "card_laser",
+                            "canonical_name": "Orbital Laser Weapon",
+                            "entity_type": "location",
+                            "aliases": ["Space Warship"],
+                        },
+                        {
+                            "entity_id": "entity_garuda",
+                            "card_id": "card_garuda",
+                            "canonical_name": "The Garuda",
+                            "entity_type": "location",
+                            "aliases": ["Garuda"],
+                        },
+                        {
+                            "entity_id": "entity_majapahit",
+                            "card_id": "card_majapahit",
+                            "canonical_name": "Majapahit",
+                            "entity_type": "faction",
+                            "aliases": [],
+                        },
+                    ]
+                },
+            )
+            write_json(paths.conversation_entity_proposals, {"proposals": []})
+            write_json(paths.conversation_entity_decisions, {"decisions": []})
+            write_json(paths.identity_merge_proposals, {"proposals": []})
+            write_json(paths.identity_merge_decisions, {"decisions": []})
+            write_json(
+                paths.claim_drafts,
+                {
+                    "claims": [
+                        {
+                            "claim_id": "claim_laser",
+                            "target_entity_id": "entity_laser",
+                            "target_card_id": "card_laser",
+                            "target_entity_name": "Orbital Laser Weapon",
+                            "claim_type": "relationship",
+                            "knowledge_track": "lore",
+                            "claim_text": "The orbital laser weapon was built by Majapahit.",
+                            "proposed_relationship_hints": [
+                                {
+                                    "target_entity_id": "entity_majapahit",
+                                    "target_card_id": "card_majapahit",
+                                    "target_entity_name": "Majapahit",
+                                    "relation_type": "built_by",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+            write_json(paths.claim_review_decisions, {"decisions": [{"claim_id": "claim_laser", "decision": "accept"}]})
+            write_json(paths.author_claims, {"claims": []})
+            write_json(
+                repo / "canon" / "review_memory.json",
+                {
+                    "entity_merges": [
+                        {
+                            "merge_id": "merge_laser_garuda",
+                            "source_entity_id": "entity_laser",
+                            "source_card_id": "card_laser",
+                            "source_entity_name": "Orbital Laser Weapon",
+                            "target_entity_id": "entity_garuda",
+                            "target_card_id": "card_garuda",
+                            "target_entity_name": "The Garuda",
+                            "canonical_name": "The Garuda",
+                            "alias_text": "Orbital Laser Weapon",
+                            "merge_type": "cardbase_agent_identity_merge",
+                        }
+                    ]
+                },
+            )
+
+            inventory = handle_request(
+                {
+                    "repo_root": str(repo),
+                    "command": "entity_inventory",
+                    "payload": {"artifacts_root": str(active)},
+                }
+            )
+
+            merged_names = [row["candidate_name"] for row in inventory["merged_rows"]]
+            self.assertIn("The Garuda", merged_names)
+            self.assertNotIn("Orbital Laser Weapon", merged_names)
+            garuda = next(row for row in inventory["merged_rows"] if row["candidate_name"] == "The Garuda")
+            self.assertIn("Orbital Laser Weapon", garuda["item"]["aliases"])
+            self.assertIn("Space Warship", garuda["item"]["aliases"])
+            self.assertIn("Garuda", garuda["item"]["aliases"])
+            self.assertEqual(garuda["topics"], [])
+            self.assertNotIn("Merged from 1", garuda["triage_reason"])
+            self.assertEqual([source["canonical_name"] for source in garuda["item"]["merged_from_entities"]], ["Orbital Laser Weapon"])
+
+            graph = handle_request(
+                {
+                    "repo_root": str(repo),
+                    "command": "entity_relationships",
+                    "payload": {"artifacts_root": str(active)},
+                }
+            )
+
+            node_names = [node["name"] for node in graph["nodes"]]
+            self.assertIn("The Garuda", node_names)
+            self.assertNotIn("Orbital Laser Weapon", node_names)
+            garuda_node = next(node for node in graph["nodes"] if node["name"] == "The Garuda")
+            self.assertIn("Orbital Laser Weapon", garuda_node["aliases"])
 
     def test_desktop_text_word_delete_boundaries(self) -> None:
         text = "The Lab answers quickly"

@@ -21,6 +21,7 @@
   let localError = "";
   let viewMode: "merged" | "candidates" = "merged";
   let expanded: Record<string, boolean> = {};
+  let aliasExpanded: Record<string, boolean> = {};
   let rationales: Record<string, string> = {};
   let workingCanonical: Record<string, string> = {};
   let workingType: Record<string, string> = {};
@@ -43,6 +44,7 @@
         row.proposed_entity_type,
         row.triage_reason,
         row.decision,
+        ...rowAliases(row),
         ...(row.topics ?? []),
         ...(row.tracks ?? []),
       ]
@@ -116,7 +118,20 @@
   function rowAliases(row: InventoryRow): string[] {
     const aliases = row.item?.aliases;
     if (!Array.isArray(aliases)) return [];
-    return aliases.map((alias) => String(alias)).filter(Boolean).slice(0, 12);
+    return aliases.map((alias) => String(alias)).filter(Boolean);
+  }
+
+  function visibleAliases(row: InventoryRow): string[] {
+    const aliases = rowAliases(row);
+    return aliasExpanded[row.row_id] ? aliases : aliases.slice(0, 8);
+  }
+
+  function hiddenAliasCount(row: InventoryRow): number {
+    return Math.max(0, rowAliases(row).length - visibleAliases(row).length);
+  }
+
+  function toggleAliases(row: InventoryRow) {
+    aliasExpanded[row.row_id] = !aliasExpanded[row.row_id];
   }
 
   function sortRows(input: InventoryRow[]): InventoryRow[] {
@@ -252,11 +267,20 @@
 
         <p class="entity-card-preview">{row.triage_reason || textValue(row) || "No preview recorded."}</p>
 
-        {#if isMergedRow(row) && rowAliases(row).length}
-          <div class="inventory-meta compact-meta">
-            {#each rowAliases(row) as alias}
+        {#if rowAliases(row).length}
+          <div class="inventory-meta compact-meta alias-chip-list">
+            {#each visibleAliases(row) as alias}
               <span>{alias}</span>
             {/each}
+            {#if hiddenAliasCount(row)}
+              <button type="button" class="chip-toggle" on:click={() => toggleAliases(row)}>
+                +{hiddenAliasCount(row)} aliases
+              </button>
+            {:else if aliasExpanded[row.row_id] && rowAliases(row).length > 8}
+              <button type="button" class="chip-toggle" on:click={() => toggleAliases(row)}>
+                Show fewer
+              </button>
+            {/if}
           </div>
         {/if}
 
