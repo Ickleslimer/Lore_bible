@@ -22,6 +22,7 @@
   let viewMode: "merged" | "candidates" = "merged";
   let expanded: Record<string, boolean> = {};
   let aliasExpanded: Record<string, boolean> = {};
+  let themesExpanded: Record<string, boolean> = {};
   let rationales: Record<string, string> = {};
   let workingCanonical: Record<string, string> = {};
   let workingType: Record<string, string> = {};
@@ -131,7 +132,7 @@
   }
 
   function visibleThemeAssociations(row: InventoryRow): ThemeAssociationRow[] {
-    return themeAssociations(row).slice(0, 3);
+    return themesExpanded[row.row_id] ? themeAssociations(row) : themeAssociations(row).slice(0, 3);
   }
 
   function themeAssociationCount(row: InventoryRow): number {
@@ -139,7 +140,11 @@
   }
 
   function hiddenThemeAssociationCount(row: InventoryRow): number {
-    return Math.max(0, themeAssociationCount(row) - visibleThemeAssociations(row).length);
+    return Math.max(0, themeAssociationCount(row) - themeAssociations(row).slice(0, 3).length);
+  }
+
+  function toggleThemes(row: InventoryRow) {
+    themesExpanded[row.row_id] = !themesExpanded[row.row_id];
   }
 
   function evidenceThemeAssociations(row: InventoryRow): ThemeAssociationRow[] {
@@ -313,18 +318,18 @@
         </div>
 
         {#if visibleThemeAssociations(row).length}
-          <div class="entity-theme-summary">
+          <div class="inventory-meta compact-meta">
             {#each visibleThemeAssociations(row) as association}
-              <div class="entity-theme-chip">
-                <strong>{association.theme_label}</strong>
-                <span>{entityThemeRankLabel(association)}</span>
-                {#if themeCandidateRankLabel(association)}
-                  <span>{themeCandidateRankLabel(association)}</span>
-                {/if}
-              </div>
+              <span>{association.theme_label}</span>
             {/each}
-            {#if hiddenThemeAssociationCount(row)}
-              <span class="entity-theme-more">+{hiddenThemeAssociationCount(row)} more</span>
+            {#if hiddenThemeAssociationCount(row) && !themesExpanded[row.row_id]}
+              <button type="button" class="chip-toggle" on:click={() => toggleThemes(row)}>
+                +{hiddenThemeAssociationCount(row)} themes
+              </button>
+            {:else if themesExpanded[row.row_id] && themeAssociations(row).length > 3}
+              <button type="button" class="chip-toggle" on:click={() => toggleThemes(row)}>
+                Show fewer
+              </button>
             {/if}
           </div>
         {/if}
