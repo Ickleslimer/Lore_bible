@@ -11,6 +11,7 @@
   import ProgressRail from "./components/ProgressRail.svelte";
   import RelationshipGraphPanel from "./components/RelationshipGraphPanel.svelte";
   import RunSelector from "./components/RunSelector.svelte";
+  import ThemeLearningPanel from "./components/ThemeLearningPanel.svelte";
   import { loadClaimInventory, loadEntityInventory, loadIdentityClusters, loadState, selectRun } from "./lib/api";
   import type { AppState, IdentityClusterRow, InventoryRow } from "./lib/types";
 
@@ -26,7 +27,7 @@
   let inventoryLoading = false;
   let error = "";
   let configOpen = false;
-  type ActiveTab = "pipeline" | "claims" | "entities" | "identity" | "relationships" | "drafts" | "agent" | "overview";
+  type ActiveTab = "pipeline" | "claims" | "entities" | "themes" | "identity" | "relationships" | "drafts" | "agent" | "overview";
   let activeTab: ActiveTab = "pipeline";
 
   function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
@@ -193,6 +194,7 @@
       <button class:active={activeTab === "pipeline"} on:click={() => setTab("pipeline")}>Pipeline</button>
       <button class:active={activeTab === "claims"} on:click={() => setTab("claims")}>Claims</button>
       <button class:active={activeTab === "entities"} on:click={() => setTab("entities")}>Entities</button>
+      <button class:active={activeTab === "themes"} on:click={() => setTab("themes")}>Themes</button>
       <button class:active={activeTab === "identity"} on:click={() => setTab("identity")}>Identity</button>
       <button class:active={activeTab === "relationships"} on:click={() => setTab("relationships")}>Relationships</button>
       <button class:active={activeTab === "drafts"} on:click={() => setTab("drafts")}>Draft Cards</button>
@@ -253,6 +255,8 @@
           disabled={busy || inventoryLoading}
           on:changed={handleInventoryChanged}
         />
+      {:else if activeTab === "themes"}
+        <ThemeLearningPanel artifactsRoot={state.active_root} disabled={busy} />
       {:else if activeTab === "identity"}
         <IdentityMergePanel
           artifactsRoot={state.active_root}

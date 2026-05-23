@@ -298,7 +298,7 @@ def web_model_kwargs(provider_config: dict[str, Any], task_cfg: dict[str, Any]) 
     if "api_base_url" not in task_cfg:
         kwargs["api_base_url"] = "https://openrouter.ai/api/v1"
     if "api_model" not in task_cfg and "profile" not in task_cfg and "model_profile" not in task_cfg:
-        kwargs["api_model"] = "google/gemini-3.1-pro-preview"
+        kwargs["api_model"] = "openai/gpt-oss-120b"
     kwargs["timeout_seconds"] = max(int(kwargs.get("timeout_seconds", 60)), 180)
     kwargs["max_tokens"] = max(int(kwargs.get("max_tokens", 4096)), 3500)
     if not kwargs.get("tools"):
@@ -306,7 +306,7 @@ def web_model_kwargs(provider_config: dict[str, Any], task_cfg: dict[str, Any]) 
     if task_cfg.get("structured_outputs_enabled", True):
         kwargs["json_schema"] = MODEL_RESPONSE_SCHEMA
     if "rate_state_path" not in task_cfg:
-        kwargs["rate_state_path"] = Path("artifacts/learning/openrouter_stage_07b_externality_rate_runtime.json")
+        kwargs["rate_state_path"] = Path("artifacts/learning/openrouter_gpt_oss_120b_stage_07b_rate_runtime.json")
     return kwargs
 
 
@@ -436,6 +436,7 @@ def theme_profile_summary(theme_profile: dict[str, Any]) -> dict[str, Any]:
             {
                 "theme_id": theme.get("theme_id", ""),
                 "label": theme.get("label", ""),
+                "theme_domain": theme.get("theme_domain", ""),
                 "theme_type": theme.get("theme_type", ""),
                 "confidence": theme.get("confidence", 0.0),
                 "positive_indicators": theme.get("positive_indicators", [])[:8],

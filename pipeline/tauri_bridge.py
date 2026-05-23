@@ -328,9 +328,16 @@ def _claim_rows(root: Path) -> list[dict[str, Any]]:
 def _entity_rows(root: Path) -> list[dict[str, Any]]:
     from pipeline.review_inventory import candidate_inventory_browser_rows, sort_candidate_inventory_rows
 
+    paths = ArtifactPaths(root)
+    source_path = paths.conversation_entity_proposals
+    if paths.entity_candidate_harvest.exists():
+        harvest_payload = _read_json_or_default(paths.entity_candidate_harvest, {"candidates": []})
+        harvest_candidates = harvest_payload.get("candidates", []) if isinstance(harvest_payload, dict) else []
+        if harvest_candidates or not source_path.exists():
+            source_path = paths.entity_candidate_harvest
     rows = candidate_inventory_browser_rows(
-        ArtifactPaths(root).conversation_entity_proposals,
-        ArtifactPaths(root).conversation_entity_decisions,
+        source_path,
+        paths.conversation_entity_decisions,
     )
     return _json_safe(sort_candidate_inventory_rows(rows, "bucket", False))
 
@@ -1215,6 +1222,144 @@ def handle_entity_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[st
     }
 
 
+def _theme_profile_path(repo_root: Path) -> Path:
+    return repo_root / "canon" / "theme_profile.json"
+
+
+def _theme_learning_association_id(theme_id: str, normalized_key: str, candidate_name: str) -> str:
+    source = f"{theme_id}|{normalized_key}|{candidate_name}".encode("utf-8", errors="ignore")
+    return f"theme_assoc:{hashlib.sha1(source).hexdigest()[:16]}"
+
+
+def _theme_status_counts(themes: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for theme in themes:
+        status = str(theme.get("status") or "unknown").strip() or "unknown"
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _theme_learning_payload(root: Path, repo_root: Path) -> dict[str, Any]:
+    migrate_run_artifacts_to_numbered(root)
+    paths = ArtifactPaths(root)
+    profile_path = _theme_profile_path(repo_root)
+    profile = _load_json_payload(
+        profile_path,
+        {"schema_version": 1, "updated_at_utc": None, "policy": {}, "themes": [], "theme_update_log": []},
+    )
+    report = _load_json_payload(paths.theme_profile_update_report, {"summary": {}, "applied_theme_updates": [], "raw_theme_updates": []})
+    reclassification = _load_json_payload(paths.theme_candidate_reclassification, {"summary": {}, "candidate_reclassifications": []})
+
+    themes = [
+        theme
+        for theme in (profile.get("themes", []) if isinstance(profile, dict) else [])
+        if isinstance(theme, dict)
+    ]
+    theme_labels = {
+        str(theme.get("theme_id") or "").strip(): str(theme.get("label") or theme.get("theme_id") or "").strip()
+        for theme in themes
+    }
+    associations: list[dict[str, Any]] = []
+    association_counts_by_theme: dict[str, int] = {}
+    for row in reclassification.get("candidate_reclassifications", []) if isinstance(reclassification, dict) else []:
+        if not isinstance(row, dict):
+            continue
+        candidate_name = str(row.get("candidate_name") or "").strip()
+        normalized_key = str(row.get("normalized_key") or normalized_name_key(candidate_name)).strip()
+        for match in row.get("theme_matches", []) or []:
+            if not isinstance(match, dict):
+                continue
+            theme_id = str(match.get("theme_id") or "").strip()
+            if not theme_id:
+                continue
+            theme_label = str(match.get("label") or theme_labels.get(theme_id) or theme_id).strip()
+            association_counts_by_theme[theme_id] = association_counts_by_theme.get(theme_id, 0) + 1
+            associations.append(
+                {
+                    "association_id": _theme_learning_association_id(theme_id, normalized_key, candidate_name),
+                    "theme_id": theme_id,
+                    "theme_label": theme_label,
+                    "theme_status": str(match.get("status") or ""),
+                    "candidate_id": str(row.get("candidate_id") or ""),
+                    "candidate_name": candidate_name,
+                    "normalized_key": normalized_key,
+                    "match_strength": match.get("match_strength"),
+                    "prior_boost": match.get("prior_boost"),
+                    "matched_indicators": _clean_text_list(match.get("matched_indicators", [])),
+                    "reason": str(match.get("reason") or ""),
+                    "theme_prior_boost": row.get("theme_prior_boost"),
+                    "theme_adjusted_lore_prior": row.get("theme_adjusted_lore_prior"),
+                    "base_local_lore_prior": row.get("base_local_lore_prior"),
+                    "base_external_reference_prior": row.get("base_external_reference_prior"),
+                    "externality_class": str(row.get("externality_class") or ""),
+                    "base_recommended_action": str(row.get("base_recommended_action") or ""),
+                    "base_recommended_track": str(row.get("base_recommended_track") or ""),
+                    "theme_adjusted_recommended_action": str(row.get("theme_adjusted_recommended_action") or ""),
+                    "theme_adjusted_recommended_track": str(row.get("theme_adjusted_recommended_track") or ""),
+                    "theme_reclassification_source": str(row.get("theme_reclassification_source") or ""),
+                    "model_reclassification_status": str(row.get("model_reclassification_status") or ""),
+                    "model_reasoning_summary": str(row.get("model_reasoning_summary") or ""),
+                    "why_not_auto_promote": str(row.get("why_not_auto_promote") or ""),
+                    "human_review_question": str(row.get("human_review_question") or ""),
+                }
+            )
+    associations.sort(
+        key=lambda item: (
+            str(item.get("theme_label") or "").lower(),
+            -float(item.get("match_strength") or 0.0),
+            -float(item.get("prior_boost") or 0.0),
+            str(item.get("candidate_name") or "").lower(),
+        )
+    )
+    update_summary = report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
+    reclassification_summary = reclassification.get("summary", {}) if isinstance(reclassification.get("summary"), dict) else {}
+    return {
+        "active_root": str(root),
+        "theme_profile_path": str(profile_path),
+        "update_report_path": str(paths.theme_profile_update_report),
+        "reclassification_path": str(paths.theme_candidate_reclassification),
+        "theme_count": len(themes),
+        "association_count": len(associations),
+        "themes": _json_safe(themes),
+        "associations": _json_safe(associations),
+        "policy": _json_safe(profile.get("policy", {}) if isinstance(profile, dict) else {}),
+        "theme_update_log": _json_safe(profile.get("theme_update_log", []) if isinstance(profile, dict) else []),
+        "applied_theme_updates": _json_safe(report.get("applied_theme_updates", []) if isinstance(report, dict) else []),
+        "raw_theme_updates": _json_safe(report.get("raw_theme_updates", []) if isinstance(report, dict) else []),
+        "summary": {
+            "theme_profile_exists": profile_path.exists(),
+            "theme_profile_updated_at_utc": profile.get("updated_at_utc") if isinstance(profile, dict) else "",
+            "theme_status_counts": _theme_status_counts(themes),
+            "association_counts_by_theme": association_counts_by_theme,
+            "theme_profile_schema_version": profile.get("schema_version") if isinstance(profile, dict) else None,
+            "theme_miner_summary": update_summary,
+            "theme_reclassification_summary": reclassification_summary,
+            "theme_miner_generated_at_utc": report.get("generated_at_utc") if isinstance(report, dict) else "",
+            "theme_reclassification_generated_at_utc": reclassification.get("generated_at_utc") if isinstance(reclassification, dict) else "",
+            "evidence_packet_count": int((report.get("inputs", {}) if isinstance(report.get("inputs"), dict) else {}).get("evidence_packet_count", 0) or 0),
+        },
+    }
+
+
+def handle_theme_learning(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    active = _active_root(repo_root, payload)
+    return _theme_learning_payload(active, repo_root) if active.exists() else {
+        "active_root": str(active),
+        "theme_profile_path": str(_theme_profile_path(repo_root)),
+        "update_report_path": str(ArtifactPaths(active).theme_profile_update_report),
+        "reclassification_path": str(ArtifactPaths(active).theme_candidate_reclassification),
+        "theme_count": 0,
+        "association_count": 0,
+        "themes": [],
+        "associations": [],
+        "policy": {},
+        "theme_update_log": [],
+        "applied_theme_updates": [],
+        "raw_theme_updates": [],
+        "summary": {"theme_profile_exists": _theme_profile_path(repo_root).exists()},
+    }
+
+
 def handle_entity_evidence(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     active = _active_root(repo_root, payload)
     row_id = str(payload.get("row_id") or "").strip()
@@ -1486,6 +1631,7 @@ COMMANDS = {
     "claim_inventory": handle_claim_inventory,
     "claim_decision": handle_claim_decision,
     "entity_inventory": handle_entity_inventory,
+    "theme_learning": handle_theme_learning,
     "entity_evidence": handle_entity_evidence,
     "entity_decision": handle_entity_decision,
     "draft_cards": handle_draft_cards,

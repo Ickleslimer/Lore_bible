@@ -16,36 +16,19 @@ THEME_UPDATE_REPORT_SCHEMA_VERSION = 1
 TASK_NAME = "stage_07c_theme_miner"
 THEME_STATUSES = {"candidate", "active", "deprecated", "meta_only", "rejected"}
 THEME_ACTIONS = {"create_theme", "update_theme", "deprecate_theme", "mark_meta_only", "reject_theme", "no_change"}
-THEME_CUE_TERMS = {
-    "abrahamic",
-    "akkadian",
-    "angel",
-    "annunaki",
-    "biblical",
-    "book of enoch",
-    "classical",
-    "deity",
-    "eden",
-    "enoch",
-    "gilgamesh",
-    "greek",
-    "hellenic",
-    "historical",
-    "inanna",
-    "krypteia",
-    "leonidas",
-    "mesopotamian",
-    "myth",
-    "mythological",
-    "religion",
-    "samael",
-    "sparta",
-    "spartan",
-    "sumer",
-    "sumerian",
-    "uruk",
-    "watchers",
+THEME_DOMAINS = {
+    "mythological_theological",
+    "technological_scientific",
+    "emotional_psychological",
+    "philosophical_ideological",
+    "aesthetic",
+    "historical_political",
+    "other",
 }
+DEFAULT_MAX_EVIDENCE_PACKETS = 80
+DEFAULT_MAX_SEED_THEME_ENTITY_PACKETS = 32
+DEFAULT_MAX_REVIEW_MEMORY_THEME_PACKETS = 48
+DEFAULT_MAX_ADJUDICATION_THEME_PACKETS = 48
 
 THEME_UPDATE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -58,6 +41,7 @@ THEME_UPDATE_SCHEMA: dict[str, Any] = {
                     "action": {"type": "string"},
                     "theme_id": {"type": "string"},
                     "label": {"type": "string"},
+                    "theme_domain": {"type": "string"},
                     "theme_type": {"type": "string"},
                     "status": {"type": "string"},
                     "confidence": {"type": "number"},
@@ -77,6 +61,7 @@ THEME_UPDATE_SCHEMA: dict[str, Any] = {
                     "action",
                     "theme_id",
                     "label",
+                    "theme_domain",
                     "theme_type",
                     "status",
                     "confidence",
@@ -214,6 +199,7 @@ def default_theme_policy() -> dict[str, Any]:
         "transitive_thematic_learning_not_transitive_canon": True,
         "theme_match_is_not_promotion_rule": True,
         "theme_provenance_required": True,
+        "theme_domains_are_separate_lanes": True,
     }
 
 
@@ -226,11 +212,17 @@ def stage_task_config(provider_config: dict[str, Any]) -> dict[str, Any]:
 
 def theme_model_kwargs(provider_config: dict[str, Any], task_cfg: dict[str, Any]) -> dict[str, Any]:
     kwargs = model_call_kwargs(provider_config, TASK_NAME)
+    if not task_cfg or "provider" not in task_cfg:
+        kwargs["provider"] = "openrouter"
+    if not task_cfg or "api_base_url" not in task_cfg:
+        kwargs["api_base_url"] = "https://openrouter.ai/api/v1"
+    if not task_cfg or "api_model" not in task_cfg:
+        kwargs["api_model"] = "deepseek/deepseek-v4-flash"
     kwargs["timeout_seconds"] = max(int(kwargs.get("timeout_seconds", 60)), 180)
     kwargs["max_tokens"] = max(int(kwargs.get("max_tokens", 4096)), 3500)
     kwargs["json_schema"] = THEME_UPDATE_SCHEMA
     if "rate_state_path" not in task_cfg:
-        kwargs["rate_state_path"] = Path("artifacts/learning/openrouter_stage_07c_theme_miner_rate_runtime.json")
+        kwargs["rate_state_path"] = Path("artifacts/learning/openrouter_deepseek_stage_07c_theme_miner_rate_runtime.json")
     return kwargs
 
 
@@ -241,13 +233,48 @@ def collect_theme_evidence(
     review_memory: dict[str, Any],
     task_cfg: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    limit = max(1, int(task_cfg.get("max_evidence_packets", 80) or 80))
-    packets: list[dict[str, Any]] = []
+    limit = max(1, int(task_cfg.get("max_evidence_packets", DEFAULT_MAX_EVIDENCE_PACKETS) or DEFAULT_MAX_EVIDENCE_PACKETS))
+    seed_limit = max(
+        0,
+        int(task_cfg.get("max_seed_theme_entity_packets", DEFAULT_MAX_SEED_THEME_ENTITY_PACKETS) or DEFAULT_MAX_SEED_THEME_ENTITY_PACKETS),
+    )
+    review_limit = max(
+        0,
+        int(task_cfg.get("max_review_memory_theme_packets", DEFAULT_MAX_REVIEW_MEMORY_THEME_PACKETS) or DEFAULT_MAX_REVIEW_MEMORY_THEME_PACKETS),
+    )
+    adjudication_limit = max(
+        0,
+        int(task_cfg.get("max_adjudication_theme_packets", DEFAULT_MAX_ADJUDICATION_THEME_PACKETS) or DEFAULT_MAX_ADJUDICATION_THEME_PACKETS),
+    )
     candidate_by_key = {
         normalized_name_key(str(item.get("normalized_name_key") or item.get("candidate_name") or "")): item
         for item in harvest.get("candidates", []) or []
         if isinstance(item, dict)
     }
+    packets: list[dict[str, Any]] = []
+    seed_packets = resolved_entity_theme_packets(resolved_entities, limit=seed_limit)
+    seed_theme_keys = theme_seed_keys(seed_packets)
+    packets.extend(seed_packets)
+    packets.extend(review_memory_theme_packets(review_memory, limit=review_limit, seed_theme_keys=seed_theme_keys))
+    packets.extend(adjudication_theme_packets(adjudication, candidate_by_key, limit=adjudication_limit))
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for packet in packets:
+        key = stable_id("theme_evidence", str(packet.get("source", "")), str(packet.get("entity_name", "")), str(packet.get("text", ""))[:500])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(packet)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def adjudication_theme_packets(adjudication: dict[str, Any], candidate_by_key: dict[str, dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    packets: list[dict[str, Any]] = []
+    if limit <= 0:
+        return packets
     for rec in adjudication.get("recommendations", []) or []:
         if not isinstance(rec, dict) or not adjudication_supports_theme_learning(rec):
             continue
@@ -276,19 +303,9 @@ def collect_theme_evidence(
                 "theme_matches": rec.get("theme_matches", []),
             }
         )
-    packets.extend(review_memory_theme_packets(review_memory, limit=max(0, limit - len(packets))))
-    packets.extend(resolved_entity_theme_packets(resolved_entities, limit=max(0, limit - len(packets))))
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for packet in packets:
-        key = stable_id("theme_evidence", str(packet.get("source", "")), str(packet.get("entity_name", "")), str(packet.get("text", ""))[:500])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(packet)
-        if len(deduped) >= limit:
+        if len(packets) >= limit:
             break
-    return deduped
+    return packets
 
 
 def adjudication_supports_theme_learning(rec: dict[str, Any]) -> bool:
@@ -300,22 +317,17 @@ def adjudication_supports_theme_learning(rec: dict[str, Any]) -> bool:
         return False
     if rec.get("theme_matches"):
         return True
-    text = compact_join(
-        [
-            rec.get("candidate_name", ""),
-            rec.get("reasoning_summary", ""),
-            " ".join(rec.get("in_world_signals", []) or []),
-            " ".join(f.get("finding", "") for f in rec.get("web_findings", []) or [] if isinstance(f, dict)),
-        ],
-        1600,
-    ).lower()
-    return any(term in text for term in THEME_CUE_TERMS) or str(rec.get("externality_class", "")) == "historical_or_mythological"
+    if str(rec.get("recommended_entity_type", "")) == "theme":
+        return True
+    return str(rec.get("externality_class", "")) == "historical_or_mythological"
 
 
-def review_memory_theme_packets(review_memory: dict[str, Any], limit: int) -> list[dict[str, Any]]:
-    packets: list[dict[str, Any]] = []
+def review_memory_theme_packets(review_memory: dict[str, Any], limit: int, seed_theme_keys: list[str] | None = None) -> list[dict[str, Any]]:
+    priority_groups: dict[str, list[dict[str, Any]]] = {}
+    fallback_packets: list[dict[str, Any]] = []
     if limit <= 0:
-        return packets
+        return []
+    seed_theme_keys = seed_theme_keys or []
     source_lists = (
         ("accepted_claims", "accepted_claim"),
         ("approved_conversation_entities", "approved_entity"),
@@ -330,6 +342,8 @@ def review_memory_theme_packets(review_memory: dict[str, Any], limit: int) -> li
         for row in rows:
             if not isinstance(row, dict):
                 continue
+            if str(row.get("claim_type", "")).strip() != "theme" and str(row.get("entity_type", "")).strip() != "theme":
+                continue
             text = compact_join(
                 [
                     row.get("claim_text", ""),
@@ -342,26 +356,28 @@ def review_memory_theme_packets(review_memory: dict[str, Any], limit: int) -> li
                 ],
                 1800,
             )
-            if not text or not any(term in text.lower() for term in THEME_CUE_TERMS):
+            if not text:
                 continue
-            packets.append(
-                {
-                    "source": f"review_memory.{field}",
-                    "evidence_status": status,
-                    "entity_name": row.get("target_entity_name") or row.get("canonical_name") or row.get("candidate_name") or "",
-                    "entity_type": row.get("entity_type", ""),
-                    "externality_class": "",
-                    "recommended_action": "",
-                    "recommended_track": "lore_candidate",
-                    "source_snippet_ids": row.get("source_snippet_ids", []) or row.get("supporting_snippet_ids", []),
-                    "claim_ids": [row.get("claim_id", "")] if row.get("claim_id") else [],
-                    "text": text,
-                    "theme_matches": [],
-                }
-            )
-            if len(packets) >= limit:
-                return packets
-    return packets
+            entity_name = row.get("target_entity_name") or row.get("canonical_name") or row.get("candidate_name") or ""
+            packet = {
+                "source": f"review_memory.{field}",
+                "evidence_status": status,
+                "entity_name": entity_name,
+                "entity_type": row.get("entity_type", ""),
+                "externality_class": "",
+                "recommended_action": "",
+                "recommended_track": "lore_candidate",
+                "source_snippet_ids": row.get("source_snippet_ids", []) or row.get("supporting_snippet_ids", []),
+                "claim_ids": [row.get("claim_id", "")] if row.get("claim_id") else [],
+                "text": text,
+                "theme_matches": [],
+            }
+            hit_key = review_memory_packet_seed_hit_key(packet, seed_theme_keys)
+            if hit_key:
+                priority_groups.setdefault(hit_key, []).append(packet)
+            else:
+                fallback_packets.append(packet)
+    return (round_robin_seed_packets(priority_groups, seed_theme_keys, limit) + fallback_packets)[:limit]
 
 
 def resolved_entity_theme_packets(resolved_entities: dict[str, Any], limit: int) -> list[dict[str, Any]]:
@@ -371,14 +387,17 @@ def resolved_entity_theme_packets(resolved_entities: dict[str, Any], limit: int)
     for entity in resolved_entities.get("resolved_entities", []) or []:
         if not isinstance(entity, dict):
             continue
+        if str(entity.get("entity_type", "")).strip() != "theme":
+            continue
         text = compact_join([entity.get("canonical_name", ""), " ".join(entity.get("aliases", []) or [])], 500)
-        if any(term in text.lower() for term in THEME_CUE_TERMS):
+        if text:
             packets.append(
                 {
                     "source": "resolved_entities",
-                    "evidence_status": "observed_seed_or_approved_entity",
+                    "evidence_status": "observed_seed_or_approved_theme_entity",
                     "entity_name": entity.get("canonical_name", ""),
                     "entity_type": entity.get("entity_type", ""),
+                    "aliases": entity.get("aliases", []) or [],
                     "source_snippet_ids": [],
                     "claim_ids": [],
                     "text": text,
@@ -390,6 +409,50 @@ def resolved_entity_theme_packets(resolved_entities: dict[str, Any], limit: int)
     return packets
 
 
+def theme_seed_keys(seed_packets: list[dict[str, Any]]) -> list[str]:
+    keys: list[str] = []
+    for packet in seed_packets:
+        for value in [packet.get("entity_name", ""), *(packet.get("aliases", []) or [])]:
+            key = normalized_name_key(str(value or ""))
+            if key and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def review_memory_packet_seed_hit_key(packet: dict[str, Any], seed_theme_keys: list[str]) -> str:
+    if not seed_theme_keys:
+        return ""
+    entity_key = normalized_name_key(str(packet.get("entity_name", "")))
+    if entity_key in seed_theme_keys:
+        return entity_key
+    text_key = normalized_name_key(str(packet.get("text", "")))
+    padded_text = f" {text_key} "
+    for key in seed_theme_keys:
+        if key and f" {key} " in padded_text:
+            return key
+    return ""
+
+
+def round_robin_seed_packets(priority_groups: dict[str, list[dict[str, Any]]], seed_theme_keys: list[str], limit: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    positions = {key: 0 for key in seed_theme_keys}
+    while len(out) < limit:
+        added = False
+        for key in seed_theme_keys:
+            group = priority_groups.get(key, [])
+            index = positions.get(key, 0)
+            if index >= len(group):
+                continue
+            out.append(group[index])
+            positions[key] = index + 1
+            added = True
+            if len(out) >= limit:
+                break
+        if not added:
+            break
+    return out
+
+
 def build_theme_miner_prompt(profile: dict[str, Any], evidence_packets: list[dict[str, Any]]) -> str:
     return f"""You are Stage 07C, the THERIAC Theme Miner.
 Update the persistent theme profile from accepted or plausible local evidence.
@@ -398,9 +461,15 @@ Core rules:
 - Learn transitive thematic patterns, not transitive canon.
 - A theme match can raise future relevance priors, but never promotes a candidate into canon.
 - Every theme must have provenance in accepted entities, accepted claims, author answers, review memory, or plausible local adjudication evidence.
-- Historical/mythological origin alone is not enough; require local THERIAC usage or explicit author/review evidence.
+- Historical/mythological/theological origin alone is not enough; require local THERIAC usage or explicit author/review evidence.
 - Mark purely external inspiration lanes as meta_only when local evidence does not support in-world use.
 - Keep updates compact and reviewable.
+- Preserve successful theme lanes. Do not merge mythological/theological, technological/scientific, emotional/psychological, philosophical/ideological, aesthetic, or historical/political patterns unless the evidence explicitly connects them.
+- Infer the best theme_domain from the evidence. The domain is a broad lane for later review, not a fixed ontology of allowed themes.
+- DISAMBIGUATION RULE: Distinguish between abstract themes and entities named after concepts. If a narrative features characters named after abstract nouns, do not extract their literal names as themes. Extract the underlying thematic patterns they represent.
+
+Allowed theme_domain values:
+{json_dumps(sorted(THEME_DOMAINS))}
 
 Existing theme profile:
 {json_dumps(profile_summary(profile))}
@@ -415,7 +484,8 @@ Return strict JSON:
       "action": "create_theme | update_theme | deprecate_theme | mark_meta_only | reject_theme | no_change",
       "theme_id": "theme_short_slug",
       "label": "Human label",
-      "theme_type": "mythological_lineage | historical_political_motif | religious_symbolic_lineage | music_reference_pattern | aesthetic_lineage | other",
+      "theme_domain": "mythological_theological | technological_scientific | emotional_psychological | philosophical_ideological | aesthetic | historical_political | other",
+      "theme_type": "mythological | historical | religious | aesthetic | scientific_technological | emotional_psychological | philosophical | other",
       "status": "candidate | active | deprecated | meta_only | rejected",
       "confidence": 0.0,
       "canon_relevance": "lore_pattern | meta_only | rejected | unknown",
@@ -441,6 +511,7 @@ def profile_summary(profile: dict[str, Any]) -> dict[str, Any]:
             {
                 "theme_id": theme.get("theme_id", ""),
                 "label": theme.get("label", ""),
+                "theme_domain": theme.get("theme_domain", ""),
                 "theme_type": theme.get("theme_type", ""),
                 "status": theme.get("status", ""),
                 "confidence": theme.get("confidence", 0.0),
@@ -494,6 +565,7 @@ def normalize_theme_update(raw: dict[str, Any]) -> dict[str, Any]:
         "action": normalize_enum(raw.get("action"), THEME_ACTIONS, "update_theme"),
         "theme_id": theme_id,
         "label": label,
+        "theme_domain": normalize_theme_domain(raw.get("theme_domain") or raw.get("domain"), raw.get("theme_type")),
         "theme_type": clean_text(raw.get("theme_type") or "other", 80),
         "status": normalize_enum(raw.get("status"), THEME_STATUSES, "candidate"),
         "confidence": clamp_float(raw.get("confidence", 0.0)),
@@ -514,7 +586,7 @@ def normalize_theme_update(raw: dict[str, Any]) -> dict[str, Any]:
 def merge_theme(existing: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     now = now_utc_iso()
     merged = dict(existing) if existing else {}
-    for field in ("theme_id", "label", "theme_type", "canon_relevance", "description", "provenance_summary"):
+    for field in ("theme_id", "label", "theme_domain", "theme_type", "canon_relevance", "description", "provenance_summary"):
         if update.get(field):
             merged[field] = update[field]
     merged["status"] = update.get("status") or merged.get("status", "candidate")
@@ -562,6 +634,39 @@ def normalize_string_list(value: Any, limit: int, max_chars: int) -> list[str]:
 def normalize_enum(value: Any, allowed: set[str], default: str) -> str:
     clean = str(value or "").strip()
     return clean if clean in allowed else default
+
+
+def normalize_theme_domain(value: Any, theme_type: Any = None) -> str:
+    clean = normalized_name_key(str(value or "").replace("_", " "))
+    aliases = {
+        "mythological": "mythological_theological",
+        "mythological theological": "mythological_theological",
+        "religious": "mythological_theological",
+        "theological": "mythological_theological",
+        "technological": "technological_scientific",
+        "technological scientific": "technological_scientific",
+        "scientific": "technological_scientific",
+        "emotional": "emotional_psychological",
+        "emotional psychological": "emotional_psychological",
+        "psychological": "emotional_psychological",
+        "philosophical": "philosophical_ideological",
+        "philosophical ideological": "philosophical_ideological",
+        "ideological": "philosophical_ideological",
+        "aesthetic": "aesthetic",
+        "historical": "historical_political",
+        "historical political": "historical_political",
+        "political": "historical_political",
+        "other": "other",
+    }
+    direct = aliases.get(clean)
+    if direct:
+        return direct
+    underscored = clean.replace(" ", "_")
+    if underscored in THEME_DOMAINS:
+        return underscored
+    if theme_type is not None and str(theme_type).strip() != str(value or "").strip():
+        return normalize_theme_domain(theme_type, None)
+    return "other"
 
 
 def clamp_float(value: Any) -> float:

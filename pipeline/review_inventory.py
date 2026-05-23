@@ -727,6 +727,203 @@ def candidate_inventory_bucket_label(bucket: str) -> str:
     }.get(bucket, bucket)
 
 
+def _candidate_inventory_key(item: dict[str, Any]) -> str:
+    return normalized_name_key(
+        str(
+            item.get("normalized_key")
+            or item.get("normalized_name_key")
+            or item.get("candidate_name")
+            or item.get("candidate_id")
+            or ""
+        )
+    )
+
+
+def _candidate_inventory_by_key(items: Any) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        key = _candidate_inventory_key(item)
+        if key:
+            out[key] = item
+    return out
+
+
+def _candidate_harvest_bucket(
+    candidate: dict[str, Any],
+    recommendation: dict[str, Any],
+    reclassification: dict[str, Any],
+) -> str:
+    action = str(
+        reclassification.get("theme_adjusted_recommended_action")
+        or recommendation.get("recommended_action")
+        or ""
+    ).strip()
+    if action in {"keep_lore_candidate", "needs_author_review"}:
+        return "review"
+    if action == "review_alias":
+        return "alias"
+    if action == "demote_meta":
+        return "meta"
+    if action == "mark_generic":
+        return "generic"
+    if action == "no_action":
+        return "ignore"
+    track = str(
+        reclassification.get("theme_adjusted_recommended_track")
+        or recommendation.get("recommended_track")
+        or candidate.get("recommended_track")
+        or ""
+    ).strip()
+    if track == "lore_candidate":
+        return "review"
+    if track in {"meta", "ignore", "mixed"}:
+        return track
+    return "harvested"
+
+
+def _candidate_harvest_category(
+    candidate: dict[str, Any],
+    recommendation: dict[str, Any],
+    reclassification: dict[str, Any],
+) -> str:
+    track = str(
+        reclassification.get("theme_adjusted_recommended_track")
+        or recommendation.get("recommended_track")
+        or candidate.get("recommended_track")
+        or ""
+    ).strip()
+    if track == "lore_candidate":
+        return "lore"
+    if track in {"meta", "mixed", "ignore", "unknown"}:
+        return track
+    return candidate_inventory_category(candidate)
+
+
+def _candidate_harvest_reason(
+    candidate: dict[str, Any],
+    recommendation: dict[str, Any],
+    reclassification: dict[str, Any],
+) -> str:
+    pieces: list[str] = []
+    action = str(
+        reclassification.get("theme_adjusted_recommended_action")
+        or recommendation.get("recommended_action")
+        or ""
+    ).strip()
+    externality = str(recommendation.get("externality_class") or "").strip()
+    if action:
+        pieces.append(action.replace("_", " "))
+    if externality:
+        pieces.append(f"externality: {externality.replace('_', ' ')}")
+    theme_matches = reclassification.get("theme_matches") if isinstance(reclassification, dict) else []
+    if isinstance(theme_matches, list) and theme_matches:
+        labels = [str(match.get("label", "")).strip() for match in theme_matches[:2] if isinstance(match, dict)]
+        labels = [label for label in labels if label]
+        if labels:
+            pieces.append("theme: " + ", ".join(labels))
+    summary = (
+        str(recommendation.get("reasoning_summary") or "").strip()
+        or str(candidate.get("model_reasoning_summary") or "").strip()
+        or str(candidate.get("legacy_triage_hint", {}).get("reason") if isinstance(candidate.get("legacy_triage_hint"), dict) else "").strip()
+    )
+    if summary:
+        pieces.append(summary)
+    return " | ".join(pieces)
+
+
+def _candidate_harvest_review_priority(
+    recommendation: dict[str, Any],
+    reclassification: dict[str, Any],
+) -> str:
+    action = str(
+        reclassification.get("theme_adjusted_recommended_action")
+        or recommendation.get("recommended_action")
+        or ""
+    ).strip()
+    confidence = recommendation.get("confidence")
+    externality = str(recommendation.get("externality_class") or "").strip()
+    parts = [action.replace("_", " ") if action else "harvested"]
+    if externality:
+        parts.append(externality.replace("_", " "))
+    try:
+        parts.append(f"{float(confidence):.2f}")
+    except (TypeError, ValueError):
+        pass
+    return " / ".join(parts)
+
+
+def entity_candidate_harvest_browser_rows(harvest_path: Path, decisions_path: Path | None = None) -> list[dict[str, Any]]:
+    payload = _read_json_or_default(harvest_path, {"candidates": []})
+    candidates = payload.get("candidates", []) if isinstance(payload, dict) else []
+    recommendations_payload = _read_json_or_default(harvest_path.with_name("entity_adjudication_recommendations.json"), {"recommendations": []})
+    reclassification_payload = _read_json_or_default(
+        harvest_path.with_name("theme_candidate_reclassification.json"),
+        {"candidate_reclassifications": []},
+    )
+    recommendations = _candidate_inventory_by_key(
+        recommendations_payload.get("recommendations", []) if isinstance(recommendations_payload, dict) else []
+    )
+    reclassifications = _candidate_inventory_by_key(
+        reclassification_payload.get("candidate_reclassifications", []) if isinstance(reclassification_payload, dict) else []
+    )
+    decisions_by_id = _latest_conversation_entity_decisions(decisions_path)
+    rows: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates if isinstance(candidates, list) else []):
+        if not isinstance(candidate, dict):
+            continue
+        key = _candidate_inventory_key(candidate)
+        recommendation = recommendations.get(key, {})
+        reclassification = reclassifications.get(key, {})
+        raw_name = str(candidate.get("candidate_name", "")).strip() or str(candidate.get("normalized_name_key", "")).strip() or "(unnamed)"
+        candidate_id = str(candidate.get("candidate_id") or stable_id("entity_candidate", key or raw_name)).strip()
+        item = {**candidate, "proposal_id": candidate_id}
+        if recommendation:
+            item["adjudication_recommendation"] = recommendation
+        if reclassification:
+            item["theme_reclassification"] = reclassification
+        decision = _conversation_entity_decision_for_item(item, decisions_by_id)
+        canonical_name = str(decision.get("canonical_name", "")).strip()
+        if not canonical_name:
+            canonical_name = str(
+                recommendation.get("canonical_name")
+                or candidate.get("model_suggested_canonical_name")
+                or candidate.get("canonical_name")
+                or ""
+            ).strip()
+        display_name = f"{canonical_name} (alias: {raw_name})" if canonical_name and canonical_name.lower() != raw_name.lower() else raw_name
+        proposed_type = (
+            decision.get("entity_type")
+            or recommendation.get("recommended_entity_type")
+            or candidate.get("proposed_entity_type")
+            or candidate.get("initial_proposed_entity_type")
+            or "term"
+        )
+        rows.append(
+            {
+                "row_id": f"entity_candidate_harvest:{candidate_id or key or index}",
+                "bucket": _candidate_harvest_bucket(candidate, recommendation, reclassification),
+                "source_bucket": "entity_candidate_harvest",
+                "category": _candidate_harvest_category(candidate, recommendation, reclassification),
+                "candidate_name": display_name,
+                "raw_candidate_name": raw_name,
+                "canonical_name": canonical_name,
+                "proposed_entity_type": normalize_entity_type(proposed_type),
+                "evidence_count": int(candidate.get("evidence_count", 0) or 0),
+                "topics": _as_text_list(candidate.get("candidate_topics")),
+                "tracks": _as_text_list(candidate.get("knowledge_tracks")),
+                "triage_reason": _candidate_harvest_reason(candidate, recommendation, reclassification),
+                "review_priority": _candidate_harvest_review_priority(recommendation, reclassification),
+                "decision": str(decision.get("decision", "") or ""),
+                "item": item,
+                "latest_decision": decision,
+            }
+        )
+    rows.sort(key=lambda row: (row["bucket"], row["category"], -int(row.get("evidence_count", 0) or 0), str(row["candidate_name"]).lower()))
+    return rows
+
+
 def _latest_conversation_entity_decisions(decisions_path: Path | None) -> dict[str, dict[str, Any]]:
     if decisions_path is None:
         return {}
@@ -780,6 +977,8 @@ def _alias_group_decision_summary(
 
 
 def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path | None = None) -> list[dict[str, Any]]:
+    if proposals_path.name == "entity_candidate_harvest.json":
+        return entity_candidate_harvest_browser_rows(proposals_path, decisions_path)
     payload = _read_json_or_default(
         proposals_path,
         {"proposals": [], "alias_review_groups": [], "candidate_inventory": [], "suppressed_candidates": []},

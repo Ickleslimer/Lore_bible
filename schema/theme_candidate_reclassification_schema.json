@@ -74,7 +74,10 @@
           "theme_adjusted_recommended_action": { "type": "string" },
           "theme_adjusted_recommended_track": { "type": "string" },
           "why_not_auto_promote": { "type": "string" },
-          "human_review_question": { "type": "string" }
+          "human_review_question": { "type": "string" },
+          "theme_reclassification_source": { "type": "string" },
+          "model_reclassification_status": { "type": "string" },
+          "model_reasoning_summary": { "type": "string" }
         },
         "additionalProperties": true
       }

@@ -13,6 +13,7 @@ import type {
   PipelineProgressTail,
   PipelineRuntimeStatus,
   RelationshipGraphResponse,
+  ThemeLearningResponse,
 } from "./types";
 
 let repoRoot = "";
@@ -85,6 +86,10 @@ export async function decideClaim(payload: Record<string, unknown>): Promise<Inv
 
 export async function loadEntityInventory(artifactsRoot: string): Promise<InventoryResponse> {
   return bridge<InventoryResponse>("entity_inventory", { artifacts_root: artifactsRoot });
+}
+
+export async function loadThemeLearning(artifactsRoot: string): Promise<ThemeLearningResponse> {
+  return bridge<ThemeLearningResponse>("theme_learning", { artifacts_root: artifactsRoot });
 }
 
 export async function loadEntityEvidence(

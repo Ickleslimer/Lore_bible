@@ -962,6 +962,15 @@ def generate_next_question(
     kwargs["provider"] = cfg["provider"]
     kwargs["api_model"] = cfg["model"]
     kwargs["json_schema"] = STORY_QUESTION_SCHEMA
+    kwargs["session_id"] = str(session.get("session_id") or kwargs.get("session_id") or "")
+    kwargs["trace"] = {
+        **(kwargs.get("trace", {}) if isinstance(kwargs.get("trace"), dict) else {}),
+        "trace_id": str(session.get("session_id") or kwargs.get("session_id") or ""),
+        "trace_name": "THERIAC Story Questions",
+        "span_name": "stage_09_story_question_generation",
+        "generation_name": "generate_story_question",
+        "pipeline_task": STORY_TASK_NAME,
+    }
     response = call_model_chat(prompt=prompt, **kwargs)
     if not response:
         reason = get_model_runtime_status().get("last_model_skip_reason") or "provider_unavailable"
@@ -1722,6 +1731,15 @@ def propose_story_answer_application(
         kwargs["provider"] = cfg["provider"]
         kwargs["api_model"] = cfg["model"]
         kwargs["json_schema"] = ANSWER_APPLICATION_PROPOSAL_SCHEMA
+        kwargs["session_id"] = str(session.get("session_id") or kwargs.get("session_id") or "")
+        kwargs["trace"] = {
+            **(kwargs.get("trace", {}) if isinstance(kwargs.get("trace"), dict) else {}),
+            "trace_id": str(session.get("session_id") or kwargs.get("session_id") or ""),
+            "trace_name": "THERIAC Story Questions",
+            "span_name": "stage_09_story_answer_application",
+            "generation_name": "propose_story_answer_application",
+            "pipeline_task": STORY_TASK_NAME,
+        }
         response = call_model_chat(prompt=prompt, **kwargs)
         if not response:
             reason = get_model_runtime_status().get("last_model_skip_reason") or "provider_unavailable"

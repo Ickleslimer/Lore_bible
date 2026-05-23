@@ -163,6 +163,7 @@ def main() -> None:
         paths.entity_adjudication_recommendations,
         Path("canon/theme_profile.json"),
         paths.theme_candidate_reclassification,
+        Path("config/pipeline_config.json"),
     )
 
     _run_stage(

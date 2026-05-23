@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
 
-from pipeline.common import get_logger, read_json
+from pipeline.common import get_logger, read_json, stable_id
 from pipeline.entity_resolution import load_entity_names
 
 DEBUG_LOG_PATH = Path("debug-f7d16c.log")
@@ -44,6 +44,40 @@ TASK_ROUTING_CONTROL_KEYS = {
     "profile",
     "model_profile",
 }
+
+OPENROUTER_TRACE_FIELD_LIMIT = 128
+
+
+def _clean_openrouter_trace_text(value: Any, limit: int = OPENROUTER_TRACE_FIELD_LIMIT) -> str:
+    text = re.sub(r"\s+", "-", str(value or "").strip())
+    text = re.sub(r"[^A-Za-z0-9_.:-]+", "-", text).strip("-")
+    if not text:
+        return ""
+    return text[: max(1, int(limit))]
+
+
+def _default_openrouter_session_id(task_name: str) -> str:
+    clean_task = _clean_openrouter_trace_text(task_name.replace("_", "-"))
+    return _clean_openrouter_trace_text(f"theriac-{clean_task}") or stable_id("or_session", task_name)
+
+
+def _openrouter_trace_for_task(task_name: str, session_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    trace: dict[str, Any] = {
+        "trace_id": session_id,
+        "trace_name": f"THERIAC {task_name}",
+        "span_name": task_name,
+        "generation_name": task_name,
+        "pipeline_task": task_name,
+    }
+    configured_trace = cfg.get("trace")
+    if isinstance(configured_trace, dict):
+        trace.update(configured_trace)
+    for key in ("trace_id", "trace_name", "span_name", "generation_name", "environment", "feature", "version"):
+        if key in cfg and cfg.get(key) is not None:
+            trace[key] = cfg[key]
+    if not trace.get("trace_id"):
+        trace["trace_id"] = session_id
+    return trace
 
 
 def get_model_runtime_status() -> dict[str, Any]:
@@ -135,6 +169,9 @@ def model_task_settings(provider_config: dict[str, Any] | None, task_name: str) 
 
 def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) -> dict[str, Any]:
     cfg = model_task_settings(provider_config, task_name)
+    session_id = _clean_openrouter_trace_text(
+        cfg.get("session_id") or cfg.get("openrouter_session_id") or _default_openrouter_session_id(task_name)
+    )
     kwargs = {
         "base_url": str(cfg.get("base_url", "http://127.0.0.1:11434")),
         "model": str(cfg.get("model", "llama3.1")),
@@ -153,7 +190,11 @@ def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) ->
         "rate_limit_growth": float(cfg.get("adaptive_rate_limit_growth", 1.8)),
         "ollama_unavailable_cooldown_seconds": int(cfg.get("ollama_unavailable_cooldown_seconds", 120)),
         "max_tokens": int(cfg.get("max_tokens", 4096)),
+        "session_id": session_id,
+        "trace": _openrouter_trace_for_task(task_name, session_id, cfg),
     }
+    if cfg.get("user"):
+        kwargs["user"] = _clean_openrouter_trace_text(cfg.get("user"))
     if isinstance(cfg.get("tools"), list):
         kwargs["tools"] = cfg["tools"]
     if isinstance(cfg.get("json_schema"), dict):
@@ -562,6 +603,9 @@ def _call_openai_compatible_chat(
     response_format_json: bool = False,
     json_schema: dict[str, Any] | None = None,
     tools: list[dict[str, Any]] | None = None,
+    session_id: str | None = None,
+    trace: dict[str, Any] | None = None,
+    user: str | None = None,
     extra_headers: dict[str, str] | None = None,
     provider_label: str = "OpenAI-Compatible API",
 ) -> dict[str, Any] | None:
@@ -645,6 +689,14 @@ def _call_openai_compatible_chat(
         ],
         "temperature": temperature,
     }
+    clean_session_id = _clean_openrouter_trace_text(session_id)
+    if clean_session_id:
+        payload["session_id"] = clean_session_id
+    if isinstance(trace, dict) and trace:
+        payload["trace"] = trace
+    clean_user = _clean_openrouter_trace_text(user)
+    if clean_user:
+        payload["user"] = clean_user
     if max_tokens is not None:
         payload["max_tokens"] = max(256, int(max_tokens))
     if tools:
@@ -664,6 +716,8 @@ def _call_openai_compatible_chat(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
+    if clean_session_id:
+        headers["X-Session-Id"] = clean_session_id
     if extra_headers:
         headers.update({str(key): str(value) for key, value in extra_headers.items() if str(value).strip()})
     req = urllib.request.Request(
@@ -860,7 +914,16 @@ def _call_openrouter_chat(
     max_tokens: int = 4096,
     json_schema: dict[str, Any] | None = None,
     tools: list[dict[str, Any]] | None = None,
+    session_id: str | None = None,
+    trace: dict[str, Any] | None = None,
+    user: str | None = None,
 ) -> dict[str, Any] | None:
+    clean_session_id = _clean_openrouter_trace_text(session_id) or stable_id("or_session", "openrouter", model)
+    trace_payload: dict[str, Any] = dict(trace) if isinstance(trace, dict) else {}
+    trace_payload.setdefault("trace_id", clean_session_id)
+    trace_payload.setdefault("trace_name", "THERIAC OpenRouter API")
+    trace_payload.setdefault("span_name", "openrouter_chat")
+    trace_payload.setdefault("generation_name", model)
     return _call_openai_compatible_chat(
         api_base_url,
         api_key,
@@ -879,6 +942,9 @@ def _call_openrouter_chat(
         response_format_json=True,
         json_schema=json_schema,
         tools=tools,
+        session_id=clean_session_id,
+        trace=trace_payload,
+        user=user,
         extra_headers={
             "HTTP-Referer": "https://github.com/theriac/lore-bible",
             "X-Title": "THERIAC Lore Bible",
@@ -1451,6 +1517,9 @@ def call_model_chat(
     max_tokens: int = 4096,
     json_schema: dict[str, Any] | None = None,
     tools: list[dict[str, Any]] | None = None,
+    session_id: str | None = None,
+    trace: dict[str, Any] | None = None,
+    user: str | None = None,
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
     global _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S, _LAST_OLLAMA_SKIP_LOG_EPOCH_S, _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S, _LAST_API_FAILURE_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
@@ -1543,6 +1612,9 @@ def call_model_chat(
             max_tokens=max_tokens,
             json_schema=json_schema,
             tools=tools,
+            session_id=session_id,
+            trace=trace,
+            user=user,
         )
 
     if resolved_provider in {"openai_compatible", "api"}:

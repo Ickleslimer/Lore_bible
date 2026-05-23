@@ -385,6 +385,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         paths.entity_adjudication_recommendations,
         base_dir.parent / "canon" / "theme_profile.json",
         paths.theme_candidate_reclassification,
+        base_dir.parent / "config" / "pipeline_config.json",
     )
     stage_07d = read_json(paths.theme_candidate_reclassification)
     logger.info(

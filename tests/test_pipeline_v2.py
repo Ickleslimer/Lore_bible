@@ -12,7 +12,7 @@ from unittest.mock import patch
 from pipeline.artifact_paths import ArtifactPaths
 from pipeline.cardbase_agent import card_agent_activity_payload, card_agent_progress_payload, load_card_agent_transactions, run_card_agent_request, run_pending_card_agent_requests, undo_card_agent_transaction
 from pipeline.common import read_jsonl, stable_id
-from pipeline.auto_review import AutoReviewResult, _auto_review_claims, _auto_review_conversation_entities
+from pipeline.auto_review import AutoReviewResult, _auto_review_claims, _auto_review_conversation_entities, _gemini_generate
 from pipeline.entity_resolution import card_id_for_entity, normalized_name_key, resolve_entities
 from pipeline.model_provider import (
     _call_gemini_chat,
@@ -168,6 +168,7 @@ def theme_miner_response() -> dict[str, Any]:
                 "action": "create_theme",
                 "theme_id": "theme_sumerian_mythology",
                 "label": "Sumerian mythology",
+                "theme_domain": "mythological_theological",
                 "theme_type": "mythological_lineage",
                 "status": "active",
                 "confidence": 0.87,
@@ -1054,6 +1055,54 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(body["response_format"], {"type": "json_object"})
         self.assertEqual(body["max_tokens"], 1234)
         self.assertEqual(body["tools"], [{"type": "openrouter:web_search", "parameters": {"max_results": 3}}])
+        self.assertTrue(str(body["session_id"]).startswith("or_session_"))
+        self.assertEqual(body["trace"]["trace_id"], body["session_id"])
+        self.assertEqual(body["trace"]["span_name"], "openrouter_chat")
+
+    def test_auto_review_openrouter_call_includes_session_trace_data(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps({"decision": "accept"}, separators=(",", ":")),
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(req: object, timeout: int) -> FakeResponse:
+            captured["body"] = json.loads(getattr(req, "data").decode("utf-8"))
+            captured["headers"] = dict(getattr(req, "headers"))
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with patch("pipeline.auto_review.urllib.request.urlopen", side_effect=fake_urlopen):
+            payload = _gemini_generate(
+                "fake-key",
+                'Return {"decision":"accept"}',
+                model="deepseek/deepseek-v4-flash",
+                session_id="theriac-auto-review-test",
+                trace={"trace_name": "THERIAC Auto Review Test"},
+            )
+
+        self.assertEqual(payload, {"decision": "accept"})
+        body = captured["body"]
+        self.assertEqual(body["session_id"], "theriac-auto-review-test")
+        self.assertEqual(body["trace"]["trace_id"], "theriac-auto-review-test")
+        self.assertEqual(body["trace"]["trace_name"], "THERIAC Auto Review Test")
+        self.assertEqual(captured["headers"]["X-session-id"], "theriac-auto-review-test")
 
     def test_model_routing_selects_qwen_instruct_for_synthesis(self) -> None:
         config = {
@@ -1098,6 +1147,7 @@ class PipelineV2Tests(unittest.TestCase):
         harvest_kwargs = model_call_kwargs(config, "stage_07a_entity_candidate_harvest")
         adjudication_kwargs = model_call_kwargs(config, "stage_07b_entity_adjudication_web")
         theme_miner_kwargs = model_call_kwargs(config, "stage_07c_theme_miner")
+        theme_reclassification_kwargs = model_call_kwargs(config, "stage_07d_theme_reclassification")
 
         self.assertEqual(agent_kwargs["provider"], "openrouter")
         self.assertEqual(agent_kwargs["api_model"], "google/gemini-3.1-pro-preview")
@@ -1105,9 +1155,16 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(identity_kwargs["api_model"], "google/gemini-3.1-pro-preview")
         self.assertEqual(harvest_kwargs["provider"], "openrouter")
         self.assertEqual(harvest_kwargs["api_model"], "qwen/qwen3-235b-a22b-2507")
-        self.assertEqual(adjudication_kwargs["api_model"], "google/gemini-3.1-pro-preview")
+        self.assertEqual(harvest_kwargs["session_id"], "theriac-stage-07a-candidate-harvest")
+        self.assertEqual(adjudication_kwargs["api_model"], "openai/gpt-oss-120b")
         self.assertEqual(adjudication_kwargs["tools"][0]["type"], "openrouter:web_search")
-        self.assertEqual(theme_miner_kwargs["api_model"], "google/gemini-3.1-pro-preview")
+        self.assertEqual(adjudication_kwargs["session_id"], "theriac-stage-07b-externality-adjudication")
+        self.assertEqual(adjudication_kwargs["trace"]["feature"], "entity_externality_adjudication")
+        self.assertEqual(theme_miner_kwargs["api_model"], "deepseek/deepseek-v4-flash")
+        self.assertEqual(theme_miner_kwargs["session_id"], "theriac-stage-07c-theme-miner")
+        self.assertEqual(theme_reclassification_kwargs["api_model"], "deepseek/deepseek-v4-flash")
+        self.assertEqual(theme_reclassification_kwargs["session_id"], "theriac-stage-07d-theme-reclassification")
+        self.assertEqual(theme_reclassification_kwargs["trace"]["generation_name"], "theme_aware_candidate_reclassification")
         self.assertEqual(config["story_questions"]["provider"], "openrouter")
         self.assertEqual(config["story_questions"]["model"], "google/gemini-3.1-pro-preview")
 
@@ -2315,7 +2372,7 @@ class PipelineV2Tests(unittest.TestCase):
                         "tasks": {
                             "stage_07b_entity_adjudication_web": {
                                 "provider": "openrouter",
-                                "api_model": "google/gemini-3.1-pro-preview",
+                                "api_model": "openai/gpt-oss-120b",
                                 "api_base_url": "https://openrouter.ai/api/v1",
                                 "temperature": 0.0,
                                 "max_tokens": 3500,
@@ -2385,7 +2442,7 @@ class PipelineV2Tests(unittest.TestCase):
                         "tasks": {
                             "stage_07b_entity_adjudication_web": {
                                 "provider": "openrouter",
-                                "api_model": "google/gemini-3.1-pro-preview",
+                                "api_model": "openai/gpt-oss-120b",
                                 "tools": [{"type": "openrouter:web_search"}],
                             }
                         }
@@ -2464,7 +2521,7 @@ class PipelineV2Tests(unittest.TestCase):
             )
             write_json(root / "resolved_entities.json", {"resolved_entities": []})
             write_json(root / "review_memory.json", {"accepted_claims": []})
-            write_json(root / "config.json", {"model_routing": {"tasks": {"stage_07c_theme_miner": {"provider": "openrouter", "api_model": "google/gemini-3.1-pro-preview"}}}})
+            write_json(root / "config.json", {"model_routing": {"tasks": {"stage_07c_theme_miner": {"provider": "openrouter", "api_model": "deepseek/deepseek-v4-flash"}}}})
 
             with patch("pipeline.stage_07c_theme_miner.call_model_chat", return_value=theme_miner_response()) as model:
                 run_stage_07c(
@@ -2485,6 +2542,171 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(profile["themes"][0]["status"], "active")
             self.assertIn("Ninhursag", profile["themes"][0]["evidence_entities"])
             self.assertEqual(report["summary"]["applied_update_count"], 1)
+
+    def test_stage_07c_prioritizes_existing_theme_entities_and_theme_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "entity_candidate_harvest.json",
+                {
+                    "schema_version": 1,
+                    "candidates": [
+                        {
+                            "candidate_id": f"candidate_filler_{index}",
+                            "candidate_name": f"Filler Myth {index}",
+                            "normalized_name_key": f"filler myth {index}",
+                            "sample_texts": [f"Filler Myth {index} is a historical comparison."],
+                            "proposed_entity_type": "term",
+                        }
+                        for index in range(12)
+                    ],
+                },
+            )
+            write_json(
+                root / "entity_adjudication_recommendations.json",
+                {
+                    "schema_version": 1,
+                    "recommendations": [
+                        {
+                            "candidate_name": f"Filler Myth {index}",
+                            "normalized_key": f"filler myth {index}",
+                            "recommended_action": "needs_author_review",
+                            "recommended_track": "mixed",
+                            "recommended_entity_type": "term",
+                            "externality_class": "historical_or_mythological",
+                            "local_lore_prior": 0.45,
+                            "external_reference_prior": 0.8,
+                            "web_findings": [{"query": f"Filler Myth {index}", "finding": "External historical reference."}],
+                            "reasoning_summary": "Historical externality with weak local evidence.",
+                        }
+                        for index in range(12)
+                    ],
+                },
+            )
+            write_json(
+                root / "resolved_entities.json",
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_thanatophobia",
+                            "canonical_name": "Thanatophobia",
+                            "entity_type": "theme",
+                            "aliases": [],
+                        },
+                        {
+                            "entity_id": "entity_biological_immortality",
+                            "canonical_name": "Biological Immortality",
+                            "entity_type": "theme",
+                            "aliases": ["Immortality"],
+                        },
+                    ]
+                },
+            )
+            write_json(
+                root / "review_memory.json",
+                {
+                    "accepted_claims": [
+                        {
+                            "claim_id": "claim_thanatophobia",
+                            "target_entity_name": "Thanatophobia",
+                            "claim_type": "theme",
+                            "claim_text": "Thanatophobia is a central emotional pressure in the lab story.",
+                        },
+                        {
+                            "claim_id": "claim_biological_immortality",
+                            "target_entity_name": "Biological Immortality",
+                            "claim_type": "theme",
+                            "claim_text": "Biological immortality is pursued through applied life-extension science.",
+                        },
+                    ]
+                },
+            )
+            write_json(
+                root / "config.json",
+                {
+                    "model_routing": {
+                        "tasks": {
+                            "stage_07c_theme_miner": {
+                                "provider": "openrouter",
+                                "api_model": "deepseek/deepseek-v4-flash",
+                                "max_evidence_packets": 6,
+                                "max_seed_theme_entity_packets": 2,
+                                "max_review_memory_theme_packets": 2,
+                                "max_adjudication_theme_packets": 6,
+                            }
+                        }
+                    }
+                },
+            )
+            captured: dict[str, str] = {}
+
+            def fake_theme_miner(*, prompt: str, **_kwargs: Any) -> dict[str, Any]:
+                captured["prompt"] = prompt
+                return {
+                    "theme_updates": [
+                        {
+                            "action": "create_theme",
+                            "theme_id": "theme_thanatophobia_mortality_anxiety",
+                            "label": "Thanatophobia & Mortality Anxiety",
+                            "theme_domain": "emotional_psychological",
+                            "theme_type": "emotional_psychological",
+                            "status": "candidate",
+                            "confidence": 0.78,
+                            "canon_relevance": "lore_pattern",
+                            "description": "Mortality anxiety recurs as an emotional driver.",
+                            "evidence_entities": ["Thanatophobia"],
+                            "evidence_claim_ids": ["claim_thanatophobia"],
+                            "evidence_snippet_ids": [],
+                            "positive_indicators": ["fear of mortality"],
+                            "negative_indicators": [],
+                            "related_themes": [],
+                            "disambiguation_notes": ["Theme match changes the prior, not canon status."],
+                            "pattern_notes": [],
+                            "provenance_summary": "Accepted theme evidence names Thanatophobia as a recurring pressure.",
+                        },
+                        {
+                            "action": "create_theme",
+                            "theme_id": "theme_biological_immortality_science",
+                            "label": "Biological Immortality Science",
+                            "theme_domain": "technological_scientific",
+                            "theme_type": "scientific_technological",
+                            "status": "candidate",
+                            "confidence": 0.8,
+                            "canon_relevance": "lore_pattern",
+                            "description": "Applied life-extension science recurs as a technological theme.",
+                            "evidence_entities": ["Biological Immortality"],
+                            "evidence_claim_ids": ["claim_biological_immortality"],
+                            "evidence_snippet_ids": [],
+                            "positive_indicators": ["life-extension science"],
+                            "negative_indicators": [],
+                            "related_themes": [],
+                            "disambiguation_notes": ["Theme match changes the prior, not canon status."],
+                            "pattern_notes": [],
+                            "provenance_summary": "Accepted theme evidence names biological immortality as a science lane.",
+                        },
+                    ]
+                }
+
+            with patch("pipeline.stage_07c_theme_miner.call_model_chat", side_effect=fake_theme_miner):
+                run_stage_07c(
+                    root / "entity_candidate_harvest.json",
+                    root / "entity_adjudication_recommendations.json",
+                    root / "resolved_entities.json",
+                    root / "review_memory.json",
+                    root / "theme_profile.json",
+                    root / "theme_profile_update_report.json",
+                    root / "config.json",
+                )
+
+            self.assertIn("Thanatophobia", captured["prompt"])
+            self.assertIn("Biological Immortality", captured["prompt"])
+            report = json.loads((root / "theme_profile_update_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["inputs"]["evidence_packet_count"], 6)
+            self.assertEqual(report["evidence_packets"][0]["evidence_status"], "observed_seed_or_approved_theme_entity")
+            profile = json.loads((root / "theme_profile.json").read_text(encoding="utf-8"))
+            domains = {theme["theme_id"]: theme["theme_domain"] for theme in profile["themes"]}
+            self.assertEqual(domains["theme_thanatophobia_mortality_anxiety"], "emotional_psychological")
+            self.assertEqual(domains["theme_biological_immortality_science"], "technological_scientific")
 
     def test_stage_07d_theme_reclassification_boosts_prior_without_promoting_canon(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2567,6 +2789,138 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(row["theme_adjusted_recommended_action"], "needs_author_review")
             self.assertIn("Theme match changes relevance prior only", row["why_not_auto_promote"])
 
+    def test_stage_07d_model_reclassifies_candidates_with_theme_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "entity_candidate_harvest.json",
+                {
+                    "schema_version": 1,
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate_enki",
+                            "candidate_name": "Enki",
+                            "normalized_name_key": "enki",
+                            "evidence_count": 4,
+                            "source_snippet_ids": ["s_enki"],
+                            "sample_texts": ["Enki is a proposed name for the non-human cognition subsystem."],
+                            "local_lore_prior": 0.52,
+                        }
+                    ],
+                },
+            )
+            write_json(
+                root / "entity_adjudication_recommendations.json",
+                {
+                    "schema_version": 1,
+                    "recommendations": [
+                        {
+                            "candidate_id": "candidate_enki",
+                            "candidate_name": "Enki",
+                            "normalized_key": "enki",
+                            "recommended_action": "needs_author_review",
+                            "recommended_track": "mixed",
+                            "recommended_entity_type": "term",
+                            "externality_class": "historical_or_mythological",
+                            "local_lore_prior": 0.52,
+                            "external_reference_prior": 0.82,
+                            "in_world_signals": ["Local usage suggests a named subsystem"],
+                            "web_findings": [{"query": "Enki", "finding": "Enki is a Sumerian deity.", "externality_weight": 0.88}],
+                            "reasoning_summary": "Historical/mythological externality with local in-world hints.",
+                            "human_review_question": "Is Enki lore or comparison?",
+                        }
+                    ],
+                },
+            )
+            write_json(
+                root / "theme_profile.json",
+                {
+                    "schema_version": 1,
+                    "themes": [
+                        {
+                            "theme_id": "theme_sumerian_mythology",
+                            "label": "Sumerian mythology",
+                            "theme_type": "mythological_lineage",
+                            "status": "active",
+                            "confidence": 0.87,
+                            "canon_relevance": "lore_pattern",
+                            "description": "Sumerian deity names are used for AI systems.",
+                            "evidence_entities": ["Ninhursag", "Inanna"],
+                            "positive_indicators": ["Sumerian deity name"],
+                            "negative_indicators": ["Used only as external mythology comparison"],
+                            "disambiguation_notes": ["Sumerian origin alone is not enough for canon promotion."],
+                        }
+                    ],
+                },
+            )
+            write_json(
+                root / "config.json",
+                {
+                    "model_routing": {
+                        "tasks": {
+                            "stage_07d_theme_reclassification": {
+                                "provider": "openrouter",
+                                "api_model": "deepseek/deepseek-v4-flash",
+                                "session_id": "theriac-stage-07d-theme-reclassification-test",
+                                "max_candidates_per_call": 8,
+                                "max_model_candidates_per_run": 8,
+                            }
+                        }
+                    }
+                },
+            )
+
+            model_payload = {
+                "candidate_reclassifications": [
+                    {
+                        "candidate_name": "Enki",
+                        "normalized_key": "enki",
+                        "theme_matches": [
+                            {
+                                "theme_id": "theme_sumerian_mythology",
+                                "label": "Sumerian mythology",
+                                "status": "active",
+                                "match_strength": 0.91,
+                                "matched_indicators": ["Enki", "Sumerian deity name"],
+                                "reason": "The active Sumerian lane makes Enki a plausible lore candidate when paired with local subsystem usage.",
+                                "prior_boost": 0.16,
+                            }
+                        ],
+                        "theme_prior_boost": 0.16,
+                        "theme_adjusted_lore_prior": 0.74,
+                        "theme_adjusted_recommended_action": "needs_author_review",
+                        "theme_adjusted_recommended_track": "lore_candidate",
+                        "why_not_auto_promote": "No accepted claim yet says Enki is a THERIAC entity.",
+                        "human_review_question": "Is Enki intended as a THERIAC subsystem name or only a Sumerian comparison?",
+                        "model_reasoning_summary": "Sumerian externality plus local subsystem usage fits an active theme lane.",
+                    }
+                ]
+            }
+            with patch("pipeline.stage_07d_theme_reclassification.call_model_chat", return_value=model_payload) as model:
+                run_stage_07d(
+                    root / "entity_candidate_harvest.json",
+                    root / "entity_adjudication_recommendations.json",
+                    root / "theme_profile.json",
+                    root / "theme_candidate_reclassification.json",
+                    root / "config.json",
+                )
+
+            self.assertEqual(model.call_count, 1)
+            self.assertEqual(model.call_args.kwargs["api_model"], "deepseek/deepseek-v4-flash")
+            self.assertEqual(model.call_args.kwargs["session_id"], "theriac-stage-07d-theme-reclassification-test")
+            self.assertIn("json_schema", model.call_args.kwargs)
+            prompt = model.call_args.kwargs["prompt"]
+            self.assertIn("Sumerian mythology", prompt)
+            self.assertIn("Enki", prompt)
+            payload = json.loads((root / "theme_candidate_reclassification.json").read_text(encoding="utf-8"))
+            row = payload["candidate_reclassifications"][0]
+            self.assertEqual(payload["summary"]["model_call_count"], 1)
+            self.assertEqual(payload["summary"]["model_applied_candidate_count"], 1)
+            self.assertEqual(row["theme_reclassification_source"], "model")
+            self.assertEqual(row["model_reclassification_status"], "model_applied")
+            self.assertEqual(row["theme_adjusted_lore_prior"], 0.74)
+            self.assertEqual(row["theme_matches"][0]["theme_id"], "theme_sumerian_mythology")
+
     def test_run_from_stage_05_uses_stage_07a_to_07d_without_entity_review_gate(self) -> None:
         import sys
         import pipeline.run_from_stage_05 as resume
@@ -2628,7 +2982,7 @@ class PipelineV2Tests(unittest.TestCase):
             ) -> None:
                 write_json(out_report, {"schema_version": 1, "summary": {"theme_count": 0, "applied_update_count": 0}, "inputs": {"evidence_packet_count": 0}})
 
-            def fake_stage_07d(_harvest: Path, _adjudication: Path, _theme_profile: Path, out_reclassification: Path) -> None:
+            def fake_stage_07d(_harvest: Path, _adjudication: Path, _theme_profile: Path, out_reclassification: Path, *_args: Any) -> None:
                 write_json(out_reclassification, {"schema_version": 1, "summary": {"theme_matched_candidate_count": 0}, "candidate_reclassifications": []})
 
             with patch.object(sys, "argv", ["run_from_stage_05", "--artifacts-root", str(root)]), patch.object(
@@ -2711,6 +3065,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn(field, theme_required)
         self.assertIn("active", schema["properties"]["themes"]["items"]["properties"]["status"]["enum"])
         self.assertIn("meta_only", schema["properties"]["themes"]["items"]["properties"]["status"]["enum"])
+        self.assertIn("theme_domain", schema["properties"]["themes"]["items"]["properties"])
 
     def test_theme_reclassification_schema_contract_lists_required_fields(self) -> None:
         schema = json.loads(Path("schema/theme_candidate_reclassification_schema.json").read_text(encoding="utf-8"))
@@ -2719,6 +3074,10 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertIn("theme_matches", row_required)
         self.assertIn("theme_adjusted_lore_prior", row_required)
         self.assertIn("why_not_auto_promote", row_required)
+        row_properties = schema["properties"]["candidate_reclassifications"]["items"]["properties"]
+        self.assertIn("theme_reclassification_source", row_properties)
+        self.assertIn("model_reclassification_status", row_properties)
+        self.assertIn("model_reasoning_summary", row_properties)
 
     def test_stage_07_proposes_text_observed_conversation_entity_not_in_seed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5388,6 +5747,105 @@ class PipelineV2Tests(unittest.TestCase):
             merged_names = [row["candidate_name"] for row in inventory["merged_rows"]]
             self.assertNotIn("Morgan Blackhand", merged_names)
             self.assertIn("Theriac", merged_names)
+
+    def test_desktop_theme_learning_payload_surfaces_theme_associations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            active = repo / "artifacts" / "runs" / "run_themes"
+            paths = ArtifactPaths(active)
+            write_json(
+                repo / "canon" / "theme_profile.json",
+                {
+                    "schema_version": 1,
+                    "updated_at_utc": "2026-05-21T08:00:00Z",
+                    "policy": {"theme_match_is_not_promotion_rule": True},
+                    "themes": [
+                        {
+                            "theme_id": "theme_sumerian_mythology",
+                            "label": "Sumerian mythology",
+                            "theme_type": "mythological_lineage",
+                            "status": "active",
+                            "confidence": 0.87,
+                            "canon_relevance": "lore_pattern",
+                            "description": "Sumerian mythological names are used for AI systems.",
+                            "evidence_entities": ["Ninhursag"],
+                            "evidence_claim_ids": [],
+                            "evidence_snippet_ids": ["snippet_ninhursag"],
+                            "positive_indicators": ["Sumerian deity name"],
+                            "negative_indicators": ["Only mythology comparison"],
+                            "related_themes": [],
+                            "disambiguation_notes": ["Theme match changes the prior only."],
+                            "last_updated": "2026-05-21T08:00:00Z",
+                        }
+                    ],
+                    "theme_update_log": [],
+                },
+            )
+            write_json(
+                paths.theme_profile_update_report,
+                {
+                    "schema_version": 1,
+                    "generated_at_utc": "2026-05-21T08:01:00Z",
+                    "inputs": {"evidence_packet_count": 2},
+                    "summary": {"theme_count": 1, "applied_update_count": 1},
+                    "applied_theme_updates": [{"theme_id": "theme_sumerian_mythology", "action": "create_theme"}],
+                },
+            )
+            write_json(
+                paths.theme_candidate_reclassification,
+                {
+                    "schema_version": 1,
+                    "generated_at_utc": "2026-05-21T08:02:00Z",
+                    "summary": {"theme_matched_candidate_count": 1},
+                    "candidate_reclassifications": [
+                        {
+                            "candidate_id": "candidate_enki",
+                            "candidate_name": "Enki",
+                            "normalized_key": "enki",
+                            "base_recommended_action": "needs_author_review",
+                            "base_recommended_track": "lore_candidate",
+                            "base_local_lore_prior": 0.55,
+                            "base_external_reference_prior": 0.85,
+                            "externality_class": "historical_or_mythological",
+                            "theme_matches": [
+                                {
+                                    "theme_id": "theme_sumerian_mythology",
+                                    "label": "Sumerian mythology",
+                                    "status": "active",
+                                    "match_strength": 0.88,
+                                    "prior_boost": 0.18,
+                                    "matched_indicators": ["Sumerian deity name"],
+                                    "reason": "Enki matches the active Sumerian lane.",
+                                }
+                            ],
+                            "theme_prior_boost": 0.18,
+                            "theme_adjusted_lore_prior": 0.73,
+                            "theme_adjusted_recommended_action": "needs_author_review",
+                            "theme_adjusted_recommended_track": "lore_candidate",
+                            "human_review_question": "Is Enki intended as THERIAC lore?",
+                        }
+                    ],
+                },
+            )
+
+            payload = handle_request(
+                {
+                    "repo_root": str(repo),
+                    "command": "theme_learning",
+                    "payload": {"artifacts_root": str(active)},
+                }
+            )
+
+            self.assertEqual(payload["theme_count"], 1)
+            self.assertEqual(payload["association_count"], 1)
+            self.assertEqual(payload["themes"][0]["label"], "Sumerian mythology")
+            association = payload["associations"][0]
+            self.assertEqual(association["candidate_name"], "Enki")
+            self.assertEqual(association["theme_id"], "theme_sumerian_mythology")
+            self.assertEqual(association["matched_indicators"], ["Sumerian deity name"])
+            self.assertEqual(payload["summary"]["theme_status_counts"], {"active": 1})
+            self.assertEqual(payload["summary"]["association_counts_by_theme"], {"theme_sumerian_mythology": 1})
+            self.assertEqual(payload["summary"]["evidence_packet_count"], 2)
 
     def test_tauri_app_config_saves_bootstrap_doc_and_openrouter_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

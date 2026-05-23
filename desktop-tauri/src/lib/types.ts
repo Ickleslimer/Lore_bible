@@ -175,6 +175,74 @@ export interface InventoryResponse {
   merged_metadata?: Record<string, unknown>;
 }
 
+export interface ThemeProfileItem {
+  theme_id: string;
+  label: string;
+  theme_type?: string;
+  status: string;
+  confidence?: number;
+  canon_relevance?: string;
+  description?: string;
+  provenance_summary?: string;
+  evidence_entities?: string[];
+  evidence_claim_ids?: string[];
+  evidence_snippet_ids?: string[];
+  positive_indicators?: string[];
+  negative_indicators?: string[];
+  related_themes?: string[];
+  disambiguation_notes?: string[];
+  pattern_notes?: string[];
+  created_at_utc?: string;
+  last_updated?: string;
+  last_update_action?: string;
+  [key: string]: unknown;
+}
+
+export interface ThemeAssociationRow {
+  association_id: string;
+  theme_id: string;
+  theme_label: string;
+  theme_status?: string;
+  candidate_id?: string;
+  candidate_name: string;
+  normalized_key: string;
+  match_strength?: number;
+  prior_boost?: number;
+  matched_indicators?: string[];
+  reason?: string;
+  theme_prior_boost?: number;
+  theme_adjusted_lore_prior?: number;
+  base_local_lore_prior?: number;
+  base_external_reference_prior?: number;
+  externality_class?: string;
+  base_recommended_action?: string;
+  base_recommended_track?: string;
+  theme_adjusted_recommended_action?: string;
+  theme_adjusted_recommended_track?: string;
+  theme_reclassification_source?: string;
+  model_reclassification_status?: string;
+  model_reasoning_summary?: string;
+  why_not_auto_promote?: string;
+  human_review_question?: string;
+  [key: string]: unknown;
+}
+
+export interface ThemeLearningResponse {
+  active_root: string;
+  theme_profile_path: string;
+  update_report_path: string;
+  reclassification_path: string;
+  theme_count: number;
+  association_count: number;
+  themes: ThemeProfileItem[];
+  associations: ThemeAssociationRow[];
+  policy: Record<string, unknown>;
+  theme_update_log: Array<Record<string, unknown>>;
+  applied_theme_updates: Array<Record<string, unknown>>;
+  raw_theme_updates: Array<Record<string, unknown>>;
+  summary: Record<string, unknown>;
+}
+
 export interface EntityEvidenceResponse {
   active_root: string;
   row_id: string;

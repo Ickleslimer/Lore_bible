@@ -15,12 +15,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
-from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, write_json
+from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, stable_id, write_json
 from pipeline.entity_resolution import normalize_entity_type
 from pipeline.review_memory import normalize_claim_text
 
 logger = get_logger(__name__)
 DEFAULT_AUTO_REVIEW_MODEL = "deepseek/deepseek-v4-flash"
+OPENROUTER_TRACE_FIELD_LIMIT = 128
 
 
 # ---------------------------------------------------------------------------
@@ -61,15 +62,31 @@ def _resolve_api_key() -> str | None:
     return None
 
 
+def _clean_openrouter_trace_text(value: Any, limit: int = OPENROUTER_TRACE_FIELD_LIMIT) -> str:
+    text = re.sub(r"\s+", "-", str(value or "").strip())
+    text = re.sub(r"[^A-Za-z0-9_.:-]+", "-", text).strip("-")
+    if not text:
+        return ""
+    return text[: max(1, int(limit))]
+
+
 def _gemini_generate(
     api_key: str,
     prompt: str,
     model: str = DEFAULT_AUTO_REVIEW_MODEL,
     temperature: float = 0.0,
     timeout_seconds: int = 120,
+    session_id: str | None = None,
+    trace: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Call OpenRouter chat completions and return parsed JSON or None."""
     clean_model = model.strip() or DEFAULT_AUTO_REVIEW_MODEL
+    clean_session_id = _clean_openrouter_trace_text(session_id) or stable_id("or_session", "auto_review", clean_model)
+    trace_payload: dict[str, Any] = dict(trace) if isinstance(trace, dict) else {}
+    trace_payload.setdefault("trace_id", clean_session_id)
+    trace_payload.setdefault("trace_name", "THERIAC Auto Review")
+    trace_payload.setdefault("span_name", "auto_review")
+    trace_payload.setdefault("generation_name", clean_model)
     url = "https://openrouter.ai/api/v1/chat/completions"
     payload = {
         "model": clean_model,
@@ -79,6 +96,8 @@ def _gemini_generate(
         ],
         "temperature": temperature,
         "response_format": {"type": "json_object"},
+        "session_id": clean_session_id,
+        "trace": trace_payload,
     }
     req = urllib.request.Request(
         url=url,
@@ -88,6 +107,7 @@ def _gemini_generate(
             "Authorization": f"Bearer {api_key}",
             "HTTP-Referer": "https://github.com/theriac/lore-bible",
             "X-Title": "THERIAC Lore Bible",
+            "X-Session-Id": clean_session_id,
         },
         method="POST",
     )

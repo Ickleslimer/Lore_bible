@@ -42,6 +42,7 @@
         "properties": {
           "theme_id": { "type": "string" },
           "label": { "type": "string" },
+          "theme_domain": { "type": "string" },
           "theme_type": { "type": "string" },
           "status": {
             "type": "string",

@@ -50,6 +50,7 @@ HARVEST_SOURCE_FIELDS = ("candidate_entities", "patch_candidate_entities", "conv
 MAX_HARVEST_NAME_WORDS = 12
 MAX_HARVEST_NAME_CHARS = 120
 DEFAULT_MAX_MODEL_CANDIDATES_PER_CALL = 24
+DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS = 2
 SOURCE_PROFILE_FIELDS = (
     "thread_id",
     "partner_id",
@@ -194,6 +195,7 @@ def run(
         finalize_candidate(candidate, approved_memory_keys, rejected_memory_keys, latest_seen)
         for candidate in candidates
     ]
+    output_candidates.sort(key=candidate_annotation_priority_key)
     model_result = annotate_candidates_with_model(output_candidates, all_resolved_entities, provider_config, logger)
     output_candidates = model_result["candidates"]
     output_candidates.sort(key=lambda item: (-int(item.get("evidence_count", 0) or 0), str(item.get("candidate_name", "")).lower()))
@@ -252,7 +254,10 @@ def run(
         },
         "summary": {
             "candidate_count": len(output_candidates),
-            "model_annotated_candidate_count": sum(1 for item in output_candidates if item.get("model_annotation")),
+            "model_annotated_candidate_count": sum(1 for item in output_candidates if item.get("model_annotation_status") == "annotated"),
+            "qwen_requested_candidate_count": model_result.get("model_candidate_count", len(output_candidates)),
+            "qwen_candidate_limit": model_result.get("model_candidate_limit", 0),
+            "qwen_fallback_candidate_count": sum(1 for item in output_candidates if item.get("model_annotation_status") == "fallback_after_model_failure"),
             "resolved_entity_count": len(resolved_output["resolved_entities"]),
             "seed_only_entity_count": len(seed_only_entities),
             "alias_count": len(alias_entries),
@@ -317,53 +322,48 @@ def annotate_candidates_with_model(
         }
 
     max_per_call = max(1, int(task_cfg.get("max_candidates_per_call", DEFAULT_MAX_MODEL_CANDIDATES_PER_CALL) or DEFAULT_MAX_MODEL_CANDIDATES_PER_CALL))
+    max_model_candidates = max(0, int(task_cfg.get("max_model_candidates_per_run", 0) or 0))
+    model_candidates = candidates[:max_model_candidates] if max_model_candidates else candidates
+    if max_model_candidates and len(candidates) > len(model_candidates):
+        logger.info(
+            "Stage 07A: limiting Qwen annotation to top %d/%d candidate(s); remaining candidates receive fallback status.",
+            len(model_candidates),
+            len(candidates),
+        )
     annotations_by_key: dict[str, dict[str, Any]] = {}
     failures: list[dict[str, Any]] = []
-    batch_count = (len(candidates) + max_per_call - 1) // max_per_call
+    batch_count = (len(model_candidates) + max_per_call - 1) // max_per_call
     known_entities = model_known_entities(resolved_entities)
+    model_call_count = 0
     logger.info(
-        "Stage 07A: requesting Qwen candidate harvest annotations for %d candidate(s) in %d batch(es).",
-        len(candidates),
+        "Stage 07A: requesting Qwen candidate harvest annotations for %d candidate(s) in %d initial batch(es).",
+        len(model_candidates),
         batch_count,
     )
-    for batch_index, offset in enumerate(range(0, len(candidates), max_per_call), start=1):
-        chunk = candidates[offset : offset + max_per_call]
-        prompt = build_candidate_harvest_prompt(chunk, known_entities)
+    for batch_index, offset in enumerate(range(0, len(model_candidates), max_per_call), start=1):
+        chunk = model_candidates[offset : offset + max_per_call]
         logger.info(
-            "Stage 07A model call %d/%d: candidates=%d offset=%d model=%s",
+            "Stage 07A model batch %d/%d: candidates=%d offset=%d model=%s",
             batch_index,
             batch_count,
             len(chunk),
             offset,
             kwargs.get("api_model", ""),
         )
-        try:
-            response = call_model_chat(prompt=prompt, **kwargs)
-        except Exception as exc:
-            failures.append(
-                {
-                    "batch_index": batch_index,
-                    "offset": offset,
-                    "reason": "model_call_failed",
-                    "error": str(exc),
-                    "candidate_keys": [str(item.get("normalized_name_key", "")) for item in chunk],
-                }
-            )
-            continue
-        annotations = normalize_model_annotation_response(response)
-        if annotations is None:
-            failures.append(
-                {
-                    "batch_index": batch_index,
-                    "offset": offset,
-                    "reason": "invalid_model_json",
-                    "response_keys": sorted(response.keys()) if isinstance(response, dict) else [],
-                    "candidate_keys": [str(item.get("normalized_name_key", "")) for item in chunk],
-                }
-            )
+        annotations, chunk_failures, chunk_call_count = request_model_annotations_for_chunk(
+            chunk,
+            known_entities,
+            kwargs,
+            logger,
+            batch_label=f"{batch_index}/{batch_count}",
+            offset=offset,
+        )
+        model_call_count += chunk_call_count
+        if chunk_failures:
+            failures.extend(chunk_failures)
             continue
         for annotation in annotations:
-            key = normalized_name_key(str(annotation.get("normalized_name_key") or annotation.get("candidate_name") or ""))
+            key = model_annotation_key(annotation)
             if key:
                 annotations_by_key[key] = annotation
 
@@ -381,21 +381,139 @@ def annotate_candidates_with_model(
             }
         )
     if failures:
-        raise RuntimeError(
-            "Stage 07A requires Qwen candidate harvest annotations, but the model pass failed: "
-            + json_preview(failures)
+        logger.warning(
+            "Stage 07A Qwen annotation pass had %d recoverable failure group(s); "
+            "missing candidates will be retained with fallback annotation status. failures=%s",
+            len(failures),
+            json_preview(failures),
         )
 
     annotated = [
-        apply_model_annotation(candidate, annotations_by_key[str(candidate.get("normalized_name_key", ""))])
+        apply_model_annotation(
+            candidate,
+            annotations_by_key.get(str(candidate.get("normalized_name_key", "")))
+            or fallback_model_annotation(candidate, "qwen_annotation_missing_or_invalid"),
+        )
         for candidate in candidates
     ]
     return {
         "candidates": annotated,
-        "batch_count": batch_count,
+        "batch_count": model_call_count,
+        "model_candidate_limit": max_model_candidates,
+        "model_candidate_count": len(model_candidates),
         "provider": kwargs.get("provider", ""),
         "api_model": kwargs.get("api_model", ""),
     }
+
+
+def candidate_annotation_priority_key(candidate: dict[str, Any]) -> tuple[int, int, int, int, str]:
+    flags = candidate.get("signal_flags", {}) if isinstance(candidate.get("signal_flags"), dict) else {}
+    evidence = int(candidate.get("evidence_count", 0) or 0)
+    conflict = int(bool(candidate.get("type_conflicts")))
+    external_or_meta = int(bool(flags.get("external_media_marker") or flags.get("inspiration_marker") or flags.get("meta_team_marker")))
+    lore_like = int(bool(flags.get("canon_adoption_marker") or flags.get("music_quest_pattern") or "lore" in candidate.get("knowledge_tracks", [])))
+    return (-evidence, -conflict, -external_or_meta, -lore_like, str(candidate.get("candidate_name", "")).lower())
+
+
+def request_model_annotations_for_chunk(
+    chunk: list[dict[str, Any]],
+    known_entities: list[dict[str, Any]],
+    kwargs: dict[str, Any],
+    logger: Any,
+    batch_label: str,
+    offset: int,
+    depth: int = 0,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    attempts = max(1, int(kwargs.get("annotation_retry_attempts", DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS) or DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS))
+    prompt = build_candidate_harvest_prompt(chunk, known_entities)
+    candidate_keys = [str(item.get("normalized_name_key", "")) for item in chunk]
+    attempt_failures: list[dict[str, Any]] = []
+    call_count = 0
+    for attempt in range(1, attempts + 1):
+        call_count += 1
+        logger.info(
+            "Stage 07A model request %s attempt %d/%d: candidates=%d offset=%d depth=%d",
+            batch_label,
+            attempt,
+            attempts,
+            len(chunk),
+            offset,
+            depth,
+        )
+        try:
+            response = call_model_chat(prompt=prompt, **kwargs)
+        except Exception as exc:
+            attempt_failures.append(
+                {
+                    "batch_label": batch_label,
+                    "offset": offset,
+                    "depth": depth,
+                    "attempt": attempt,
+                    "reason": "model_call_failed",
+                    "error": str(exc),
+                    "candidate_keys": candidate_keys,
+                }
+            )
+            continue
+        annotations = normalize_model_annotation_response(response)
+        if annotations is None:
+            attempt_failures.append(
+                {
+                    "batch_label": batch_label,
+                    "offset": offset,
+                    "depth": depth,
+                    "attempt": attempt,
+                    "reason": "invalid_model_json",
+                    "response_keys": sorted(response.keys()) if isinstance(response, dict) else [],
+                    "candidate_keys": candidate_keys,
+                }
+            )
+            continue
+        annotation_keys = {model_annotation_key(annotation) for annotation in annotations if isinstance(annotation, dict)}
+        missing = [key for key in candidate_keys if key and key not in annotation_keys]
+        if missing:
+            logger.warning(
+                "Stage 07A model request %s returned %d/%d annotations; missing keys will use fallback if not recovered later.",
+                batch_label,
+                len(annotation_keys),
+                len(candidate_keys),
+            )
+        return annotations, [], call_count
+
+    if len(chunk) > 1:
+        midpoint = max(1, len(chunk) // 2)
+        logger.warning(
+            "Stage 07A model batch %s failed validation after %d attempt(s); splitting %d candidate(s) into %d and %d.",
+            batch_label,
+            attempts,
+            len(chunk),
+            len(chunk[:midpoint]),
+            len(chunk[midpoint:]),
+        )
+        left_annotations, left_failures, left_calls = request_model_annotations_for_chunk(
+            chunk[:midpoint],
+            known_entities,
+            kwargs,
+            logger,
+            batch_label=f"{batch_label}a",
+            offset=offset,
+            depth=depth + 1,
+        )
+        right_annotations, right_failures, right_calls = request_model_annotations_for_chunk(
+            chunk[midpoint:],
+            known_entities,
+            kwargs,
+            logger,
+            batch_label=f"{batch_label}b",
+            offset=offset + midpoint,
+            depth=depth + 1,
+        )
+        split_failures = left_failures + right_failures
+        if not split_failures:
+            return left_annotations + right_annotations, [], call_count + left_calls + right_calls
+        return left_annotations + right_annotations, split_failures, call_count + left_calls + right_calls
+
+    return [], attempt_failures, call_count
 
 
 def stage_task_config(provider_config: dict[str, Any]) -> dict[str, Any]:
@@ -448,6 +566,7 @@ Core rules:
 - Do not decide from evidence count alone. Ask what the candidate phrase denotes in context.
 - Do not promote canon. Human review remains the canon gate.
 - Externality, meta context, aliases, and generic phrases are metadata for later review, not final canon decisions.
+- DISAMBIGUATION RULE: THERIAC features characters codenamed after emotional concepts (Love, Loss, Fear, Greed, Altruism). If the local context treats the entity as a person, faction member, or actor (e.g., having a spouse, feeling emotions, wearing a suit), propose `character`. If it discusses an abstract concept, motif, or lineage, propose `theme`.
 
 Known approved/seed entities:
 {json_dumps(known_entities)}
@@ -538,14 +657,90 @@ def normalize_model_annotation_response(response: Any) -> list[dict[str, Any]] |
         raw = response["candidates"]
     elif isinstance(response, dict) and isinstance(response.get("annotations"), list):
         raw = response["annotations"]
+    elif isinstance(response, dict) and isinstance(response.get("candidate_annotations"), list):
+        raw = response["candidate_annotations"]
+    elif isinstance(response, dict) and isinstance(response.get("entity_candidates"), list):
+        raw = response["entity_candidates"]
+    elif isinstance(response, dict) and isinstance(response.get("results"), list):
+        raw = response["results"]
+    elif isinstance(response, dict) and isinstance(response.get("items"), list):
+        raw = response["items"]
     elif isinstance(response, dict) and isinstance(response.get("_json_root"), list):
         raw = response["_json_root"]
+    elif isinstance(response, dict) and (
+        response.get("candidate_name") or response.get("normalized_name_key") or response.get("normalized_key")
+    ):
+        raw = [response]
     elif isinstance(response, list):
         raw = response
     else:
         return None
     out = [item for item in raw if isinstance(item, dict)]
     return out if out else None
+
+
+def model_annotation_key(annotation: dict[str, Any]) -> str:
+    return normalized_name_key(
+        str(
+            annotation.get("normalized_name_key")
+            or annotation.get("normalized_key")
+            or annotation.get("candidate_key")
+            or annotation.get("name_key")
+            or annotation.get("candidate_name")
+            or annotation.get("name")
+            or ""
+        )
+    )
+
+
+def fallback_model_annotation(candidate: dict[str, Any], reason: str) -> dict[str, Any]:
+    flags = candidate.get("signal_flags", {}) if isinstance(candidate.get("signal_flags"), dict) else {}
+    tracks = {str(track).strip().lower() for track in candidate.get("knowledge_tracks", []) or [] if str(track).strip()}
+    denotation = "mixed_or_uncertain"
+    recommended_track = "unknown"
+    local_lore_prior = 0.35
+    external_reference_prior = 0.35
+    if flags.get("generic_phrase") or flags.get("low_value_phrase"):
+        denotation = "likely_generic_phrase"
+        recommended_track = "unknown"
+        local_lore_prior = 0.15
+        external_reference_prior = 0.25
+    elif flags.get("meta_team_marker"):
+        denotation = "likely_meta_reference"
+        recommended_track = "meta"
+        local_lore_prior = 0.2
+        external_reference_prior = 0.55
+    elif flags.get("external_media_marker") or flags.get("inspiration_marker"):
+        denotation = "likely_external_reference"
+        recommended_track = "meta"
+        local_lore_prior = 0.25
+        external_reference_prior = 0.7
+    elif flags.get("canon_adoption_marker") or flags.get("music_quest_pattern") or "lore" in tracks:
+        denotation = "likely_lore_entity"
+        recommended_track = "lore"
+        local_lore_prior = 0.65
+        external_reference_prior = 0.2
+    elif "meta" in tracks:
+        denotation = "likely_meta_reference"
+        recommended_track = "meta"
+        local_lore_prior = 0.25
+        external_reference_prior = 0.45
+    return {
+        "normalized_name_key": candidate.get("normalized_name_key", ""),
+        "candidate_name": candidate.get("candidate_name", ""),
+        "proposed_entity_type": candidate.get("proposed_entity_type") or candidate.get("initial_proposed_entity_type") or "term",
+        "denotation_class": denotation,
+        "recommended_track": recommended_track,
+        "local_lore_prior": local_lore_prior,
+        "external_reference_prior": external_reference_prior,
+        "confidence": 0.25,
+        "canonical_name": None,
+        "alias_of": None,
+        "signal_flags": {},
+        "reasoning_summary": f"Qwen annotation unavailable or incomplete ({reason}); retained using deterministic 07A signal flags for review routing only.",
+        "human_review_question": f"Should {candidate.get('candidate_name', 'this candidate')} be treated as lore, meta, alias evidence, or ignored?",
+        "_annotation_status": "fallback_after_model_failure",
+    }
 
 
 def apply_model_annotation(candidate: dict[str, Any], annotation: dict[str, Any]) -> dict[str, Any]:
@@ -562,7 +757,7 @@ def apply_model_annotation(candidate: dict[str, Any], annotation: dict[str, Any]
     merged["deterministic_signal_flags"] = deterministic_flags
     merged["signal_flags"] = {**deterministic_flags, **model_flags}
     merged["proposed_entity_type"] = model_type
-    merged["model_annotation_status"] = "annotated"
+    merged["model_annotation_status"] = str(annotation.get("_annotation_status") or "annotated")
     merged["model_annotation"] = {
         "candidate_name": str(annotation.get("candidate_name") or merged.get("candidate_name", "")).strip(),
         "proposed_entity_type": model_type,

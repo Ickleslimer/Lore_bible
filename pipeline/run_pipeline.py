@@ -612,6 +612,7 @@ def main() -> None:
             p.entity_adjudication_recommendations,
             Path("canon/theme_profile.json"),
             p.theme_candidate_reclassification,
+            Path("config/pipeline_config.json"),
         )
         stage_07d = read_json(p.theme_candidate_reclassification)
         logger.info(

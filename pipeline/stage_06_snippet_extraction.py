@@ -646,6 +646,17 @@ def classify_with_provider(
         success_decay=float(model_provider_cfg.get("adaptive_success_decay", 0.9)),
         rate_limit_growth=float(model_provider_cfg.get("adaptive_rate_limit_growth", 1.8)),
         ollama_unavailable_cooldown_seconds=int(model_provider_cfg.get("ollama_unavailable_cooldown_seconds", 120)),
+        session_id=str(model_provider_cfg.get("session_id") or "theriac-stage-06-snippet-extraction"),
+        trace=model_provider_cfg.get(
+            "trace",
+            {
+                "trace_id": "theriac-stage-06-snippet-extraction",
+                "trace_name": "THERIAC Stage 06 Snippet Extraction",
+                "span_name": "stage_06_snippet_extraction",
+                "generation_name": "snippet_relevance_classification",
+                "pipeline_task": "stage_06_snippet_extraction",
+            },
+        ),
     )
     if not isinstance(model_response, dict):
         logger.debug(
