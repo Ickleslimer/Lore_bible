@@ -13,6 +13,7 @@ from pipeline.entity_resolution import (
     display_name,
     entity_id,
     is_blocked_seed_name,
+    is_disallowed_entity_type,
     load_entity_records,
     normalize_entity_type as normalize_shared_entity_type,
     normalized_name_key,
@@ -229,7 +230,7 @@ RECENT_EVIDENCE_MULTIPLIER = 1.35
 CURRENT_EVIDENCE_WINDOW_DAYS = 14
 CURRENT_EVIDENCE_MULTIPLIER = 1.5
 
-ENTITY_TYPES = {"character", "faction", "organization", "location", "quest", "event", "timeline_node", "theme", "term"}
+ENTITY_TYPES = {"character", "faction", "organization", "location", "quest", "event", "timeline_node", "term"}
 TYPE_RECONSIDERATION_MARGIN = 0.75
 
 
@@ -425,6 +426,8 @@ def run(
         if str(proposal.get("review_status", "pending")) != "approved":
             continue
         decision = proposal.get("latest_decision", {}) if isinstance(proposal.get("latest_decision", {}), dict) else {}
+        if is_disallowed_entity_type(decision.get("entity_type") or proposal.get("proposed_entity_type") or ""):
+            continue
         approved_entity = approved_conversation_entity_from_proposal(proposal, decision, resolved_entity_by_name)
         approved_conversation_entities.append(approved_entity)
         for snippet_id in proposal.get("source_snippet_ids", []):
@@ -669,7 +672,7 @@ def promote_band_grouped_quest_candidates(
 
     THERIAC quest-naming convention: quests for the same character share
     a band's (or group of bands') songs as namesakes.  When we find
-    multiple un-typed or theme-typed candidates that share an artist
+    multiple un-typed candidates that share an artist
     reference in their evidence, we add strong quest votes so they reach
     review as quest candidates.
     """
@@ -817,7 +820,7 @@ def triage_conversation_entity_proposal(
             adjusted_evidence_count,
             metrics,
         ), "medium"
-    if adjusted_evidence_count >= REVIEW_MIN_EVIDENCE_DEFAULT and proposed_type not in {"term", "theme"} and not is_low_value_phrase_name(key):
+    if adjusted_evidence_count >= REVIEW_MIN_EVIDENCE_DEFAULT and proposed_type != "term" and not is_low_value_phrase_name(key):
         return "review_required", recency_triage_reason(
             "recurring named candidate above review threshold",
             evidence_count,
@@ -1176,7 +1179,7 @@ Return JSON object:
       "alias_text": "old, alternate, codename, abbreviation, or working name",
       "canonical_name": "canonical target name",
       "target_entity_id": "entity_id from known_entities when available, otherwise empty",
-      "entity_type": "character|faction|organization|location|quest|event|timeline_node|theme|term",
+      "entity_type": "character|faction|organization|location|quest|event|timeline_node|term",
       "source_snippet_ids": ["exact snippet_id values"],
       "confidence": 0.0,
       "rationale": "brief evidence-backed explanation"
@@ -1226,7 +1229,7 @@ Return JSON object:
       "alias_text": "candidate anchor that should become an alias",
       "canonical_name": "known canonical target",
       "target_entity_id": "entity_id from known_entities when available, otherwise empty",
-      "entity_type": "character|faction|organization|location|quest|event|timeline_node|theme|term",
+      "entity_type": "character|faction|organization|location|quest|event|timeline_node|term",
       "source_snippet_ids": ["source ids from the candidate row, when useful"],
       "confidence": 0.0,
       "rationale": "brief evidence-backed explanation"
@@ -1391,6 +1394,8 @@ def conversation_entity_seed_records_from_memory(memory: dict[str, Any]) -> list
         canonical_name = clean_candidate_name(str(item.get("canonical_name", "")))
         if not canonical_name:
             continue
+        if is_disallowed_entity_type(item.get("entity_type", "")):
+            continue
         aliases = []
         for alias in item.get("aliases", []) or []:
             alias_text = clean_candidate_name(str(alias))
@@ -1546,7 +1551,7 @@ def infer_type_evidence_for_candidate(candidate_name: str, snip: dict[str, Any])
     if "event" in topics:
         votes.append(type_vote("event", 1.8, "candidate_topic:event", snip))
     if "theme" in topics:
-        votes.append(type_vote("theme", 1.4, "candidate_topic:theme", snip))
+        votes.append(type_vote("term", 0.8, "candidate_topic:theme_concept_not_entity", snip))
     if "mechanic" in topics:
         votes.append(type_vote("term", 1.2, "candidate_topic:mechanic", snip))
     if key in {"lab", "the lab"} or any(part in key.split() for part in {"facility", "clinic", "road", "city", "base"}):

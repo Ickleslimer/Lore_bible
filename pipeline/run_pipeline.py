@@ -18,6 +18,8 @@ from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
 from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
 from pipeline.stage_07c_theme_miner import run as run_stage_07c
 from pipeline.stage_07d_theme_reclassification import run as run_stage_07d
+from pipeline.stage_04r_theme_relevance_rerun import run as run_stage_04r
+from pipeline.stage_06r_theme_rescue_snippet_extraction import run as run_stage_06r
 from pipeline.stage_09_claim_drafting import run as run_stage_09
 from pipeline.stage_10_identity_merge import run as run_stage_10
 from pipeline.stage_11_card_synthesis import run as run_stage_11
@@ -202,6 +204,31 @@ def _json_field(path: Path, key: str, default: object = None) -> object:
     return payload.get(key, default) if isinstance(payload, dict) else default
 
 
+def _load_pipeline_config() -> dict[str, object]:
+    path = Path("config/pipeline_config.json")
+    if not path.exists():
+        return {}
+    try:
+        payload = read_json(path)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _theme_rerun_enabled() -> bool:
+    cfg = _load_pipeline_config()
+    raw = cfg.get("theme_aware_rerun", {}) if isinstance(cfg, dict) else {}
+    return bool(raw.get("enabled", False)) if isinstance(raw, dict) else False
+
+
+def _effective_snippets_path(paths: ArtifactPaths) -> Path:
+    return paths.snippets_with_theme_rescue if paths.snippets_with_theme_rescue.exists() else paths.snippets
+
+
+def _effective_snippets_review_path(paths: ArtifactPaths) -> Path:
+    return paths.snippets_needs_review_with_theme_rescue if paths.snippets_needs_review_with_theme_rescue.exists() else paths.snippets_needs_review
+
+
 def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tuple[int, str]:
     """Return the earliest stage that must run for an existing artifact root.
 
@@ -231,6 +258,10 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
         p.theme_profile_update_report,
         p.theme_candidate_reclassification,
     ]
+    theme_rerun_enabled = _theme_rerun_enabled()
+    if theme_rerun_enabled:
+        stage7.extend([p.theme_relevance_rerun, p.snippets_with_theme_rescue])
+    effective_snippets = _effective_snippets_path(p)
     stage8 = [p.snippet_clusters_lore, p.snippet_clusters_meta]
     stage9 = [p.claim_drafts]
     stage10 = [p.identity_merge_proposals]
@@ -257,9 +288,9 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     if _missing(stage7):
         return 7, "Stage 07A/07B entity candidate harvest/adjudication artifacts are missing."
 
-    if _missing(stage8) or _newer_than_outputs(stage6 + [stage7[0]], stage8):
+    if _missing(stage8) or _newer_than_outputs([effective_snippets, p.resolved_entities], stage8):
         return 8, "Stage 08 grouping artifacts are missing or stale."
-    if _missing(stage9) or _newer_than_outputs(stage8 + [stage7[0], p.alias_map], stage9):
+    if _missing(stage9) or _newer_than_outputs(stage8 + [p.resolved_entities, p.alias_map, effective_snippets], stage9):
         return 9, "Stage 09 claim drafts are missing or stale."
 
     if not ignore_pending and _pending_claim_count(root) > 0:
@@ -294,7 +325,7 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
         [
             stage9[0],
             p.resolved_entities,
-            p.snippets,
+            effective_snippets,
             claim_decisions,
             author_claims,
             author_directives,
@@ -315,7 +346,7 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
             p.canonical_cards,
             p.meta_cards_draft,
             p.alias_map,
-            p.snippets,
+            effective_snippets,
             p.source_profiles,
             p.merge_log,
         ],
@@ -386,6 +417,8 @@ def main() -> None:
         write_json(bypass_path, existing_bypass)
     total_stages = STAGE_TOTAL
     start_stage = max(1, min(total_stages, int(args.start_stage or 1)))
+    snippets_for_downstream = _effective_snippets_path(p)
+    snippets_review_for_downstream = _effective_snippets_review_path(p)
     if args.resume:
         start_stage, resume_reason = determine_resume_start_stage(root, ignore_pending=args.ignore_pending)
         logger.info("Resume mode selected for %s: %s", root, resume_reason)
@@ -620,8 +653,63 @@ def main() -> None:
             len(stage_07d.get("candidate_reclassifications", [])),
             int(stage_07d.get("summary", {}).get("theme_matched_candidate_count", 0)),
         )
+        if _theme_rerun_enabled():
+            _run_stage(
+                logger,
+                7,
+                total_stages,
+                "Stage 04R Theme-Aware Relevance Rerun",
+                run_stage_04r,
+                p.global_timeline,
+                p.conversation_segments,
+                p.resolved_entities,
+                Path("canon/theme_profile.json"),
+                p.externality_cache,
+                p.theme_relevance_rerun,
+                p.theme_rescue_messages,
+                p.theme_rescue_segments,
+                p.theme_relevance_rerun_failures,
+                Path("config/pipeline_config.json"),
+            )
+            stage_04r = read_json(p.theme_relevance_rerun)
+            logger.info(
+                "Stage 04R summary: candidates=%d rescued=%d rescued_messages=%d",
+                int(stage_04r.get("summary", {}).get("candidate_window_count", 0)),
+                int(stage_04r.get("summary", {}).get("rescued_conversation_count", 0)),
+                int(stage_04r.get("summary", {}).get("rescued_message_count", 0)),
+            )
+            _run_stage(
+                logger,
+                7,
+                total_stages,
+                "Stage 06R Theme Rescue Snippet Extraction",
+                run_stage_06r,
+                p.theme_rescue_messages,
+                p.source_profiles,
+                p.snippets,
+                p.snippets_needs_review,
+                p.theme_rescue_snippets,
+                p.theme_rescue_snippets_needs_review,
+                p.theme_rescue_source_profiles,
+                p.snippets_with_theme_rescue,
+                p.snippets_needs_review_with_theme_rescue,
+                p.theme_rescue_snippet_merge_report,
+                Path("config/pipeline_config.json"),
+                p.entity_seed,
+                thematic_runtime_path,
+            )
+            merge_report = read_json(p.theme_rescue_snippet_merge_report)
+            logger.info(
+                "Stage 06R summary: rescue_snippets=%d combined_snippets=%d",
+                int(merge_report.get("summary", {}).get("rescue_snippet_count", 0)),
+                int(merge_report.get("summary", {}).get("combined_snippet_count", 0)),
+            )
+            snippets_for_downstream = _effective_snippets_path(p)
+            snippets_review_for_downstream = _effective_snippets_review_path(p)
     else:
         logger.info("[7/%d] SKIP  Stage 07A-07D Entity Candidate Harvest + Adjudication + Themes (resume starts at Stage %02d)", total_stages, start_stage)
+        snippets_for_downstream = _effective_snippets_path(p)
+        snippets_review_for_downstream = _effective_snippets_review_path(p)
 
     if start_stage <= 8:
         _run_stage(
@@ -630,7 +718,7 @@ def main() -> None:
             total_stages,
             "Stage 08 Snippet Grouping",
             run_stage_08,
-            p.snippets,
+            snippets_for_downstream,
             p.resolved_entities,
             p.snippet_clusters_lore,
             p.snippet_clusters_meta,
@@ -656,7 +744,7 @@ def main() -> None:
             p.snippet_clusters_lore,
             p.snippet_clusters_meta,
             p.alias_map,
-            p.snippets,
+            snippets_for_downstream,
             p.claim_drafting_dir,
             Path("config/pipeline_config.json"),
             Path("canon/review_memory.json"),
@@ -729,7 +817,7 @@ def main() -> None:
             p.canonical_cards,
             p.merge_log,
             Path("config/pipeline_config.json"),
-            p.snippets,
+            snippets_for_downstream,
         )
         logger.info(
             "Stage 11 summary: card_drafts=%d canonical_cards=%d merge_log=%d",
@@ -775,7 +863,7 @@ def main() -> None:
             p.canonical_cards,
             p.meta_cards_draft,
             p.alias_map,
-            p.snippets,
+            snippets_for_downstream,
             p.source_profiles,
             p.merge_log,
             p.notion_import,

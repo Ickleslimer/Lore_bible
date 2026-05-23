@@ -25,7 +25,7 @@ from pipeline.ui_review_app import (
     pending_review_total,
 )
 
-ENTITY_REVIEW_TYPES = ["term", "theme", "quest", "event", "character", "faction", "organization", "location", "timeline_node"]
+ENTITY_REVIEW_TYPES = ["term", "quest", "event", "character", "faction", "organization", "location", "timeline_node"]
 AUTHOR_CLAIM_TYPES = [
     "relationship",
     "role",

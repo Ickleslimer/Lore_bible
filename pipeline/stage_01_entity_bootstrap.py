@@ -26,7 +26,6 @@ SECTION_TO_ENTITY_TYPE = {
     "AI INFRASTRUCTURE": "character",
     "KEY QUEST": "quest",
     "QUEST": "quest",
-    "THEME": "theme",
     "TIMELINE": "timeline_node",
     "CHARACTER": "character",
     "FACTION": "faction",
@@ -107,7 +106,6 @@ def infer_entities_with_model(text: str, config: dict[str, Any]) -> dict[str, An
         "quest",
         "event",
         "timeline_node",
-        "theme",
         "term",
     }
     entities: list[dict[str, Any]] = []
@@ -244,7 +242,6 @@ def run(
                 "quest",
                 "event",
                 "timeline_node",
-                "theme",
                 "term"
             ],
             "notes": "Ontology seed for THERIAC lore cards. Not canon evidence."

@@ -63,7 +63,14 @@
                 "match_strength": { "type": "number", "minimum": 0, "maximum": 1 },
                 "matched_indicators": { "type": "array", "items": { "type": "string" } },
                 "reason": { "type": "string" },
-                "prior_boost": { "type": "number", "minimum": 0, "maximum": 1 }
+                "prior_boost": { "type": "number", "minimum": 0, "maximum": 1 },
+                "theme_match_score": { "type": "number", "minimum": 0, "maximum": 1 },
+                "ranking_score": { "type": "number", "minimum": 0, "maximum": 1 },
+                "entity_theme_rank": { "type": "integer", "minimum": 1 },
+                "entity_theme_count": { "type": "integer", "minimum": 1 },
+                "entity_theme_role": { "type": "string" },
+                "theme_candidate_rank": { "type": "integer", "minimum": 1 },
+                "theme_candidate_count": { "type": "integer", "minimum": 1 }
               },
               "additionalProperties": true
             }

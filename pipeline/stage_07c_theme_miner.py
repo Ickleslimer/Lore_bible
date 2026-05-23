@@ -26,7 +26,7 @@ THEME_DOMAINS = {
     "other",
 }
 DEFAULT_MAX_EVIDENCE_PACKETS = 80
-DEFAULT_MAX_SEED_THEME_ENTITY_PACKETS = 32
+DEFAULT_MAX_SEED_THEME_LABEL_PACKETS = 32
 DEFAULT_MAX_REVIEW_MEMORY_THEME_PACKETS = 48
 DEFAULT_MAX_ADJUDICATION_THEME_PACKETS = 48
 
@@ -236,7 +236,13 @@ def collect_theme_evidence(
     limit = max(1, int(task_cfg.get("max_evidence_packets", DEFAULT_MAX_EVIDENCE_PACKETS) or DEFAULT_MAX_EVIDENCE_PACKETS))
     seed_limit = max(
         0,
-        int(task_cfg.get("max_seed_theme_entity_packets", DEFAULT_MAX_SEED_THEME_ENTITY_PACKETS) or DEFAULT_MAX_SEED_THEME_ENTITY_PACKETS),
+        int(
+            task_cfg.get(
+                "max_seed_theme_label_packets",
+                task_cfg.get("max_seed_theme_entity_packets", DEFAULT_MAX_SEED_THEME_LABEL_PACKETS),
+            )
+            or DEFAULT_MAX_SEED_THEME_LABEL_PACKETS
+        ),
     )
     review_limit = max(
         0,
@@ -252,7 +258,7 @@ def collect_theme_evidence(
         if isinstance(item, dict)
     }
     packets: list[dict[str, Any]] = []
-    seed_packets = resolved_entity_theme_packets(resolved_entities, limit=seed_limit)
+    seed_packets = review_memory_theme_label_packets(review_memory, limit=seed_limit)
     seed_theme_keys = theme_seed_keys(seed_packets)
     packets.extend(seed_packets)
     packets.extend(review_memory_theme_packets(review_memory, limit=review_limit, seed_theme_keys=seed_theme_keys))
@@ -317,9 +323,53 @@ def adjudication_supports_theme_learning(rec: dict[str, Any]) -> bool:
         return False
     if rec.get("theme_matches"):
         return True
-    if str(rec.get("recommended_entity_type", "")) == "theme":
-        return True
     return str(rec.get("externality_class", "")) == "historical_or_mythological"
+
+
+def review_memory_theme_label_packets(review_memory: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    packets: list[dict[str, Any]] = []
+    if limit <= 0:
+        return packets
+    if not isinstance(review_memory, dict):
+        return packets
+    rows: list[tuple[dict[str, Any], str]] = []
+    approved_theme_labels = review_memory.get("approved_theme_labels", [])
+    if isinstance(approved_theme_labels, list):
+        rows.extend((row, "review_memory.approved_theme_labels") for row in approved_theme_labels if isinstance(row, dict))
+    legacy_entities = review_memory.get("approved_conversation_entities", [])
+    if isinstance(legacy_entities, list):
+        rows.extend(
+            (row, "review_memory.approved_conversation_entities_legacy_theme")
+            for row in legacy_entities
+            if isinstance(row, dict) and str(row.get("entity_type", "")).strip() == "theme"
+        )
+    for row, source in rows:
+        if not isinstance(row, dict):
+            continue
+        canonical_name = clean_text(row.get("canonical_name") or row.get("candidate_name") or "", 160)
+        if not canonical_name:
+            continue
+        aliases = normalize_string_list(row.get("aliases", []), 20, 120)
+        rationale = clean_text(row.get("rationale") or row.get("review_reason") or "", 800)
+        packets.append(
+            {
+                "source": source,
+                "evidence_status": "approved_theme_label_not_entity",
+                "entity_name": canonical_name,
+                "entity_type": "theme_label",
+                "aliases": aliases,
+                "externality_class": "",
+                "recommended_action": "",
+                "recommended_track": "theme_profile",
+                "source_snippet_ids": row.get("source_snippet_ids", []) or row.get("supporting_snippet_ids", []),
+                "claim_ids": [],
+                "text": compact_join([canonical_name, " ".join(aliases), rationale], 1800),
+                "theme_matches": [],
+            }
+        )
+        if len(packets) >= limit:
+            break
+    return packets
 
 
 def review_memory_theme_packets(review_memory: dict[str, Any], limit: int, seed_theme_keys: list[str] | None = None) -> list[dict[str, Any]]:
@@ -330,6 +380,7 @@ def review_memory_theme_packets(review_memory: dict[str, Any], limit: int, seed_
     seed_theme_keys = seed_theme_keys or []
     source_lists = (
         ("accepted_claims", "accepted_claim"),
+        ("approved_theme_labels", "approved_theme_label"),
         ("approved_conversation_entities", "approved_entity"),
         ("author_claims", "author_claim"),
         ("story_question_answers", "author_answer"),
@@ -342,7 +393,11 @@ def review_memory_theme_packets(review_memory: dict[str, Any], limit: int, seed_
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if str(row.get("claim_type", "")).strip() != "theme" and str(row.get("entity_type", "")).strip() != "theme":
+            if (
+                field != "approved_theme_labels"
+                and str(row.get("claim_type", "")).strip() != "theme"
+                and str(row.get("entity_type", "")).strip() != "theme"
+            ):
                 continue
             text = compact_join(
                 [
@@ -378,35 +433,6 @@ def review_memory_theme_packets(review_memory: dict[str, Any], limit: int, seed_
             else:
                 fallback_packets.append(packet)
     return (round_robin_seed_packets(priority_groups, seed_theme_keys, limit) + fallback_packets)[:limit]
-
-
-def resolved_entity_theme_packets(resolved_entities: dict[str, Any], limit: int) -> list[dict[str, Any]]:
-    packets: list[dict[str, Any]] = []
-    if limit <= 0:
-        return packets
-    for entity in resolved_entities.get("resolved_entities", []) or []:
-        if not isinstance(entity, dict):
-            continue
-        if str(entity.get("entity_type", "")).strip() != "theme":
-            continue
-        text = compact_join([entity.get("canonical_name", ""), " ".join(entity.get("aliases", []) or [])], 500)
-        if text:
-            packets.append(
-                {
-                    "source": "resolved_entities",
-                    "evidence_status": "observed_seed_or_approved_theme_entity",
-                    "entity_name": entity.get("canonical_name", ""),
-                    "entity_type": entity.get("entity_type", ""),
-                    "aliases": entity.get("aliases", []) or [],
-                    "source_snippet_ids": [],
-                    "claim_ids": [],
-                    "text": text,
-                    "theme_matches": [],
-                }
-            )
-            if len(packets) >= limit:
-                break
-    return packets
 
 
 def theme_seed_keys(seed_packets: list[dict[str, Any]]) -> list[str]:

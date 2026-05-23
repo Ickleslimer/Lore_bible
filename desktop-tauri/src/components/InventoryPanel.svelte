@@ -22,7 +22,7 @@
   let workingCanonical: Record<string, string> = {};
   let workingType: Record<string, string> = {};
 
-  const entityTypes = ["term", "theme", "quest", "event", "character", "faction", "organization", "location", "timeline_node"];
+  const entityTypes = ["term", "quest", "event", "character", "faction", "organization", "location", "timeline_node"];
 
   $: buckets = uniqueValues(rows.map((row) => row.bucket));
   $: categories = uniqueValues(rows.map((row) => row.category));

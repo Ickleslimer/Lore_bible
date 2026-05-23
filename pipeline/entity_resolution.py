@@ -38,7 +38,8 @@ CANONICAL_OVERRIDES = {
 }
 
 ENTITY_TYPE_ALIASES = {"ai_system": "character", "ai system": "character", "ai systems": "character"}
-ENTITY_TYPES = {"character", "faction", "organization", "location", "quest", "event", "timeline_node", "theme", "term"}
+DISALLOWED_ENTITY_TYPES = {"theme"}
+ENTITY_TYPES = {"character", "faction", "organization", "location", "quest", "event", "timeline_node", "term"}
 
 
 def normalize_entity_type(entity_type: Any, default: str = "term") -> str:
@@ -47,6 +48,12 @@ def normalize_entity_type(entity_type: Any, default: str = "term") -> str:
     if raw in ENTITY_TYPES:
         return raw
     return default if default in ENTITY_TYPES else "term"
+
+
+def is_disallowed_entity_type(entity_type: Any) -> bool:
+    raw = str(entity_type or "").strip().lower()
+    raw = ENTITY_TYPE_ALIASES.get(raw, raw)
+    return raw in DISALLOWED_ENTITY_TYPES
 
 
 def display_name(value: str) -> str:
@@ -111,9 +118,17 @@ def load_entity_records(path: Path | None) -> list[dict[str, Any]]:
     payload = read_json(path)
     if isinstance(payload, dict):
         if isinstance(payload.get("resolved_entities"), list):
-            return [{**x, "entity_type": normalize_entity_type(x.get("entity_type", "term"))} for x in payload["resolved_entities"] if isinstance(x, dict)]
+            return [
+                {**x, "entity_type": normalize_entity_type(x.get("entity_type", "term"))}
+                for x in payload["resolved_entities"]
+                if isinstance(x, dict) and not is_disallowed_entity_type(x.get("entity_type"))
+            ]
         if isinstance(payload.get("entities"), list):
-            return [{**x, "entity_type": normalize_entity_type(x.get("entity_type", "term"))} for x in payload["entities"] if isinstance(x, dict)]
+            return [
+                {**x, "entity_type": normalize_entity_type(x.get("entity_type", "term"))}
+                for x in payload["entities"]
+                if isinstance(x, dict) and not is_disallowed_entity_type(x.get("entity_type"))
+            ]
         if isinstance(payload.get("cards"), list):
             # Backwards-compatible reader for old artifacts.
             out: list[dict[str, Any]] = []
@@ -122,6 +137,8 @@ def load_entity_records(path: Path | None) -> list[dict[str, Any]]:
                     continue
                 name = str(card.get("canonical_name", "")).strip()
                 if not name:
+                    continue
+                if is_disallowed_entity_type(card.get("entity_type", "term")):
                     continue
                 out.append(
                     {
@@ -202,6 +219,9 @@ def resolve_entities(seed_entities: list[dict[str, Any]], review_memory: dict[st
         canonical = alias_overrides.get(key) or CANONICAL_OVERRIDES.get(key) or seed_alias_overrides.get(key) or display_name(cleaned)
         canonical_key = normalized_name_key(canonical)
         seed_status = str(seed.get("seed_status", "active"))
+        if is_disallowed_entity_type(seed.get("entity_type", "")):
+            blocked.append({**seed, "seed_status": "blocked_seed", "blocked_reason": "themes_are_profile_data_not_entities"})
+            continue
         if seed_status == "blocked_seed" or is_blocked_seed_name(cleaned):
             blocked.append({**seed, "seed_status": "blocked_seed", "blocked_reason": "generic_or_malformed_heading"})
             continue

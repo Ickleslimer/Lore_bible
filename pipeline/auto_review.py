@@ -194,7 +194,7 @@ Respond with a JSON object:
 {{
   "decision": "approve" or "reject",
   "canonical_name": "<the best canonical name for this entity>",
-  "entity_type": "<one of: term, theme, quest, event, character, faction, organization, location, timeline_node>",
+  "entity_type": "<one of: term, quest, event, character, faction, organization, location, timeline_node>",
   "secondary_entity_types": ["optional secondary type(s), e.g. faction or organization for a location/institution"],
   "human_review_recommended": true or false,
   "human_review_reason": "<short reason if human_review_recommended is true; otherwise empty>",
@@ -208,7 +208,7 @@ Guidelines:
   no special THERIAC meaning, or names of real people who are team members
   rather than characters.
 - Recommend human review when the candidate is broad, abstract, low-evidence,
-  mostly production/meta, type-ambiguous, or could be a theme/mechanic/category
+  mostly production/meta, type-ambiguous, or could be a thematic concept/mechanic/category
   rather than a page-worthy entity. Still make the best approve/reject guess.
 - Working names are allowed. Approve a placeholder-style name, such as a role
   label, only when the evidence clearly shows it refers to one specific

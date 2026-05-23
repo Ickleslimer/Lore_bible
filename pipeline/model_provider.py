@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
@@ -20,7 +20,6 @@ _NEXT_MODEL_ATTEMPT_EPOCH_S = 0.0
 _LAST_PACING_LOG_EPOCH_S = 0.0
 _LAST_COOLDOWN_LOG_EPOCH_S = 0.0
 _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S = 0.0
-_LAST_OLLAMA_SKIP_LOG_EPOCH_S = 0.0
 _LAST_API_FAILURE_LOG_EPOCH_S = 0.0
 _CACHED_API_KEY: str | None = None
 _HAS_CACHED_API_KEY = False
@@ -28,7 +27,6 @@ _CACHED_GEMINI_API_KEY: str | None = None
 _HAS_CACHED_GEMINI_API_KEY = False
 _CACHED_OPENROUTER_API_KEY: str | None = None
 _HAS_CACHED_OPENROUTER_API_KEY = False
-_OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S = 0.0
 _LAST_MODEL_SKIP_REASON = ""
 
 TASK_ROUTING_CONTROL_KEYS = {
@@ -85,7 +83,6 @@ def get_model_runtime_status() -> dict[str, Any]:
         "last_model_skip_reason": _LAST_MODEL_SKIP_REASON,
         "rate_limited_until_epoch_s": _RATE_LIMITED_UNTIL_EPOCH_S,
         "next_model_attempt_epoch_s": _NEXT_MODEL_ATTEMPT_EPOCH_S,
-        "ollama_unavailable_until_epoch_s": _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S,
     }
 
 
@@ -181,14 +178,12 @@ def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) ->
         "api_base_url": str(cfg.get("api_base_url", "https://openrouter.ai/api/v1")),
         "api_model": str(cfg.get("api_model", "qwen/qwen3.5-flash-02-23")),
         "api_retries": int(cfg.get("api_retries", 2)),
-        "auto_fallback_to_ollama": bool(cfg.get("auto_fallback_to_ollama", True)),
         "rate_limit_cooldown_seconds": int(cfg.get("rate_limit_cooldown_seconds", 90)),
         "rate_state_path": Path(str(cfg.get("rate_state_path", "artifacts/learning/model_provider_rate_runtime.json"))),
         "min_interval_seconds": float(cfg.get("adaptive_min_interval_seconds", 2.0)),
         "max_interval_seconds": float(cfg.get("adaptive_max_interval_seconds", 120.0)),
         "success_decay": float(cfg.get("adaptive_success_decay", 0.9)),
         "rate_limit_growth": float(cfg.get("adaptive_rate_limit_growth", 1.8)),
-        "ollama_unavailable_cooldown_seconds": int(cfg.get("ollama_unavailable_cooldown_seconds", 120)),
         "max_tokens": int(cfg.get("max_tokens", 4096)),
         "session_id": session_id,
         "trace": _openrouter_trace_for_task(task_name, session_id, cfg),
@@ -460,129 +455,6 @@ def _parse_json_content(content: str, logger) -> dict[str, Any] | None:
 
     logger.warning("Model message content was not valid JSON. content_preview=%s", normalized[:300].replace("\n", "\\n"))
     return None
-
-
-def _call_ollama_chat(
-    base_url: str,
-    model: str,
-    prompt: str,
-    temperature: float,
-    timeout_seconds: int,
-    unavailable_cooldown_seconds: int = 120,
-) -> dict[str, Any] | None:
-    logger = get_logger(__name__)
-    global _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S
-    endpoint = f"{base_url.rstrip('/')}/api/chat"
-    logger.debug(
-        "Calling Ollama chat provider endpoint=%s model=%s timeout=%ss temperature=%.2f prompt_chars=%d",
-        endpoint,
-        model,
-        timeout_seconds,
-        temperature,
-        len(prompt),
-    )
-    # region agent log
-    _debug_log(
-        "model-provider-debug",
-        "H3",
-        "model_provider.py:_call_ollama_chat",
-        "Attempting Ollama request",
-        {"endpoint": endpoint, "model": model, "timeout_seconds": timeout_seconds},
-    )
-    # endregion
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a precise JSON classifier."},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-        "options": {"temperature": temperature},
-    }
-    req = urllib.request.Request(
-        url=endpoint,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-            raw_body = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        err_body = ""
-        try:
-            err_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            err_body = "(unable to read HTTP error body)"
-        _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S = time.time() + max(1, int(unavailable_cooldown_seconds))
-        logger.warning(
-            "Ollama HTTP error status=%s reason=%s endpoint=%s body_preview=%s",
-            exc.code,
-            exc.reason,
-            endpoint,
-            err_body[:300].replace("\n", "\\n"),
-        )
-        # region agent log
-        _debug_log(
-            "model-provider-debug",
-            "H3",
-            "model_provider.py:_call_ollama_chat",
-            "Ollama HTTP error",
-            {"status": int(exc.code), "reason": str(exc.reason)},
-        )
-        # endregion
-        return None
-    except (urllib.error.URLError, TimeoutError) as exc:
-        _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S = time.time() + max(1, int(unavailable_cooldown_seconds))
-        logger.warning("Ollama connection failure endpoint=%s error=%s", endpoint, exc)
-        # region agent log
-        _debug_log(
-            "model-provider-debug",
-            "H3",
-            "model_provider.py:_call_ollama_chat",
-            "Ollama connection failure",
-            {"error_type": type(exc).__name__, "error": str(exc)},
-        )
-        # endregion
-        return None
-    except Exception as exc:
-        _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S = time.time() + max(1, int(unavailable_cooldown_seconds))
-        logger.warning("Ollama request failed unexpectedly endpoint=%s error=%s", endpoint, exc)
-        return None
-
-    try:
-        body = json.loads(raw_body)
-    except json.JSONDecodeError:
-        logger.warning("Ollama response was not valid JSON. response_preview=%s", raw_body[:300].replace("\n", "\\n"))
-        return None
-    except Exception as exc:
-        logger.warning("Failed decoding Ollama response JSON: %s", exc)
-        return None
-
-    if not isinstance(body, dict):
-        logger.warning("Ollama response JSON root was %s (expected object).", type(body).__name__)
-        return None
-    logger.debug("Ollama response envelope keys=%s", sorted(body.keys()))
-    content = (((body.get("message") or {}).get("content")) or "").strip()
-    if not content:
-        logger.warning("Ollama response contained no assistant message content.")
-        return None
-    logger.debug("Ollama response content_preview=%s", content[:300].replace("\n", "\\n"))
-    parsed_content = _parse_json_content(content, logger)
-    if parsed_content is None:
-        # region agent log
-        _debug_log(
-            "model-provider-debug",
-            "H4",
-            "model_provider.py:_call_ollama_chat",
-            "Ollama content parse failed",
-            {"content_preview": content[:120]},
-        )
-        # endregion
-        return None
-    _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S = 0.0
-    logger.debug("Parsed Ollama content keys=%s", sorted(parsed_content.keys()))
-    return parsed_content
 
 
 def _call_openai_compatible_chat(
@@ -1506,14 +1378,12 @@ def call_model_chat(
     api_base_url: str = "https://openrouter.ai/api/v1",
     api_model: str = "qwen/qwen3.5-flash-02-23",
     api_retries: int = 2,
-    auto_fallback_to_ollama: bool = True,
     rate_limit_cooldown_seconds: int = 90,
     rate_state_path: Path | None = None,
     min_interval_seconds: float = 2.0,
     max_interval_seconds: float = 120.0,
     success_decay: float = 0.9,
     rate_limit_growth: float = 1.8,
-    ollama_unavailable_cooldown_seconds: int = 120,
     max_tokens: int = 4096,
     json_schema: dict[str, Any] | None = None,
     tools: list[dict[str, Any]] | None = None,
@@ -1522,24 +1392,18 @@ def call_model_chat(
     user: str | None = None,
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
-    global _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S, _LAST_OLLAMA_SKIP_LOG_EPOCH_S, _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S, _LAST_API_FAILURE_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
+    global _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S, _LAST_API_FAILURE_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
+    now_s = time.time()
     resolved_provider = (provider or "auto").lower()
     if resolved_provider in {"google", "google_ai", "google_ai_studio", "gemini_api"}:
         resolved_provider = "gemini"
     if resolved_provider in {"open_router", "openrouter_api"}:
         resolved_provider = "openrouter"
-    supported_providers = {"auto", "gemini", "openrouter", "openai_compatible", "api", "ollama"}
+    supported_providers = {"auto", "gemini", "openrouter", "openai_compatible", "api"}
     if resolved_provider not in supported_providers:
         logger.warning("Unsupported model provider selected: %s.", resolved_provider)
         _LAST_MODEL_SKIP_REASON = "unsupported_provider"
         return None
-    now_s = time.time()
-
-    if resolved_provider in {"openai_compatible", "api", "auto", "openrouter"}:
-        provider_locked = _NEXT_MODEL_ATTEMPT_EPOCH_S > now_s
-        if provider_locked and (resolved_provider in {"openai_compatible", "api", "openrouter"} or not auto_fallback_to_ollama):
-            _LAST_MODEL_SKIP_REASON = "provider_locked"
-            return None
 
     gemini_key = _resolve_gemini_api_key() if resolved_provider == "gemini" else None
     openrouter_key = _resolve_openrouter_api_key() if resolved_provider == "openrouter" else None
@@ -1556,7 +1420,6 @@ def call_model_chat(
                 "provider": resolved_provider,
                 "has_api_key": bool(api_key or gemini_key or openrouter_key),
                 "api_model": api_model,
-                "ollama_model": model,
             },
         )
         # endregion
@@ -1643,31 +1506,7 @@ def call_model_chat(
             tools=tools,
         )
 
-    if resolved_provider == "ollama":
-        if _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S > now_s:
-            if now_s - _LAST_OLLAMA_SKIP_LOG_EPOCH_S >= 5.0:
-                _LAST_OLLAMA_SKIP_LOG_EPOCH_S = now_s
-                remaining = round(_OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S - now_s, 2)
-                # region agent log
-                _debug_log(
-                    "model-provider-debug",
-                    "H3",
-                    "model_provider.py:call_model_chat",
-                    "Skipping Ollama due to recent unavailability cooldown",
-                    {"cooldown_remaining_seconds": remaining},
-                )
-                # endregion
-            return None
-        return _call_ollama_chat(
-            base_url,
-            model,
-            prompt,
-            temperature,
-            timeout_seconds,
-            unavailable_cooldown_seconds=ollama_unavailable_cooldown_seconds,
-        )
-
-    # auto: prefer the generic OpenAI-compatible API when its key is available, then fallback to Ollama.
+    # auto: prefer the generic OpenAI-compatible API when its key is available.
     if api_key:
         api_result = _call_openai_compatible_chat(
             api_base_url,
@@ -1696,38 +1535,14 @@ def call_model_chat(
         if now_s - _LAST_API_FAILURE_LOG_EPOCH_S >= 2.0:
             logger.warning("OpenAI-compatible API attempt failed in auto mode.")
             _LAST_API_FAILURE_LOG_EPOCH_S = now_s
-        if not auto_fallback_to_ollama:
-            return None
-        if now_s - _LAST_API_FAILURE_LOG_EPOCH_S >= 2.0:
-            logger.warning("Falling back to Ollama as configured.")
-            _LAST_API_FAILURE_LOG_EPOCH_S = now_s
-
-    if _OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S > now_s:
-        if now_s - _LAST_OLLAMA_SKIP_LOG_EPOCH_S >= 5.0:
-            _LAST_OLLAMA_SKIP_LOG_EPOCH_S = now_s
-            remaining = round(_OLLAMA_UNAVAILABLE_UNTIL_EPOCH_S - now_s, 2)
-            # region agent log
-            _debug_log(
-                "model-provider-debug",
-                "H3",
-                "model_provider.py:call_model_chat",
-                "Skipping Ollama due to recent unavailability cooldown",
-                {"cooldown_remaining_seconds": remaining},
-            )
-            # endregion
         return None
 
-    return _call_ollama_chat(
-        base_url,
-        model,
-        prompt,
-        temperature,
-        timeout_seconds,
-        unavailable_cooldown_seconds=ollama_unavailable_cooldown_seconds,
-    )
+    return None
+
 
 def load_seed_entities(seed_path: Path | None) -> list[str]:
     return load_entity_names(seed_path)
+
 
 def build_stage_01_prompt(doc_excerpt: str) -> str:
     return f"""You extract ontology anchors from a lore bible.
@@ -1739,7 +1554,8 @@ Task:
 - Do not extract generic headings such as Project Overview, Remaining Questions, Placeholders, History, Key Organizations, or section labels.
 - Keep working names only when clearly used as named concepts.
 - Infer one entity type per item from:
-  character|faction|organization|location|quest|event|timeline_node|theme|term
+  character|faction|organization|location|quest|event|timeline_node|term
+- Do not emit abstract themes, motifs, aesthetics, philosophies, or psychological ideas as entities; those belong in the theme profile, not the entity graph.
 - Include initial aliases only when explicitly indicated in text.
 - Include relationship hints only when clearly stated.
 - THERIAC quest titles may be named after songs. Do not down-rank, block, or reclassify a named quest solely because it matches a song title. If a song-title name is associated with a path, ending, mission, or quest progression, classify it as quest rather than theme.
@@ -1752,7 +1568,7 @@ Return JSON object:
   "entities": [
     {{
       "canonical_name": "string",
-      "entity_type": "character|faction|organization|location|quest|event|timeline_node|theme|term",
+      "entity_type": "character|faction|organization|location|quest|event|timeline_node|term",
       "source_section_hint": "short source heading or context only, not prose",
       "aliases": ["string"],
       "relationship_hints": [

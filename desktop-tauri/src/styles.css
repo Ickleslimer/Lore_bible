@@ -1089,6 +1089,47 @@ button.compact {
   color: #172033;
 }
 
+.entity-theme-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.entity-theme-chip {
+  display: grid;
+  gap: 2px;
+  min-width: min(100%, 190px);
+  border: 1px solid #cfe3d4;
+  border-left: 4px solid #16803c;
+  border-radius: 8px;
+  background: #f7fbf8;
+  padding: 7px 9px;
+}
+
+.entity-theme-chip strong {
+  color: #172033;
+  font-size: 12px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.entity-theme-chip span,
+.entity-theme-more {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.entity-theme-more {
+  align-self: center;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 4px 8px;
+}
+
 .entity-card-preview {
   display: -webkit-box;
   min-height: 42px;
@@ -1125,6 +1166,103 @@ button.compact {
 .entity-evidence-panel section {
   display: grid;
   gap: 7px;
+}
+
+.entity-theme-list {
+  display: grid;
+  gap: 8px;
+}
+
+.entity-theme-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  background: #fbfdff;
+  padding: 9px 10px;
+}
+
+.entity-theme-row strong {
+  display: block;
+  color: #172033;
+  font-size: 13px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.entity-theme-row span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.entity-theme-row > span {
+  flex: 0 0 auto;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.entity-merge-details {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 10px;
+}
+
+.entity-merge-details summary {
+  display: flex;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.entity-merge-details summary::before {
+  content: "+";
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  background: #fff;
+  color: #172033;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.entity-merge-details[open] summary::before {
+  content: "-";
+}
+
+.entity-merge-details summary span {
+  margin-right: auto;
+}
+
+.entity-merge-details summary strong {
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #172033;
+  padding: 3px 8px;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.entity-merge-records {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .inventory-card-header {
@@ -1359,6 +1497,14 @@ button.compact {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.theme-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 130px;
 }
 
 .theme-card-header h4 {

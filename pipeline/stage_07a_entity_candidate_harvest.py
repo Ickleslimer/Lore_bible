@@ -566,7 +566,7 @@ Core rules:
 - Do not decide from evidence count alone. Ask what the candidate phrase denotes in context.
 - Do not promote canon. Human review remains the canon gate.
 - Externality, meta context, aliases, and generic phrases are metadata for later review, not final canon decisions.
-- DISAMBIGUATION RULE: THERIAC features characters codenamed after emotional concepts (Love, Loss, Fear, Greed, Altruism). If the local context treats the entity as a person, faction member, or actor (e.g., having a spouse, feeling emotions, wearing a suit), propose `character`. If it discusses an abstract concept, motif, or lineage, propose `theme`.
+- DISAMBIGUATION RULE: THERIAC features characters codenamed after emotional concepts (Love, Loss, Fear, Greed, Altruism). If the local context treats the entity as a person, faction member, or actor (e.g., having a spouse, feeling emotions, wearing a suit), propose `character`. If it discusses an abstract concept, motif, aesthetic, philosophy, or lineage, keep it as `term`; theme learning is handled by Stage 07C, not the entity graph.
 
 Known approved/seed entities:
 {json_dumps(known_entities)}
@@ -577,7 +577,7 @@ Candidate evidence packets:
 For every candidate row, return exactly one annotation with the same normalized_name_key.
 Use these enum values:
 - denotation_class: likely_lore_entity | likely_meta_reference | likely_external_reference | likely_alias | likely_generic_phrase | mixed_or_uncertain
-- proposed_entity_type: character | faction | organization | location | quest | event | timeline_node | theme | term
+- proposed_entity_type: character | faction | organization | location | quest | event | timeline_node | term
 - recommended_track: lore | meta | mixed | unknown
 
 Return JSON object:

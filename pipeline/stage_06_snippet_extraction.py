@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import re
@@ -638,14 +638,12 @@ def classify_with_provider(
         api_base_url=str(model_provider_cfg.get("api_base_url", "https://openrouter.ai/api/v1")),
         api_model=str(model_provider_cfg.get("api_model", "qwen/qwen3.5-flash-02-23")),
         api_retries=int(model_provider_cfg.get("api_retries", 2)),
-        auto_fallback_to_ollama=bool(model_provider_cfg.get("auto_fallback_to_ollama", True)),
         rate_limit_cooldown_seconds=int(model_provider_cfg.get("rate_limit_cooldown_seconds", 90)),
         rate_state_path=rate_state_path,
         min_interval_seconds=float(model_provider_cfg.get("adaptive_min_interval_seconds", 2.0)),
         max_interval_seconds=float(model_provider_cfg.get("adaptive_max_interval_seconds", 120.0)),
         success_decay=float(model_provider_cfg.get("adaptive_success_decay", 0.9)),
         rate_limit_growth=float(model_provider_cfg.get("adaptive_rate_limit_growth", 1.8)),
-        ollama_unavailable_cooldown_seconds=int(model_provider_cfg.get("ollama_unavailable_cooldown_seconds", 120)),
         session_id=str(model_provider_cfg.get("session_id") or "theriac-stage-06-snippet-extraction"),
         trace=model_provider_cfg.get(
             "trace",
@@ -860,6 +858,18 @@ def run(
             "conversation_relevance_rationale": str(row.get("conversation_relevance_rationale", "")),
             "conversation_relevance_confidence": _safe_confidence(row.get("conversation_relevance_confidence", row.get("conversation_model_confidence", 0.0))),
             "conversation_model_confidence": _safe_confidence(row.get("conversation_model_confidence", 0.0)),
+            "conversation_rescue_source": str(row.get("conversation_rescue_source", "")),
+            "conversation_rescue_requires_human_review": bool(row.get("conversation_rescue_requires_human_review", False)),
+            "conversation_rescue_matched_themes": row.get("conversation_rescue_matched_themes", [])
+            if isinstance(row.get("conversation_rescue_matched_themes", []), list)
+            else [],
+            "conversation_rescue_known_entity_links": row.get("conversation_rescue_known_entity_links", [])
+            if isinstance(row.get("conversation_rescue_known_entity_links", []), list)
+            else [],
+            "conversation_rescue_externality_warnings": row.get("conversation_rescue_externality_warnings", [])
+            if isinstance(row.get("conversation_rescue_externality_warnings", []), list)
+            else [],
+            "conversation_rescue_reasoning_summary": str(row.get("conversation_rescue_reasoning_summary", "")),
             "conversation_global_index": int(patch_note.get("global_conversation_index", 0) or 0),
             "conversation_patch_note_id": str(patch_note.get("patch_note_id", "")),
             "conversation_patch_status": str(patch_note.get("status", "")),

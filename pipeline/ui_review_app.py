@@ -1988,7 +1988,7 @@ def build_app(
                 HTML_CONVERSATION_ENTITY,
                 proposal=pending_entities[0],
                 alias_rows=conversation_entity_alias_rows(pending_entities[0]),
-                entity_types=["term", "theme", "quest", "event", "character", "faction", "organization", "location", "timeline_node"],
+                entity_types=["term", "quest", "event", "character", "faction", "organization", "location", "timeline_node"],
                 **common_template_vars(pipeline_snapshot),
             )
 

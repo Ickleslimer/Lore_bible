@@ -13,6 +13,8 @@ from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
 from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
 from pipeline.stage_07c_theme_miner import run as run_stage_07c
 from pipeline.stage_07d_theme_reclassification import run as run_stage_07d
+from pipeline.stage_04r_theme_relevance_rerun import run as run_stage_04r
+from pipeline.stage_06r_theme_rescue_snippet_extraction import run as run_stage_06r
 from pipeline.stage_09_claim_drafting import run as run_stage_09
 
 
@@ -33,6 +35,22 @@ def _count_jsonl(path: Path) -> int:
 def _is_review_gate_error(exc: BaseException) -> bool:
     text = str(exc).lower()
     return any(marker in text for marker in REVIEW_GATE_MARKERS)
+
+
+def _theme_rerun_enabled() -> bool:
+    path = Path("config/pipeline_config.json")
+    if not path.exists():
+        return False
+    try:
+        payload = read_json(path)
+    except Exception:
+        return False
+    raw = payload.get("theme_aware_rerun", {}) if isinstance(payload, dict) else {}
+    return bool(raw.get("enabled", False)) if isinstance(raw, dict) else False
+
+
+def _effective_snippets_path(paths: ArtifactPaths) -> Path:
+    return paths.snippets_with_theme_rescue if paths.snippets_with_theme_rescue.exists() else paths.snippets
 
 
 def _run_stage(logger, stage_idx: int, total_stages: int, stage_name: str, fn, *args) -> float:
@@ -63,6 +81,7 @@ def main() -> None:
     migrate_run_artifacts_to_numbered(root)
     paths = ArtifactPaths(root)
     thematic_runtime_path = root / "learning" / "thematic_profile_runtime.json"
+    snippets_for_downstream = _effective_snippets_path(paths)
     total_stages = 12
 
     _run_stage(
@@ -166,13 +185,53 @@ def main() -> None:
         Path("config/pipeline_config.json"),
     )
 
+    if _theme_rerun_enabled():
+        _run_stage(
+            logger,
+            7,
+            total_stages,
+            "Stage 04R Theme-Aware Relevance Rerun",
+            run_stage_04r,
+            paths.global_timeline,
+            paths.conversation_segments,
+            paths.resolved_entities,
+            Path("canon/theme_profile.json"),
+            paths.externality_cache,
+            paths.theme_relevance_rerun,
+            paths.theme_rescue_messages,
+            paths.theme_rescue_segments,
+            paths.theme_relevance_rerun_failures,
+            Path("config/pipeline_config.json"),
+        )
+        _run_stage(
+            logger,
+            7,
+            total_stages,
+            "Stage 06R Theme Rescue Snippet Extraction",
+            run_stage_06r,
+            paths.theme_rescue_messages,
+            paths.source_profiles,
+            paths.snippets,
+            paths.snippets_needs_review,
+            paths.theme_rescue_snippets,
+            paths.theme_rescue_snippets_needs_review,
+            paths.theme_rescue_source_profiles,
+            paths.snippets_with_theme_rescue,
+            paths.snippets_needs_review_with_theme_rescue,
+            paths.theme_rescue_snippet_merge_report,
+            Path("config/pipeline_config.json"),
+            paths.entity_seed,
+            thematic_runtime_path,
+        )
+        snippets_for_downstream = _effective_snippets_path(paths)
+
     _run_stage(
         logger,
         8,
         total_stages,
         "Stage 08 Snippet Grouping",
         run_stage_08,
-        paths.snippets,
+        snippets_for_downstream,
         paths.resolved_entities,
         paths.snippet_clusters_lore,
         paths.snippet_clusters_meta,
@@ -190,7 +249,7 @@ def main() -> None:
         paths.snippet_clusters_lore,
         paths.snippet_clusters_meta,
         paths.alias_map,
-        paths.snippets,
+        snippets_for_downstream,
         paths.claim_drafting_dir,
         Path("config/pipeline_config.json"),
         Path("canon/review_memory.json"),

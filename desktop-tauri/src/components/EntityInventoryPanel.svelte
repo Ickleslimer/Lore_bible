@@ -2,7 +2,7 @@
   import { createEventDispatcher } from "svelte";
   import { Check, ChevronDown, ChevronRight, HelpCircle, Search, X } from "lucide-svelte";
   import { decideEntity, loadEntityEvidence } from "../lib/api";
-  import type { EntityEvidenceResponse, InventoryRow } from "../lib/types";
+  import type { EntityEvidenceResponse, InventoryRow, ThemeAssociationRow } from "../lib/types";
 
   export let artifactsRoot = "";
   export let rows: InventoryRow[] = [];
@@ -28,7 +28,7 @@
   let evidenceByRow: Record<string, EntityEvidenceResponse> = {};
   let evidenceLoading: Record<string, boolean> = {};
 
-  const entityTypes = ["term", "theme", "quest", "event", "character", "faction", "organization", "location", "timeline_node"];
+  const entityTypes = ["term", "quest", "event", "character", "faction", "organization", "location", "timeline_node"];
 
   $: hasMergedRows = mergedRows.length > 0;
   $: if (!hasMergedRows && viewMode === "merged") viewMode = "candidates";
@@ -113,6 +113,53 @@
 
   function textField(value: unknown): string {
     return String(value ?? "").trim();
+  }
+
+  function numberValue(value: unknown): number {
+    const numeric = Number(value ?? 0);
+    return Number.isFinite(numeric) ? numeric : 0;
+  }
+
+  function percent(value: unknown): string {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return "n/a";
+    return `${Math.round(Math.max(0, Math.min(1, numeric)) * 100)}%`;
+  }
+
+  function themeAssociations(row: InventoryRow): ThemeAssociationRow[] {
+    return row.theme_associations ?? [];
+  }
+
+  function visibleThemeAssociations(row: InventoryRow): ThemeAssociationRow[] {
+    return themeAssociations(row).slice(0, 3);
+  }
+
+  function themeAssociationCount(row: InventoryRow): number {
+    return numberValue(row.theme_association_count ?? themeAssociations(row).length);
+  }
+
+  function hiddenThemeAssociationCount(row: InventoryRow): number {
+    return Math.max(0, themeAssociationCount(row) - visibleThemeAssociations(row).length);
+  }
+
+  function evidenceThemeAssociations(row: InventoryRow): ThemeAssociationRow[] {
+    return evidenceByRow[row.row_id]?.theme_associations ?? themeAssociations(row);
+  }
+
+  function entityThemeRankLabel(association: ThemeAssociationRow): string {
+    const role = String(association.entity_theme_role || "theme").trim();
+    const rank = numberValue(association.entity_theme_rank);
+    const count = numberValue(association.entity_theme_count);
+    if (rank && count) return `${role} #${rank}/${count}`;
+    return role;
+  }
+
+  function themeCandidateRankLabel(association: ThemeAssociationRow): string {
+    const rank = numberValue(association.theme_candidate_rank);
+    const count = numberValue(association.theme_candidate_count);
+    if (rank && count) return `theme #${rank}/${count}`;
+    if (rank) return `theme #${rank}`;
+    return "";
   }
 
   function rowAliases(row: InventoryRow): string[] {
@@ -265,6 +312,23 @@
           <span>{reviewLabel(row)}</span>
         </div>
 
+        {#if visibleThemeAssociations(row).length}
+          <div class="entity-theme-summary">
+            {#each visibleThemeAssociations(row) as association}
+              <div class="entity-theme-chip">
+                <strong>{association.theme_label}</strong>
+                <span>{entityThemeRankLabel(association)}</span>
+                {#if themeCandidateRankLabel(association)}
+                  <span>{themeCandidateRankLabel(association)}</span>
+                {/if}
+              </div>
+            {/each}
+            {#if hiddenThemeAssociationCount(row)}
+              <span class="entity-theme-more">+{hiddenThemeAssociationCount(row)} more</span>
+            {/if}
+          </div>
+        {/if}
+
         <p class="entity-card-preview">{row.triage_reason || textValue(row) || "No preview recorded."}</p>
 
         {#if rowAliases(row).length}
@@ -312,15 +376,26 @@
                   </section>
                 {/if}
 
-                {#if evidenceByRow[row.row_id].merge_records.length}
+                {#if evidenceThemeAssociations(row).length}
                   <section>
-                    <span class="caption">Merge Evidence</span>
-                    {#each evidenceByRow[row.row_id].merge_records.slice(0, 6) as record}
-                      <p class="inventory-reason">
-                        {textField(record.source_entity_name)} -> {textField(record.target_entity_name)}
-                        {#if record.rationale}: {textField(record.rationale)}{/if}
-                      </p>
-                    {/each}
+                    <span class="caption">Theme Hierarchy</span>
+                    <div class="entity-theme-list">
+                      {#each evidenceThemeAssociations(row) as association}
+                        <article class="entity-theme-row">
+                          <div>
+                            <strong>{association.theme_label}</strong>
+                            <span>
+                              {entityThemeRankLabel(association)}
+                              {#if themeCandidateRankLabel(association)}
+                                - {themeCandidateRankLabel(association)}
+                              {/if}
+                              - rank {percent(association.ranking_score)}
+                            </span>
+                          </div>
+                          <span>{percent(association.match_strength)} match</span>
+                        </article>
+                      {/each}
+                    </div>
                   </section>
                 {/if}
 
@@ -363,6 +438,26 @@
                       </p>
                     {/each}
                   </section>
+                {/if}
+
+                {#if evidenceByRow[row.row_id].merge_records.length}
+                  <details class="entity-merge-details">
+                    <summary>
+                      <span>Merge Evidence</span>
+                      <strong>{evidenceByRow[row.row_id].merge_records.length} records</strong>
+                    </summary>
+                    <div class="entity-merge-records">
+                      {#each evidenceByRow[row.row_id].merge_records.slice(0, 8) as record}
+                        <p class="inventory-reason">
+                          {textField(record.source_entity_name)} -> {textField(record.target_entity_name)}
+                          {#if record.rationale}: {textField(record.rationale)}{/if}
+                        </p>
+                      {/each}
+                      {#if evidenceByRow[row.row_id].merge_records.length > 8}
+                        <p class="quiet-meta">Showing 8 of {evidenceByRow[row.row_id].merge_records.length} merge records.</p>
+                      {/if}
+                    </div>
+                  </details>
                 {/if}
               </div>
             {/if}

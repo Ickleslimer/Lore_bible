@@ -179,6 +179,7 @@ def run(
         logger=logger,
     )
     rows = model_stats["rows"]
+    rank_theme_associations(rows)
     rows.sort(key=lambda item: (-float(item.get("theme_adjusted_lore_prior", 0.0) or 0.0), str(item.get("candidate_name", "")).lower()))
     payload = {
         "schema_version": RECLASSIFICATION_SCHEMA_VERSION,
@@ -738,7 +739,64 @@ def normalize_model_theme_matches(raw_matches: Any, known_themes: dict[str, dict
                 "prior_boost": prior_boost,
             }
         )
-    return sorted(out, key=lambda match: -float(match.get("match_strength", 0.0) or 0.0))
+    return sorted(out, key=lambda match: -theme_association_score({}, match))
+
+
+def rank_theme_associations(rows: list[dict[str, Any]]) -> None:
+    by_theme: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for row in rows:
+        matches = [match for match in row.get("theme_matches", []) or [] if isinstance(match, dict)]
+        matches.sort(key=lambda match: (-theme_association_score(row, match), str(match.get("label", "")).lower()))
+        for index, match in enumerate(matches, start=1):
+            score = theme_association_score(row, match)
+            match["theme_match_score"] = score
+            match["ranking_score"] = rank_adjusted_association_score(score, index)
+            match["entity_theme_rank"] = index
+            match["entity_theme_count"] = len(matches)
+            match["entity_theme_role"] = entity_theme_role(index)
+            theme_id = str(match.get("theme_id", "")).strip()
+            if theme_id:
+                by_theme.setdefault(theme_id, []).append((row, match))
+        row["theme_matches"] = matches
+    for theme_id, pairs in by_theme.items():
+        pairs.sort(
+            key=lambda pair: (
+                -float(pair[1].get("ranking_score", theme_association_score(pair[0], pair[1])) or 0.0),
+                -clamp_float(pair[0].get("theme_adjusted_lore_prior", 0.0)),
+                str(pair[0].get("candidate_name", "")).lower(),
+            )
+        )
+        for index, (_row, match) in enumerate(pairs, start=1):
+            match["theme_candidate_rank"] = index
+            match["theme_candidate_count"] = len(pairs)
+
+
+def theme_association_score(row: dict[str, Any], match: dict[str, Any]) -> float:
+    strength = clamp_float(match.get("match_strength", 0.0))
+    boost = min(1.0, clamp_float(match.get("prior_boost", 0.0)) / 0.35) if match.get("prior_boost") is not None else 0.0
+    indicator_count = min(len(coerce_text_list(match.get("matched_indicators", []), limit=20)), 10) / 10
+    local_gain = max(0.0, clamp_float(row.get("theme_adjusted_lore_prior", 0.0)) - clamp_float(row.get("base_local_lore_prior", 0.0)))
+    return clamp_float((0.72 * strength) + (0.18 * boost) + (0.06 * indicator_count) + (0.04 * local_gain))
+
+
+def rank_adjusted_association_score(score: float, entity_theme_rank: int) -> float:
+    if entity_theme_rank <= 1:
+        weight = 1.0
+    elif entity_theme_rank == 2:
+        weight = 0.62
+    elif entity_theme_rank == 3:
+        weight = 0.42
+    else:
+        weight = 0.3
+    return clamp_float(score * weight)
+
+
+def entity_theme_role(rank: int) -> str:
+    if rank <= 1:
+        return "primary"
+    if rank == 2:
+        return "secondary"
+    return "supporting"
 
 
 def known_theme_lookup(themes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

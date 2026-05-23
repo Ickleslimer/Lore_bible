@@ -163,6 +163,8 @@ export interface InventoryRow {
   review_priority?: string;
   decision?: string;
   latest_decision?: Record<string, unknown>;
+  theme_associations?: ThemeAssociationRow[];
+  theme_association_count?: number;
   item: Record<string, unknown>;
 }
 
@@ -208,6 +210,13 @@ export interface ThemeAssociationRow {
   normalized_key: string;
   match_strength?: number;
   prior_boost?: number;
+  theme_match_score?: number;
+  ranking_score?: number;
+  entity_theme_rank?: number;
+  entity_theme_count?: number;
+  entity_theme_role?: string;
+  theme_candidate_rank?: number;
+  theme_candidate_count?: number;
   matched_indicators?: string[];
   reason?: string;
   theme_prior_boost?: number;
@@ -254,6 +263,7 @@ export interface EntityEvidenceResponse {
   merge_records: Array<Record<string, unknown>>;
   merged_from_entities: Array<Record<string, unknown>>;
   aliases: Array<unknown>;
+  theme_associations: ThemeAssociationRow[];
 }
 
 export interface DraftCardSection {

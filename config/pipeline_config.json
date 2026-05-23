@@ -7,7 +7,6 @@
   },
   "model_strategy": {
     "primary": "openrouter",
-    "fallback": "local",
     "temperature": 0.0
   },
   "model_routing": {
@@ -155,7 +154,7 @@
         "batch_enabled": false,
         "enabled": true,
         "max_evidence_packets": 80,
-        "max_seed_theme_entity_packets": 32,
+        "max_seed_theme_label_packets": 32,
         "max_review_memory_theme_packets": 48,
         "max_adjudication_theme_packets": 48
       },
@@ -180,6 +179,44 @@
         "structured_outputs_enabled": true,
         "max_candidates_per_call": 24,
         "max_model_candidates_per_run": 240
+      },
+      "stage_04r_theme_relevance_adjudication": {
+        "provider": "openrouter",
+        "api_model": "deepseek/deepseek-v4-flash",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_deepseek_stage_04r_theme_relevance_rate_runtime.json",
+        "session_id": "theriac-stage-04r-theme-relevance-rerun",
+        "trace": {
+          "trace_name": "THERIAC Stage 04R Theme-Aware Relevance Rerun",
+          "span_name": "stage_04r_theme_relevance_adjudication",
+          "generation_name": "theme_aware_relevance_rerun",
+          "feature": "theme_learning"
+        },
+        "adaptive_min_interval_seconds": 0.5,
+        "timeout_seconds": 180,
+        "temperature": 0.0,
+        "max_tokens": 2500,
+        "batch_enabled": false,
+        "enabled": true
+      },
+      "stage_04r_theme_relevance_hard_retry": {
+        "provider": "openrouter",
+        "api_model": "qwen/qwen3-235b-a22b-thinking-2507",
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "rate_state_path": "artifacts/learning/openrouter_qwen_235b_stage_04r_retry_rate_runtime.json",
+        "session_id": "theriac-stage-04r-theme-relevance-hard-retry",
+        "trace": {
+          "trace_name": "THERIAC Stage 04R Theme-Aware Relevance Hard Retry",
+          "span_name": "stage_04r_theme_relevance_hard_retry",
+          "generation_name": "theme_aware_relevance_hard_retry",
+          "feature": "theme_learning"
+        },
+        "adaptive_min_interval_seconds": 0.5,
+        "timeout_seconds": 180,
+        "temperature": 0.0,
+        "max_tokens": 3500,
+        "batch_enabled": false,
+        "enabled": true
       },
       "stage_09_claim_drafting": {
         "profile": "high_volume",
@@ -218,6 +255,21 @@
     "max_linked_claims_per_question": 8,
     "application_policy": "moderate"
   },
+  "theme_aware_rerun": {
+    "enabled": true,
+    "max_iterations": 1,
+    "rerun_only_previous_rejects": true,
+    "require_active_theme": true,
+    "require_human_approval_for_new_theme_use": true,
+    "min_rescue_confidence": 0.72,
+    "prefilter_min_score": 0.32,
+    "model_adjudication_enabled": true,
+    "fallback_to_heuristic_on_model_failure": true,
+    "max_candidate_windows_per_run": 500,
+    "max_rescued_conversations_per_run": 100,
+    "max_windows_per_model_call": 8,
+    "hard_retry_enabled": false
+  },
   "anchor_provider": "hybrid",
   "stage_06_anchor_provider": "conversation_metadata",
   "stage_01_anchor_provider": "hybrid",
@@ -229,14 +281,12 @@
     "api_base_url": "https://openrouter.ai/api/v1",
     "api_model": "qwen/qwen3.5-flash-02-23",
     "api_retries": 2,
-    "auto_fallback_to_ollama": true,
     "rate_limit_cooldown_seconds": 90,
     "rate_state_path": "artifacts/learning/openrouter_qwen_flash_rate_runtime.json",
     "adaptive_min_interval_seconds": 0.5,
     "adaptive_max_interval_seconds": 120.0,
     "adaptive_success_decay": 0.9,
     "adaptive_rate_limit_growth": 1.8,
-    "ollama_unavailable_cooldown_seconds": 120,
     "claim_extraction_provider_retry_sleep_seconds": 15,
     "synthesis_provider_retry_sleep_seconds": 15,
     "temperature": 0.0,

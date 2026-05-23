@@ -37,8 +37,10 @@ from pipeline.story_questions import (
 )
 from pipeline.stage_01_entity_bootstrap import infer_entities
 from pipeline.stage_04_conversation_segmentation import normalize_model_segments, run as run_stage_04
+from pipeline.stage_04r_theme_relevance_rerun import run as run_stage_04r
 from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
+from pipeline.stage_06r_theme_rescue_snippet_extraction import run as run_stage_06r
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
 from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07a
 from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
@@ -189,6 +191,7 @@ def theme_miner_response() -> dict[str, Any]:
 
 
 def write_pipeline_artifacts_through_stage9(root: Path, claims: list[dict] | None = None) -> None:
+    paths = ArtifactPaths(root)
     write_json(root / "01_bootstrap" / "entity_seed.json", {"entities": []})
     write_json(root / "02_timeline" / "summary.json", {})
     write_jsonl(root / "02_timeline" / "messages_normalized_per_thread.jsonl", [{"message_id": "m1"}])
@@ -209,6 +212,13 @@ def write_pipeline_artifacts_through_stage9(root: Path, claims: list[dict] | Non
     write_json(root / "05_alias" / "theme_profile_update_report.json", {"schema_version": 1, "summary": {"theme_count": 0}})
     write_json(root / "05_alias" / "theme_candidate_reclassification.json", {"schema_version": 1, "candidate_reclassifications": []})
     write_json(root / "05_alias" / "conversation_entity_proposals.json", {"proposals": []})
+    write_json(paths.theme_relevance_rerun, {"schema_version": 1, "status": "complete", "summary": {"rescued_conversation_count": 0}, "decisions": []})
+    write_jsonl(paths.theme_rescue_messages, [])
+    write_json(paths.theme_rescue_segments, {"segments": []})
+    write_json(paths.theme_relevance_rerun_failures, {"failures": []})
+    write_jsonl(paths.snippets_with_theme_rescue, [{"snippet_id": "s1"}])
+    write_jsonl(paths.snippets_needs_review_with_theme_rescue, [])
+    write_json(paths.theme_rescue_snippet_merge_report, {"summary": {"combined_snippet_count": 1, "rescue_snippet_count": 0}})
     write_json(root / "04_grouping" / "snippet_clusters_lore.json", {"clusters": []})
     write_json(root / "04_grouping" / "snippet_clusters_meta.json", {"clusters": []})
     write_json(root / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": claims or []})
@@ -1148,6 +1158,7 @@ class PipelineV2Tests(unittest.TestCase):
         adjudication_kwargs = model_call_kwargs(config, "stage_07b_entity_adjudication_web")
         theme_miner_kwargs = model_call_kwargs(config, "stage_07c_theme_miner")
         theme_reclassification_kwargs = model_call_kwargs(config, "stage_07d_theme_reclassification")
+        theme_rerun_kwargs = model_call_kwargs(config, "stage_04r_theme_relevance_adjudication")
 
         self.assertEqual(agent_kwargs["provider"], "openrouter")
         self.assertEqual(agent_kwargs["api_model"], "google/gemini-3.1-pro-preview")
@@ -1165,6 +1176,10 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(theme_reclassification_kwargs["api_model"], "deepseek/deepseek-v4-flash")
         self.assertEqual(theme_reclassification_kwargs["session_id"], "theriac-stage-07d-theme-reclassification")
         self.assertEqual(theme_reclassification_kwargs["trace"]["generation_name"], "theme_aware_candidate_reclassification")
+        self.assertTrue(config["theme_aware_rerun"]["enabled"])
+        self.assertEqual(theme_rerun_kwargs["api_model"], "deepseek/deepseek-v4-flash")
+        self.assertEqual(theme_rerun_kwargs["session_id"], "theriac-stage-04r-theme-relevance-rerun")
+        self.assertEqual(theme_rerun_kwargs["trace"]["generation_name"], "theme_aware_relevance_rerun")
         self.assertEqual(config["story_questions"]["provider"], "openrouter")
         self.assertEqual(config["story_questions"]["model"], "google/gemini-3.1-pro-preview")
 
@@ -1689,6 +1704,142 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(segments_payload["segments"][0]["anchor_entities"], ["Enoch Faust Ersetzen"])
             self.assertEqual(index["model_segments_dropped_by_relevance"], 0)
 
+    def test_stage_04r_rescues_only_approved_active_theme_misses_and_stage_06r_combines_snippets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            rows = [
+                msg_row(
+                    "m1",
+                    "2026-04-01T00:00:00Z",
+                    author_id="self",
+                    author_name="Me",
+                    content="Ninhursag and Enki naming fits the Sumerian divine AI lineage; keep this as worldbuilding canon.",
+                ),
+                msg_row(
+                    "m2",
+                    "2026-04-02T00:00:00Z",
+                    author_id="self",
+                    author_name="Me",
+                    content="Thor and Odin are interesting in Norse mythology generally.",
+                ),
+            ]
+            write_jsonl(paths.global_timeline, rows)
+            write_json(paths.conversation_segments, {"segments": []})
+            write_json(
+                paths.resolved_entities,
+                {
+                    "resolved_entities": [
+                        {
+                            "entity_id": "entity_ninhursag",
+                            "canonical_name": "Ninhursag",
+                            "entity_type": "character",
+                            "aliases": ["Divine AI"],
+                        }
+                    ]
+                },
+            )
+            write_json(
+                root / "theme_profile.json",
+                {
+                    "themes": [
+                        {
+                            "theme_id": "theme_sumerian",
+                            "label": "Mesopotamian & Sumerian Motif",
+                            "theme_type": "mythological_lineage",
+                            "status": "active",
+                            "canon_relevance": "lore_pattern",
+                            "evidence_entities": ["Ninhursag", "Enki"],
+                            "positive_indicators": ["Sumerian divine AI naming"],
+                        },
+                        {
+                            "theme_id": "theme_norse",
+                            "label": "Norse Mythology Motif",
+                            "theme_type": "mythological_lineage",
+                            "status": "candidate",
+                            "canon_relevance": "unknown",
+                            "evidence_entities": ["Thor", "Odin"],
+                            "positive_indicators": ["Norse mythology"],
+                        },
+                    ]
+                },
+            )
+            write_json(paths.externality_cache, {"schema_version": 1, "entries": {}})
+            write_json(
+                root / "config.json",
+                {
+                    "theme_aware_rerun": {
+                        "enabled": True,
+                        "model_adjudication_enabled": False,
+                        "min_rescue_confidence": 0.55,
+                        "prefilter_min_score": 0.2,
+                        "max_rescued_conversations_per_run": 10,
+                    },
+                    "conversation_segmentation": {"self_user_id": "self", "max_gap_hours": 12},
+                    "stage_06_anchor_provider": "conversation_metadata",
+                    "source_profile_defaults": {
+                        "unknown_low_signal": {
+                            "strictness_level": "strict",
+                            "theriac_relevance_min": 0.6,
+                            "meta_lore_split_min": 0.65,
+                            "context_window_messages": 1,
+                        }
+                    },
+                },
+            )
+
+            run_stage_04r(
+                paths.global_timeline,
+                paths.conversation_segments,
+                paths.resolved_entities,
+                root / "theme_profile.json",
+                paths.externality_cache,
+                paths.theme_relevance_rerun,
+                paths.theme_rescue_messages,
+                paths.theme_rescue_segments,
+                paths.theme_relevance_rerun_failures,
+                root / "config.json",
+            )
+
+            rerun = json.loads(paths.theme_relevance_rerun.read_text(encoding="utf-8"))
+            rescued_rows = read_jsonl(paths.theme_rescue_messages)
+            self.assertEqual(rerun["summary"]["rescued_conversation_count"], 1)
+            self.assertEqual(rescued_rows[0]["message_id"], "m1")
+            self.assertEqual(rerun["decisions"][0]["matched_themes"][0]["theme_id"], "theme_sumerian")
+            self.assertNotIn("theme_norse", json.dumps(rerun["decisions"]))
+
+            write_jsonl(
+                paths.snippets,
+                [
+                    {
+                        "snippet_id": "snippet_strict",
+                        "display_text_normalized": "Strict pass snippet.",
+                    }
+                ],
+            )
+            write_jsonl(paths.snippets_needs_review, [])
+            run_stage_06r(
+                paths.theme_rescue_messages,
+                paths.source_profiles,
+                paths.snippets,
+                paths.snippets_needs_review,
+                paths.theme_rescue_snippets,
+                paths.theme_rescue_snippets_needs_review,
+                paths.theme_rescue_source_profiles,
+                paths.snippets_with_theme_rescue,
+                paths.snippets_needs_review_with_theme_rescue,
+                paths.theme_rescue_snippet_merge_report,
+                root / "config.json",
+                paths.entity_seed,
+                root / "learning" / "thematic_profile_runtime.json",
+            )
+
+            combined = read_jsonl(paths.snippets_with_theme_rescue)
+            rescue_snippets = [row for row in combined if row.get("rescue_source") == "stage_04r_theme_relevance_rerun"]
+            self.assertEqual(len(combined), 2)
+            self.assertEqual(len(rescue_snippets), 1)
+            self.assertEqual(rescue_snippets[0]["conversation_rescue_matched_themes"][0]["theme_id"], "theme_sumerian")
+
     def test_stage_04_failure_records_model_window_count_and_payload_preview(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1913,6 +2064,7 @@ class PipelineV2Tests(unittest.TestCase):
             {"entity_seed_id": "8", "canonical_name": "Joy", "entity_type": "character", "aliases": [], "seed_status": "active"},
             {"entity_seed_id": "9", "canonical_name": "Joy Roberts", "entity_type": "character", "aliases": [], "seed_status": "active"},
             {"entity_seed_id": "10", "canonical_name": "Project Overview", "entity_type": "term", "aliases": [], "seed_status": "active"},
+            {"entity_seed_id": "11", "canonical_name": "Thanatophobia", "entity_type": "theme", "aliases": [], "seed_status": "active"},
         ]
         payload = resolve_entities(seeds)
         names = [entity["canonical_name"] for entity in payload["resolved_entities"]]
@@ -1922,6 +2074,9 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(names.count("Global Federation of Nation States"), 1)
         self.assertEqual(names.count("Joy Roberts"), 1)
         self.assertIn("Project Overview", {entity["canonical_name"] for entity in payload["blocked_entities"]})
+        self.assertNotIn("Thanatophobia", names)
+        blocked_by_name = {entity["canonical_name"]: entity for entity in payload["blocked_entities"]}
+        self.assertEqual(blocked_by_name["Thanatophobia"]["blocked_reason"], "themes_are_profile_data_not_entities")
 
     def test_entity_resolution_uses_reviewed_entity_merges_from_memory(self) -> None:
         seeds = [
@@ -2543,7 +2698,7 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("Ninhursag", profile["themes"][0]["evidence_entities"])
             self.assertEqual(report["summary"]["applied_update_count"], 1)
 
-    def test_stage_07c_prioritizes_existing_theme_entities_and_theme_claims(self) -> None:
+    def test_stage_07c_prioritizes_reviewed_theme_labels_and_theme_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_json(
@@ -2585,26 +2740,23 @@ class PipelineV2Tests(unittest.TestCase):
             )
             write_json(
                 root / "resolved_entities.json",
-                {
-                    "resolved_entities": [
-                        {
-                            "entity_id": "entity_thanatophobia",
-                            "canonical_name": "Thanatophobia",
-                            "entity_type": "theme",
-                            "aliases": [],
-                        },
-                        {
-                            "entity_id": "entity_biological_immortality",
-                            "canonical_name": "Biological Immortality",
-                            "entity_type": "theme",
-                            "aliases": ["Immortality"],
-                        },
-                    ]
-                },
+                {"resolved_entities": []},
             )
             write_json(
                 root / "review_memory.json",
                 {
+                    "approved_theme_labels": [
+                        {
+                            "canonical_name": "Thanatophobia",
+                            "aliases": [],
+                            "rationale": "Thanatophobia was previously approved as a theme label.",
+                        },
+                        {
+                            "canonical_name": "Biological Immortality",
+                            "aliases": ["Immortality"],
+                            "rationale": "Biological immortality was previously approved as a theme label.",
+                        },
+                    ],
                     "accepted_claims": [
                         {
                             "claim_id": "claim_thanatophobia",
@@ -2630,7 +2782,7 @@ class PipelineV2Tests(unittest.TestCase):
                                 "provider": "openrouter",
                                 "api_model": "deepseek/deepseek-v4-flash",
                                 "max_evidence_packets": 6,
-                                "max_seed_theme_entity_packets": 2,
+                                "max_seed_theme_label_packets": 2,
                                 "max_review_memory_theme_packets": 2,
                                 "max_adjudication_theme_packets": 6,
                             }
@@ -2702,7 +2854,8 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertIn("Biological Immortality", captured["prompt"])
             report = json.loads((root / "theme_profile_update_report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["inputs"]["evidence_packet_count"], 6)
-            self.assertEqual(report["evidence_packets"][0]["evidence_status"], "observed_seed_or_approved_theme_entity")
+            self.assertEqual(report["evidence_packets"][0]["evidence_status"], "approved_theme_label_not_entity")
+            self.assertEqual(report["evidence_packets"][0]["entity_type"], "theme_label")
             profile = json.loads((root / "theme_profile.json").read_text(encoding="utf-8"))
             domains = {theme["theme_id"]: theme["theme_domain"] for theme in profile["themes"]}
             self.assertEqual(domains["theme_thanatophobia_mortality_anxiety"], "emotional_psychological")
@@ -2788,6 +2941,132 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertGreater(row["theme_adjusted_lore_prior"], row["base_local_lore_prior"])
             self.assertEqual(row["theme_adjusted_recommended_action"], "needs_author_review")
             self.assertIn("Theme match changes relevance prior only", row["why_not_auto_promote"])
+
+    def test_stage_07d_ranks_overlapping_theme_associations_per_entity_and_theme(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_json(
+                root / "entity_candidate_harvest.json",
+                {
+                    "schema_version": 1,
+                    "candidates": [
+                        {
+                            "candidate_id": "candidate_armaros",
+                            "candidate_name": "Armaros",
+                            "normalized_name_key": "armaros",
+                            "evidence_count": 7,
+                            "sample_texts": [
+                                "Armaros is Sumerian by origin but adopts the Book of Enoch Watchers angelic motif of the Houses of Heaven."
+                            ],
+                            "local_lore_prior": 0.62,
+                        },
+                        {
+                            "candidate_id": "candidate_enki",
+                            "candidate_name": "Enki",
+                            "normalized_name_key": "enki",
+                            "evidence_count": 5,
+                            "sample_texts": ["Enki is used as a Sumerian deity name in the Mesopotamian mythology lane."],
+                            "local_lore_prior": 0.56,
+                        },
+                    ],
+                },
+            )
+            write_json(
+                root / "entity_adjudication_recommendations.json",
+                {
+                    "schema_version": 1,
+                    "recommendations": [
+                        {
+                            "candidate_id": "candidate_armaros",
+                            "candidate_name": "Armaros",
+                            "normalized_key": "armaros",
+                            "recommended_action": "needs_author_review",
+                            "recommended_track": "mixed",
+                            "recommended_entity_type": "term",
+                            "externality_class": "historical_or_mythological",
+                            "local_lore_prior": 0.62,
+                            "external_reference_prior": 0.84,
+                            "in_world_signals": ["Book of Enoch Watchers motif", "Houses of Heaven angelic adoption", "Sumerian origin"],
+                            "web_findings": [
+                                {"query": "Armaros Book of Enoch", "finding": "Armaros is a Watcher in the Book of Enoch."}
+                            ],
+                            "reasoning_summary": "Local lore makes the angelic Watchers motif primary while preserving Sumerian origin.",
+                        },
+                        {
+                            "candidate_id": "candidate_enki",
+                            "candidate_name": "Enki",
+                            "normalized_key": "enki",
+                            "recommended_action": "needs_author_review",
+                            "recommended_track": "mixed",
+                            "recommended_entity_type": "term",
+                            "externality_class": "historical_or_mythological",
+                            "local_lore_prior": 0.56,
+                            "external_reference_prior": 0.86,
+                            "in_world_signals": ["Sumerian deity name", "Mesopotamian mythology lane", "Anunnaki reference"],
+                            "web_findings": [{"query": "Enki", "finding": "Enki is a Sumerian deity."}],
+                            "reasoning_summary": "The candidate strongly belongs to the Sumerian mythology motif.",
+                        },
+                    ],
+                },
+            )
+            write_json(
+                root / "theme_profile.json",
+                {
+                    "schema_version": 1,
+                    "themes": [
+                        {
+                            "theme_id": "theme_abrahamic_apocrypha",
+                            "label": "Book of Enoch & Abrahamic Apocrypha Motif",
+                            "theme_type": "religious_symbolic_lineage",
+                            "status": "active",
+                            "confidence": 0.95,
+                            "canon_relevance": "lore_pattern",
+                            "description": "Angelic and apocryphal motifs around the Watchers.",
+                            "evidence_entities": ["Armaros", "Watchers"],
+                            "positive_indicators": ["Book of Enoch", "Watchers", "angelic motif"],
+                            "negative_indicators": [],
+                            "related_themes": [],
+                            "disambiguation_notes": [],
+                        },
+                        {
+                            "theme_id": "theme_sumerian_mythology",
+                            "label": "Mesopotamian & Sumerian Motif",
+                            "theme_type": "mythological_lineage",
+                            "status": "active",
+                            "confidence": 0.86,
+                            "canon_relevance": "lore_pattern",
+                            "description": "Sumerian and Mesopotamian mythological references.",
+                            "evidence_entities": ["Enki", "Ninhursag"],
+                            "positive_indicators": ["Sumerian deity name", "Mesopotamian mythology", "Anunnaki"],
+                            "negative_indicators": [],
+                            "related_themes": [],
+                            "disambiguation_notes": [],
+                        },
+                    ],
+                },
+            )
+
+            run_stage_07d(
+                root / "entity_candidate_harvest.json",
+                root / "entity_adjudication_recommendations.json",
+                root / "theme_profile.json",
+                root / "theme_candidate_reclassification.json",
+            )
+
+            payload = json.loads((root / "theme_candidate_reclassification.json").read_text(encoding="utf-8"))
+            rows = {row["normalized_key"]: row for row in payload["candidate_reclassifications"]}
+            armaros_matches = {match["theme_id"]: match for match in rows["armaros"]["theme_matches"]}
+            enki_sumerian = next(match for match in rows["enki"]["theme_matches"] if match["theme_id"] == "theme_sumerian_mythology")
+
+            self.assertEqual(armaros_matches["theme_abrahamic_apocrypha"]["entity_theme_rank"], 1)
+            self.assertEqual(armaros_matches["theme_abrahamic_apocrypha"]["entity_theme_role"], "primary")
+            self.assertGreater(
+                armaros_matches["theme_abrahamic_apocrypha"]["ranking_score"],
+                armaros_matches["theme_sumerian_mythology"]["ranking_score"],
+            )
+            self.assertEqual(armaros_matches["theme_abrahamic_apocrypha"]["theme_candidate_rank"], 1)
+            self.assertEqual(enki_sumerian["theme_candidate_rank"], 1)
+            self.assertGreater(armaros_matches["theme_sumerian_mythology"]["theme_candidate_rank"], enki_sumerian["theme_candidate_rank"])
 
     def test_stage_07d_model_reclassifies_candidates_with_theme_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3078,6 +3357,9 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertIn("theme_reclassification_source", row_properties)
         self.assertIn("model_reclassification_status", row_properties)
         self.assertIn("model_reasoning_summary", row_properties)
+        match_properties = row_properties["theme_matches"]["items"]["properties"]
+        for field in ("theme_match_score", "ranking_score", "entity_theme_rank", "theme_candidate_rank"):
+            self.assertIn(field, match_properties)
 
     def test_stage_07_proposes_text_observed_conversation_entity_not_in_seed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4031,10 +4313,11 @@ class PipelineV2Tests(unittest.TestCase):
                 )
 
             proposal = json.loads((root / "conversation_entity_proposals.json").read_text(encoding="utf-8"))["proposals"][0]
-            self.assertEqual(proposal["initial_proposed_entity_type"], "theme")
+            self.assertEqual(proposal["initial_proposed_entity_type"], "term")
             self.assertEqual(proposal["proposed_entity_type"], "character")
             self.assertTrue(proposal["type_reconsidered"])
-            self.assertIn("theme", {item["entity_type"] for item in proposal["type_conflicts"]})
+            self.assertIn("term", {item["entity_type"] for item in proposal["type_conflicts"]})
+            self.assertNotIn("theme", {item["entity_type"] for item in proposal["type_conflicts"]})
             self.assertIn("reconsidered", proposal["type_review_notes"])
 
     def test_stage_07_recent_specific_character_evidence_reaches_review_with_four_mentions(self) -> None:
@@ -5843,9 +6126,54 @@ class PipelineV2Tests(unittest.TestCase):
             self.assertEqual(association["candidate_name"], "Enki")
             self.assertEqual(association["theme_id"], "theme_sumerian_mythology")
             self.assertEqual(association["matched_indicators"], ["Sumerian deity name"])
+            self.assertEqual(association["theme_candidate_rank"], 1)
+            self.assertEqual(association["entity_theme_rank"], 1)
+            self.assertEqual(association["entity_theme_role"], "primary")
+            self.assertGreater(association["ranking_score"], 0)
             self.assertEqual(payload["summary"]["theme_status_counts"], {"active": 1})
             self.assertEqual(payload["summary"]["association_counts_by_theme"], {"theme_sumerian_mythology": 1})
             self.assertEqual(payload["summary"]["evidence_packet_count"], 2)
+
+            write_json(
+                paths.identity_merged_entities_preview,
+                {
+                    "generated_at_utc": "2026-05-21T08:03:00Z",
+                    "mode": "test",
+                    "source_entity_count": 1,
+                    "merged_entity_count": 1,
+                    "merge_record_count": 0,
+                    "target_map": {},
+                    "entities": [
+                        {
+                            "entity_id": "entity_enki",
+                            "card_id": "card_enki",
+                            "canonical_name": "Enki",
+                            "entity_type": "character",
+                            "aliases": [],
+                        }
+                    ],
+                },
+            )
+            inventory = handle_request(
+                {
+                    "repo_root": str(repo),
+                    "command": "entity_inventory",
+                    "payload": {"artifacts_root": str(active)},
+                }
+            )
+            enki = next(row for row in inventory["merged_rows"] if row["candidate_name"] == "Enki")
+            self.assertEqual(enki["theme_association_count"], 1)
+            self.assertEqual(enki["theme_associations"][0]["theme_id"], "theme_sumerian_mythology")
+            self.assertEqual(enki["theme_associations"][0]["entity_theme_role"], "primary")
+
+            evidence = handle_request(
+                {
+                    "repo_root": str(repo),
+                    "command": "entity_evidence",
+                    "payload": {"artifacts_root": str(active), "row_id": enki["row_id"], "view": "merged"},
+                }
+            )
+            self.assertEqual(evidence["theme_associations"][0]["theme_candidate_rank"], 1)
 
     def test_tauri_app_config_saves_bootstrap_doc_and_openrouter_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -7718,6 +8046,7 @@ class PipelineV2Tests(unittest.TestCase):
         self.assertEqual(normalize_entity_type("ai_system"), "character")
         self.assertEqual(normalize_entity_type("ai system"), "character")
         self.assertEqual(normalize_entity_type("ai systems"), "character")
+        self.assertEqual(normalize_entity_type("theme"), "term")
 
     def test_uppercase_candidate_does_not_create_ai_system_vote(self) -> None:
         votes = infer_type_evidence_for_candidate(
@@ -8432,6 +8761,13 @@ class PipelineV2Tests(unittest.TestCase):
             write_json(root / "05_alias" / "theme_profile_update_report.json", {"schema_version": 1, "summary": {"theme_count": 0}})
             write_json(root / "05_alias" / "theme_candidate_reclassification.json", {"schema_version": 1, "candidate_reclassifications": []})
             write_json(root / "05_alias" / "conversation_entity_proposals.json", {"proposals": [{"proposal_id": "p1"}]})
+            write_json(ArtifactPaths(root).theme_relevance_rerun, {"schema_version": 1, "status": "complete", "summary": {"rescued_conversation_count": 0}, "decisions": []})
+            write_jsonl(ArtifactPaths(root).theme_rescue_messages, [])
+            write_json(ArtifactPaths(root).theme_rescue_segments, {"segments": []})
+            write_json(ArtifactPaths(root).theme_relevance_rerun_failures, {"failures": []})
+            write_jsonl(ArtifactPaths(root).snippets_with_theme_rescue, [{"snippet_id": "s1"}])
+            write_jsonl(ArtifactPaths(root).snippets_needs_review_with_theme_rescue, [])
+            write_json(ArtifactPaths(root).theme_rescue_snippet_merge_report, {"summary": {"combined_snippet_count": 1, "rescue_snippet_count": 0}})
             write_json(root / "04_grouping" / "snippet_clusters_lore.json", {"clusters": []})
             write_json(root / "04_grouping" / "snippet_clusters_meta.json", {"clusters": []})
             write_json(root / "06_drafts" / "card_drafts" / "claim_drafts.json", {"claims": []})

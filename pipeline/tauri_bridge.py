@@ -645,38 +645,46 @@ def _source_snippet_rows(root: Path, source_ids: list[str], limit: int = 8) -> l
     if not wanted:
         return []
     wanted_set = set(wanted[:limit])
-    path = ArtifactPaths(root).snippets
-    if not path.exists():
-        return []
+    paths = ArtifactPaths(root)
+    snippet_paths = [paths.snippets_with_theme_rescue, paths.snippets]
     rows: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if len(rows) >= len(wanted_set):
-                    break
-                if not line.strip():
-                    continue
-                item = json.loads(line)
-                snippet_id = str(item.get("snippet_id", "")).strip()
-                if snippet_id not in wanted_set:
-                    continue
-                rows.append(
-                    {
-                        "snippet_id": snippet_id,
-                        "topic_label": str(item.get("conversation_topic_label") or item.get("conversation_patch_topic_label") or ""),
-                        "conversation_id": str(item.get("conversation_id") or ""),
-                        "created_at": str(item.get("created_at") or item.get("timestamp") or ""),
-                        "text": str(
-                            item.get("patch_item_text")
-                            or item.get("display_text_normalized")
-                            or item.get("conversation_patch_summary")
-                            or item.get("text")
-                            or ""
-                        ),
-                    }
-                )
+        for path in snippet_paths:
+            if not path.exists():
+                continue
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    if len(rows) >= len(wanted_set):
+                        break
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    snippet_id = str(item.get("snippet_id", "")).strip()
+                    if snippet_id not in wanted_set or snippet_id in seen_ids:
+                        continue
+                    rows.append(
+                        {
+                            "snippet_id": snippet_id,
+                            "topic_label": str(item.get("conversation_topic_label") or item.get("conversation_patch_topic_label") or ""),
+                            "conversation_id": str(item.get("conversation_id") or ""),
+                            "created_at": str(item.get("created_at") or item.get("timestamp") or ""),
+                            "text": str(
+                                item.get("patch_item_text")
+                                or item.get("display_text_normalized")
+                                or item.get("conversation_patch_summary")
+                                or item.get("text")
+                                or ""
+                            ),
+                        }
+                    )
+                    seen_ids.add(snippet_id)
+            if len(rows) >= len(wanted_set):
+                break
     except Exception:
         return rows
+    order = {snippet_id: idx for idx, snippet_id in enumerate(wanted)}
+    rows.sort(key=lambda item: order.get(str(item.get("snippet_id", "")), 9999))
     return rows
 
 
@@ -1212,6 +1220,12 @@ def handle_entity_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[st
     merged = _merged_entity_rows(active, repo_root) if active.exists() else {"rows": [], "metadata": {"available": False}}
     merged_rows = merged.get("rows", []) if isinstance(merged, dict) else []
     metadata = merged.get("metadata", {}) if isinstance(merged, dict) else {}
+    theme_associations_by_entity = _theme_associations_by_entity(active, repo_root) if active.exists() else {}
+    rows = _annotate_entity_rows_with_theme_associations(rows, theme_associations_by_entity)
+    merged_rows = _annotate_entity_rows_with_theme_associations(
+        merged_rows if isinstance(merged_rows, list) else [],
+        theme_associations_by_entity,
+    )
     return {
         "active_root": str(active),
         "rows": rows,
@@ -1237,6 +1251,83 @@ def _theme_status_counts(themes: list[dict[str, Any]]) -> dict[str, int]:
         status = str(theme.get("status") or "unknown").strip() or "unknown"
         counts[status] = counts.get(status, 0) + 1
     return counts
+
+
+def _theme_association_base_score(row: dict[str, Any]) -> float:
+    strength = _safe_float(row.get("match_strength"))
+    boost = min(1.0, _safe_float(row.get("prior_boost")) / 0.35) if row.get("prior_boost") is not None else 0.0
+    indicators = row.get("matched_indicators", [])
+    indicator_count = min(len(indicators), 10) / 10 if isinstance(indicators, list) else 0.0
+    local_gain = max(0.0, _safe_float(row.get("theme_adjusted_lore_prior")) - _safe_float(row.get("base_local_lore_prior")))
+    existing = row.get("theme_match_score")
+    if existing is not None:
+        return _safe_float(existing)
+    return round(max(0.0, min(1.0, (0.72 * strength) + (0.18 * boost) + (0.06 * indicator_count) + (0.04 * local_gain))), 3)
+
+
+def _rank_adjusted_theme_association_score(score: float, entity_theme_rank: int) -> float:
+    if entity_theme_rank <= 1:
+        weight = 1.0
+    elif entity_theme_rank == 2:
+        weight = 0.62
+    elif entity_theme_rank == 3:
+        weight = 0.42
+    else:
+        weight = 0.3
+    return round(max(0.0, min(1.0, score * weight)), 3)
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _entity_theme_role(rank: int) -> str:
+    if rank <= 1:
+        return "primary"
+    if rank == 2:
+        return "secondary"
+    return "supporting"
+
+
+def _rank_theme_learning_associations(associations: list[dict[str, Any]]) -> None:
+    by_entity: dict[str, list[dict[str, Any]]] = {}
+    by_theme: dict[str, list[dict[str, Any]]] = {}
+    for association in associations:
+        association["theme_match_score"] = round(_theme_association_base_score(association), 3)
+        entity_key = str(association.get("normalized_key") or association.get("candidate_name") or "").strip()
+        theme_id = str(association.get("theme_id") or "").strip()
+        if entity_key:
+            by_entity.setdefault(entity_key, []).append(association)
+        if theme_id:
+            by_theme.setdefault(theme_id, []).append(association)
+    for group in by_entity.values():
+        group.sort(key=lambda item: (-_theme_association_base_score(item), str(item.get("theme_label") or "").lower()))
+        for index, association in enumerate(group, start=1):
+            association["entity_theme_rank"] = index
+            association["entity_theme_count"] = len(group)
+            association["entity_theme_role"] = _entity_theme_role(index)
+            association["ranking_score"] = _rank_adjusted_theme_association_score(_theme_association_base_score(association), index)
+    for group in by_theme.values():
+        group.sort(
+            key=lambda item: (
+                -_safe_float(item.get("ranking_score")),
+                -_safe_float(item.get("theme_adjusted_lore_prior")),
+                str(item.get("candidate_name") or "").lower(),
+            )
+        )
+        for index, association in enumerate(group, start=1):
+            association["theme_candidate_rank"] = index
+            association["theme_candidate_count"] = len(group)
 
 
 def _theme_learning_payload(root: Path, repo_root: Path) -> dict[str, Any]:
@@ -1285,6 +1376,13 @@ def _theme_learning_payload(root: Path, repo_root: Path) -> dict[str, Any]:
                     "normalized_key": normalized_key,
                     "match_strength": match.get("match_strength"),
                     "prior_boost": match.get("prior_boost"),
+                    "theme_match_score": match.get("theme_match_score"),
+                    "ranking_score": match.get("ranking_score"),
+                    "entity_theme_rank": match.get("entity_theme_rank"),
+                    "entity_theme_count": match.get("entity_theme_count"),
+                    "entity_theme_role": str(match.get("entity_theme_role") or ""),
+                    "theme_candidate_rank": match.get("theme_candidate_rank"),
+                    "theme_candidate_count": match.get("theme_candidate_count"),
                     "matched_indicators": _clean_text_list(match.get("matched_indicators", [])),
                     "reason": str(match.get("reason") or ""),
                     "theme_prior_boost": row.get("theme_prior_boost"),
@@ -1303,11 +1401,12 @@ def _theme_learning_payload(root: Path, repo_root: Path) -> dict[str, Any]:
                     "human_review_question": str(row.get("human_review_question") or ""),
                 }
             )
+    _rank_theme_learning_associations(associations)
     associations.sort(
         key=lambda item: (
             str(item.get("theme_label") or "").lower(),
-            -float(item.get("match_strength") or 0.0),
-            -float(item.get("prior_boost") or 0.0),
+            int(item.get("theme_candidate_rank") or 999999),
+            -_safe_float(item.get("ranking_score")),
             str(item.get("candidate_name") or "").lower(),
         )
     )
@@ -1339,6 +1438,108 @@ def _theme_learning_payload(root: Path, repo_root: Path) -> dict[str, Any]:
             "evidence_packet_count": int((report.get("inputs", {}) if isinstance(report.get("inputs"), dict) else {}).get("evidence_packet_count", 0) or 0),
         },
     }
+
+
+def _theme_association_sort_key(item: dict[str, Any]) -> tuple[int, float, int, str]:
+    return (
+        _safe_int(item.get("entity_theme_rank"), 999999),
+        -_safe_float(item.get("ranking_score")),
+        _safe_int(item.get("theme_candidate_rank"), 999999),
+        str(item.get("theme_label") or "").lower(),
+    )
+
+
+def _theme_associations_by_entity(root: Path, repo_root: Path) -> dict[str, list[dict[str, Any]]]:
+    payload = _theme_learning_payload(root, repo_root)
+    associations = payload.get("associations", []) if isinstance(payload, dict) else []
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for association in associations:
+        if not isinstance(association, dict):
+            continue
+        keys = {
+            normalized_name_key(str(association.get("normalized_key") or "")),
+            normalized_name_key(str(association.get("candidate_name") or "")),
+        }
+        for key in keys:
+            if key:
+                by_key.setdefault(key, []).append(association)
+    for group in by_key.values():
+        group.sort(key=_theme_association_sort_key)
+    return by_key
+
+
+def _entity_row_theme_keys(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for field in ("candidate_name", "raw_candidate_name", "canonical_name"):
+        values.append(str(row.get(field) or ""))
+    item = row.get("item", {}) if isinstance(row.get("item"), dict) else {}
+    for field in (
+        "candidate_name",
+        "raw_candidate_name",
+        "canonical_name",
+        "normalized_key",
+        "normalized_name_key",
+        "target_entity_name",
+        "source_entity_name",
+        "entity_id",
+    ):
+        values.append(str(item.get(field) or ""))
+    for alias in item.get("aliases", []) or []:
+        values.append(str(alias.get("canonical_name") or alias.get("candidate_name") or alias) if isinstance(alias, dict) else str(alias))
+    for alias in item.get("alias_candidates", []) or []:
+        values.append(str(alias.get("candidate_name") or alias.get("canonical_name") or alias) if isinstance(alias, dict) else str(alias))
+    for source in item.get("merged_from_entities", []) or []:
+        if not isinstance(source, dict):
+            continue
+        values.append(str(source.get("canonical_name") or source.get("entity_id") or ""))
+        for alias in source.get("aliases", []) or []:
+            values.append(str(alias))
+
+    keys: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = normalized_name_key(value)
+        if key and key not in seen:
+            keys.append(key)
+            seen.add(key)
+    return keys
+
+
+def _theme_associations_for_entity_row(
+    row: dict[str, Any],
+    associations_by_entity: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    seen: dict[str, dict[str, Any]] = {}
+    for key in _entity_row_theme_keys(row):
+        for association in associations_by_entity.get(key, []):
+            association_id = str(association.get("association_id") or "")
+            if not association_id:
+                association_id = f"{association.get('theme_id')}:{association.get('normalized_key')}:{association.get('candidate_name')}"
+            seen[association_id] = association
+    out = list(seen.values())
+    out.sort(key=_theme_association_sort_key)
+    return _json_safe(out)
+
+
+def _annotate_entity_rows_with_theme_associations(
+    rows: list[dict[str, Any]],
+    associations_by_entity: dict[str, list[dict[str, Any]]],
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        associations = _theme_associations_for_entity_row(row, associations_by_entity) if associations_by_entity else []
+        annotated.append(
+            {
+                **row,
+                "theme_associations": associations[:limit],
+                "theme_association_count": len(associations),
+            }
+        )
+    return _json_safe(annotated)
 
 
 def handle_theme_learning(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1375,6 +1576,8 @@ def handle_entity_evidence(repo_root: Path, payload: dict[str, Any]) -> dict[str
     if row is None:
         raise ValueError(f"Unknown entity row: {row_id}")
     item = row.get("item", {}) if isinstance(row.get("item"), dict) else {}
+    theme_associations_by_entity = _theme_associations_by_entity(active, repo_root) if active.exists() else {}
+    theme_associations = _theme_associations_for_entity_row(row, theme_associations_by_entity) if theme_associations_by_entity else []
     if row_id.startswith("merged_entity:"):
         entity_id = str(item.get("entity_id", "")).strip()
         source_entity_ids = {
@@ -1399,6 +1602,7 @@ def handle_entity_evidence(repo_root: Path, payload: dict[str, Any]) -> dict[str
             "merge_records": _json_safe(item.get("identity_merge_preview_records", []) if isinstance(item.get("identity_merge_preview_records"), list) else []),
             "merged_from_entities": _json_safe(item.get("merged_from_entities", []) if isinstance(item.get("merged_from_entities"), list) else []),
             "aliases": _json_safe(item.get("aliases", []) if isinstance(item.get("aliases"), list) else []),
+            "theme_associations": theme_associations,
         }
 
     sample_texts = [str(text) for text in item.get("sample_texts", []) or [] if str(text).strip()]
@@ -1421,6 +1625,7 @@ def handle_entity_evidence(repo_root: Path, payload: dict[str, Any]) -> dict[str
         "merge_records": [],
         "merged_from_entities": [],
         "aliases": _json_safe(item.get("alias_candidates", []) if isinstance(item.get("alias_candidates"), list) else []),
+        "theme_associations": theme_associations,
     }
 
 

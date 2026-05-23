@@ -114,6 +114,22 @@ class ArtifactPaths:
         return self.stage04 / "conversation_segmentation_failures.json"
 
     @property
+    def theme_relevance_rerun(self) -> Path:
+        return self.stage04 / "theme_relevance_rerun.json"
+
+    @property
+    def theme_rescue_messages(self) -> Path:
+        return self.stage04 / "messages_theme_rescued_conversations.jsonl"
+
+    @property
+    def theme_rescue_segments(self) -> Path:
+        return self.stage04 / "theme_rescue_segments.json"
+
+    @property
+    def theme_relevance_rerun_failures(self) -> Path:
+        return self.stage04 / "theme_relevance_rerun_failures.json"
+
+    @property
     def conversation_patch_notes(self) -> Path:
         return self.stage05 / "conversation_patch_notes.json"
 
@@ -132,6 +148,30 @@ class ArtifactPaths:
     @property
     def snippets_needs_review(self) -> Path:
         return self.stage06 / "snippets_needs_review.jsonl"
+
+    @property
+    def theme_rescue_snippets(self) -> Path:
+        return self.stage06 / "snippets_theme_rescue.jsonl"
+
+    @property
+    def theme_rescue_snippets_needs_review(self) -> Path:
+        return self.stage06 / "snippets_theme_rescue_needs_review.jsonl"
+
+    @property
+    def theme_rescue_source_profiles(self) -> Path:
+        return self.stage06 / "dm_source_profiles_theme_rescue.json"
+
+    @property
+    def snippets_with_theme_rescue(self) -> Path:
+        return self.stage06 / "snippets_candidates_with_theme_rescue.jsonl"
+
+    @property
+    def snippets_needs_review_with_theme_rescue(self) -> Path:
+        return self.stage06 / "snippets_needs_review_with_theme_rescue.jsonl"
+
+    @property
+    def theme_rescue_snippet_merge_report(self) -> Path:
+        return self.stage06 / "theme_rescue_snippet_merge_report.json"
 
     @property
     def source_profiles(self) -> Path:

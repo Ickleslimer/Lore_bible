@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.common import now_utc_iso, read_json, write_json
-from pipeline.entity_resolution import normalize_entity_type
+from pipeline.entity_resolution import is_disallowed_entity_type, normalize_entity_type
 
 
 MEMORY_VERSION = 1
@@ -19,6 +19,7 @@ def empty_review_memory() -> dict[str, Any]:
         "approved_aliases": [],
         "entity_merges": [],
         "approved_conversation_entities": [],
+        "approved_theme_labels": [],
         "rejected_conversation_entities": [],
         "approved_cards": [],
         "author_directives": [],
@@ -45,6 +46,7 @@ def load_review_memory(path: Path | None) -> dict[str, Any]:
         "approved_aliases",
         "entity_merges",
         "approved_conversation_entities",
+        "approved_theme_labels",
         "rejected_conversation_entities",
         "approved_cards",
         "author_directives",
@@ -283,6 +285,11 @@ def remember_conversation_entity_decisions(
         for item in memory.get("rejected_conversation_entities", [])
         if isinstance(item, dict)
     }
+    existing_theme_labels = {
+        normalize_entity_name_key(str(item.get("canonical_name") or item.get("candidate_name") or item.get("label") or ""))
+        for item in memory.get("approved_theme_labels", [])
+        if isinstance(item, dict)
+    }
 
     for decision in decisions:
         if not isinstance(decision, dict):
@@ -305,7 +312,30 @@ def remember_conversation_entity_decisions(
         if not candidate_name:
             continue
         canonical_name = str(decision.get("canonical_name") or candidate_name).strip()
-        entity_type = normalize_memory_entity_type(decision.get("entity_type") or (proposal or {}).get("proposed_entity_type") or "term")
+        raw_entity_type = decision.get("entity_type") or (proposal or {}).get("proposed_entity_type") or "term"
+        if is_disallowed_entity_type(raw_entity_type):
+            if action in {"approve", "accept"}:
+                theme_key = normalize_entity_name_key(canonical_name)
+                if theme_key and theme_key not in existing_theme_labels:
+                    memory.setdefault("approved_theme_labels", []).append(
+                        {
+                            "proposal_id": str(decision.get("proposal_id") or (proposal or {}).get("proposal_id") or ""),
+                            "candidate_name": candidate_name,
+                            "canonical_name": canonical_name,
+                            "label_type": "theme",
+                            "aliases": decision.get("aliases", []) if isinstance(decision.get("aliases", []), list) else [],
+                            "source_snippet_ids": (proposal or {}).get("source_snippet_ids", []),
+                            "sample_texts": (proposal or {}).get("sample_texts", []),
+                            "decision": action,
+                            "reviewer": decision.get("reviewer", "reviewer"),
+                            "rationale": decision.get("rationale", ""),
+                            "reviewed_at_utc": decision.get("timestamp_utc", now_utc_iso()),
+                            "normalized_name_key": theme_key,
+                        }
+                    )
+                    existing_theme_labels.add(theme_key)
+            continue
+        entity_type = normalize_memory_entity_type(raw_entity_type)
         row = {
             "proposal_id": str(decision.get("proposal_id") or (proposal or {}).get("proposal_id") or ""),
             "candidate_name": candidate_name,

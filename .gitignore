@@ -24,5 +24,12 @@ canon/*
 discord_conversations/
 *.docx
 
+memory-bank/
+repomix-output.md
+.repomix.config.json
+.repomixignore
+repomix.bat
+
 .DS_Store
 Thumbs.db
+.clinerules

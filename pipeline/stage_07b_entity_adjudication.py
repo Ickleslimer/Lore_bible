@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, stable_id, write_json
-from pipeline.entity_resolution import normalized_name_key
+from pipeline.entity_resolution import normalize_entity_type, normalized_name_key
 from pipeline.model_provider import call_model_chat, model_call_kwargs
 
 
@@ -490,7 +490,7 @@ def normalize_recommendation(raw: dict[str, Any], candidate: dict[str, Any], sel
         "evidence_count": int(candidate.get("evidence_count", 0) or 0),
         "recommended_action": action,
         "recommended_track": normalize_enum(raw.get("recommended_track"), RECOMMENDED_TRACKS, infer_recommended_track(action, externality_class, candidate)),
-        "recommended_entity_type": clean_text(raw.get("recommended_entity_type") or candidate.get("proposed_entity_type") or "term", 120),
+        "recommended_entity_type": normalize_entity_type(raw.get("recommended_entity_type") or candidate.get("proposed_entity_type") or "term"),
         "canonical_name": optional_text(raw.get("canonical_name")),
         "alias_of": optional_text(raw.get("alias_of")),
         "confidence": clamp_float(raw.get("confidence", 0.0)),

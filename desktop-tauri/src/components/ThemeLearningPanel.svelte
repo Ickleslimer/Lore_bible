@@ -14,7 +14,7 @@
   let search = "";
   let statusFilter = "all";
   let selectedThemeId = "all";
-  let associationSort = "strength";
+  let associationSort = "rank";
   let visibleLimit = 180;
 
   $: themes = response?.themes ?? [];
@@ -118,6 +118,7 @@
       association.externality_class,
       association.base_recommended_action,
       association.theme_adjusted_recommended_action,
+      association.entity_theme_role,
       association.reason,
       association.model_reasoning_summary,
       association.human_review_question,
@@ -139,9 +140,19 @@
     const copy = [...input];
     copy.sort((a, b) => a.candidate_name.localeCompare(b.candidate_name));
     copy.sort((a, b) => {
+      if (associationSort === "rank") {
+        if (selectedThemeId === "all") {
+          const theme = a.theme_label.localeCompare(b.theme_label);
+          if (theme !== 0) return theme;
+        }
+        const themeRank = numberValue(a.theme_candidate_rank || 999999) - numberValue(b.theme_candidate_rank || 999999);
+        if (themeRank !== 0) return themeRank;
+        return numberValue(a.entity_theme_rank || 999999) - numberValue(b.entity_theme_rank || 999999);
+      }
       if (associationSort === "prior") return numberValue(b.theme_adjusted_lore_prior) - numberValue(a.theme_adjusted_lore_prior);
       if (associationSort === "boost") return numberValue(b.prior_boost) - numberValue(a.prior_boost);
       if (associationSort === "theme") return a.theme_label.localeCompare(b.theme_label);
+      if (associationSort === "score") return numberValue(b.ranking_score) - numberValue(a.ranking_score);
       return numberValue(b.match_strength) - numberValue(a.match_strength);
     });
     return copy;
@@ -212,7 +223,9 @@
       {/each}
     </select>
     <select bind:value={associationSort}>
+      <option value="rank">Sort: rank</option>
       <option value="strength">Sort: match</option>
+      <option value="score">Sort: score</option>
       <option value="prior">Sort: adjusted prior</option>
       <option value="boost">Sort: boost</option>
       <option value="theme">Sort: theme</option>
@@ -319,9 +332,18 @@
                   <span class="caption">{association.theme_label}</span>
                   <h4>{association.candidate_name}</h4>
                 </div>
-                <span class="status-pill">{percent(association.match_strength)} match</span>
+                <div class="theme-card-badges">
+                  {#if association.theme_candidate_rank}
+                    <span class="status-pill">#{association.theme_candidate_rank} in theme</span>
+                  {/if}
+                  <span class="status-pill">{percent(association.match_strength)} match</span>
+                </div>
               </header>
               <div class="entity-card-stats">
+                {#if association.entity_theme_rank}
+                  <span>{association.entity_theme_role || "motif"} <strong>#{association.entity_theme_rank}/{association.entity_theme_count || 1}</strong></span>
+                {/if}
+                <span>rank <strong>{percent(association.ranking_score)}</strong></span>
                 <span>boost <strong>{percent(association.prior_boost)}</strong></span>
                 <span>prior <strong>{percent(association.theme_adjusted_lore_prior)}</strong></span>
                 <span>{association.theme_adjusted_recommended_action || association.base_recommended_action || "review"}</span>
