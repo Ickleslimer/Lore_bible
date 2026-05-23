@@ -193,7 +193,7 @@
 <main class="app-shell">
   <aside class="sidebar">
     <div class="brand-block">
-      <div class="brand-mark">T</div>
+      <img class="brand-mark" src="icon.png" alt="Homeostasis" />
       <div>
         <h1>Theriac Lore</h1>
         <p>Pipeline Review</p>

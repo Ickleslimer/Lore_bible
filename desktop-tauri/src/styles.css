@@ -97,14 +97,11 @@ textarea {
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: #172033;
-  color: #f8fafc;
-  font-weight: 800;
+  object-fit: cover;
 }
 
 .brand-block h1,
