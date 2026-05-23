@@ -32,4 +32,5 @@ repomix.bat
 
 .DS_Store
 Thumbs.db
+*.lnk
 .clinerules
