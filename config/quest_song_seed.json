@@ -1,0 +1,480 @@
+{
+  "quest_song_seeds": [
+    {
+      "quest_title": "14 years",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami",
+        "Leonidas"
+      ],
+      "synopsis": "Izanami finally confronts Leonidas on his treatment of her.",
+      "quest_id": "",
+      "band_hint": "guns_n_roses"
+    },
+    {
+      "quest_title": "Bat Out Of Hell",
+      "main_character": "Beau",
+      "characters": [
+        "Beau",
+        "Oyuun"
+      ],
+      "synopsis": "Beau takes his revenge following Ramasinta's death.",
+      "quest_id": "",
+      "band_hint": "meat_loaf"
+    },
+    {
+      "quest_title": "Behind Blue Eyes",
+      "main_character": "Pandora",
+      "characters": [
+        "Pandora",
+        "Izanami",
+        "Oyuun",
+        "Joy"
+      ],
+      "synopsis": "Joy and Pandora argue over her actions since Manunggal occupied the lab.",
+      "quest_id": "",
+      "band_hint": "other"
+    },
+    {
+      "quest_title": "Breakdown",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami",
+        "Pandora"
+      ],
+      "synopsis": "Izanami resolves to separate legally from Leonidas.",
+      "quest_id": "",
+      "band_hint": "guns_n_roses"
+    },
+    {
+      "quest_title": "Brotherhood of Man",
+      "main_character": "Ramasinta",
+      "characters": [
+        "Ramasinta",
+        "Beau"
+      ],
+      "synopsis": "Beau catches Ramasinta up on Manunggal's actions in the 14 years she's been in stasis.",
+      "quest_id": "",
+      "band_hint": "motley_crue"
+    },
+    {
+      "quest_title": "Chinese Democracy",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami",
+        "Altruism"
+      ],
+      "synopsis": "Altruism gives Izanami a history lesson.",
+      "quest_id": "",
+      "band_hint": "guns_n_roses"
+    },
+    {
+      "quest_title": "Cochise",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun",
+        "Altruism"
+      ],
+      "synopsis": "Altruism attempts to teach Oyuun how to play guitar, but comes up against her thanatophobia.",
+      "quest_id": "",
+      "band_hint": "audioslave"
+    },
+    {
+      "quest_title": "Eminence Front",
+      "main_character": "Pandora",
+      "characters": [
+        "Pandora",
+        "Joy"
+      ],
+      "synopsis": "Pandora's addiction to TMS begins to spiral.",
+      "quest_id": "",
+      "band_hint": "the_who"
+    },
+    {
+      "quest_title": "Every Day Is Exactly The Same",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch",
+        "Khava"
+      ],
+      "synopsis": "Part 2 to The Day The World Went Away. Enoch deals with the loss of his family and discovers Khava's brilliance following her death, beginning his transformation into the man we know him as.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "Exit Music (For A Film)",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Oyuun battles RUINR and the player to the death (destructive path).",
+      "quest_id": "",
+      "band_hint": "radiohead"
+    },
+    {
+      "quest_title": "Fake Plastic Trees",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun",
+        "Enoch"
+      ],
+      "synopsis": "Oyuun discovers Enoch only has a week left to live.",
+      "quest_id": "",
+      "band_hint": "radiohead"
+    },
+    {
+      "quest_title": "I'll Be Back",
+      "main_character": "Joy",
+      "characters": [
+        "Joy",
+        "Enoch"
+      ],
+      "synopsis": "The player returns to Joy and Enoch's old university in search of equipment for the lab",
+      "quest_id": "",
+      "band_hint": "other"
+    },
+    {
+      "quest_title": "Into The Void",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "The player is introduced to the lab.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "Just Like You Imagined",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "Tech milestone 1.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "Killed by Death",
+      "main_character": "Ramasinta",
+      "characters": [
+        "Ramasinta",
+        "Beau",
+        "Enoch"
+      ],
+      "synopsis": "Ramasinta is kidnapped by RUINR.",
+      "quest_id": "",
+      "band_hint": "motorhead"
+    },
+    {
+      "quest_title": "Last Cup of Sorrow",
+      "main_character": "Altruism",
+      "characters": [
+        "Altruism"
+      ],
+      "synopsis": "Altruism returns to Sumer to show the player what happened to her homeland.",
+      "quest_id": "",
+      "band_hint": "faith_no_more"
+    },
+    {
+      "quest_title": "Let Down",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Oyuun is cryogenically frozen.",
+      "quest_id": "",
+      "band_hint": "radiohead"
+    },
+    {
+      "quest_title": "Love Me Forever",
+      "main_character": "Ramasinta",
+      "characters": [
+        "Ramasinta",
+        "Beau"
+      ],
+      "synopsis": "Ramasinta finds a cause worth dying for.",
+      "quest_id": "",
+      "band_hint": "motley_crue"
+    },
+    {
+      "quest_title": "Man of War",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun",
+        "Pandora"
+      ],
+      "synopsis": "Oyuun destroys the Krypteia, with the unexpected help of RUINR.",
+      "quest_id": "",
+      "band_hint": "radiohead"
+    },
+    {
+      "quest_title": "Meet Your Master",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "Epilogue quest.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "Motorhead",
+      "main_character": "Ramasinta",
+      "characters": [
+        "Ramasinta",
+        "Beau",
+        "Joy"
+      ],
+      "synopsis": "Ramasinta struggles with her amphetamine addiction.",
+      "quest_id": "",
+      "band_hint": "motorhead"
+    },
+    {
+      "quest_title": "My Generation",
+      "main_character": "Pandora",
+      "characters": [
+        "Pandora",
+        "Izanami"
+      ],
+      "synopsis": "Pandora returns to the place where she was born.",
+      "quest_id": "",
+      "band_hint": "the_who"
+    },
+    {
+      "quest_title": "My Violent Heart",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "Year 1 Siege.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "No Surprises",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Oyuun finally rests following the completion of the theriac.",
+      "quest_id": "",
+      "band_hint": "radiohead"
+    },
+    {
+      "quest_title": "Paradise City",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami",
+        "Pandora"
+      ],
+      "synopsis": "Izanami returns to the city to meet old friends.",
+      "quest_id": "",
+      "band_hint": "guns_n_roses"
+    },
+    {
+      "quest_title": "Pinball Wizard",
+      "main_character": "Pandora",
+      "characters": [
+        "Pandora",
+        "Altruism",
+        "Oyuun"
+      ],
+      "synopsis": "Altruism struggles to beat Pandora at cards.",
+      "quest_id": "",
+      "band_hint": "the_who"
+    },
+    {
+      "quest_title": "Ripe (With Decay)",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "After the death of Oyuun, Enoch begins to lose touch with his own humanity and begins to spiral downward mentally.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "Rocket Queen",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Izanami romance quest 1.",
+      "quest_id": "",
+      "band_hint": "guns_n_roses"
+    },
+    {
+      "quest_title": "Rooster",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun",
+        "Ramasinta"
+      ],
+      "synopsis": "Oyuun learns about Ramasinta's past.",
+      "quest_id": "",
+      "band_hint": "other"
+    },
+    {
+      "quest_title": "Ruiner",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "The lab launches the final assault on Olympus.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "Show Me How To Live",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Oyuun romance quest 2.",
+      "quest_id": "",
+      "band_hint": "audioslave"
+    },
+    {
+      "quest_title": "Sin",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "Enoch plans an assault on Leonidas's home, but he's holding some detail back...",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "Spectre",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Oyuun claims control of the lab, following Enoch's death.",
+      "quest_id": "",
+      "band_hint": "radiohead"
+    },
+    {
+      "quest_title": "Stone Dead Forever",
+      "main_character": "Ramasinta",
+      "characters": [],
+      "synopsis": "Ramasinta is returned to life during the Year 2 siege.",
+      "quest_id": "",
+      "band_hint": "motorhead"
+    },
+    {
+      "quest_title": "Sweet Child O' Mine",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami",
+        "Oyuun",
+        "Beau",
+        "Enoch",
+        "Joy",
+        "Pandora"
+      ],
+      "synopsis": "Izanami is thawed and struggles to get her bearings.",
+      "quest_id": "",
+      "band_hint": "guns_n_roses"
+    },
+    {
+      "quest_title": "Sympathy For The Devil",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami",
+        "Enoch"
+      ],
+      "synopsis": "Izanami learns the full extent of Leonidas's sins.",
+      "quest_id": "",
+      "band_hint": "guns_n_roses"
+    },
+    {
+      "quest_title": "The Background World",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "A military flashpoint occurs on the borders of Greece, prompting the lab to consider the invasion may be coming sooner than later.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "The Beginning of the End",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "RUINR betrays the Krypteia.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "The Day I Tried To Live",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Oyuun romance quest 1",
+      "quest_id": "",
+      "band_hint": "radiohead"
+    },
+    {
+      "quest_title": "The Day The World Went Away",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch",
+        "Khava"
+      ],
+      "synopsis": "Flashback Quest, shows Enoch with his family, the precursors to the Krypteia and history of the longevity field, and the loss of Khava and his daughter.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "The Fragile",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "Enoch tries to coax Oyuun into a healthier routine.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "The Good's Gone",
+      "main_character": "Pandora",
+      "characters": [
+        "Pandora",
+        "Izanami",
+        "Oyuun",
+        "Joy"
+      ],
+      "synopsis": "The remnants of the Krypteia return for Pandora and her mother.",
+      "quest_id": "",
+      "band_hint": "the_who"
+    },
+    {
+      "quest_title": "The Hand That Feeds",
+      "main_character": "Enoch",
+      "characters": [
+        "Whole lab"
+      ],
+      "synopsis": "Manunggal makes an offer to the lab.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    },
+    {
+      "quest_title": "War Pigs",
+      "main_character": "RUINR",
+      "characters": [
+        "RUINR",
+        "TALOS"
+      ],
+      "synopsis": "RUINR resorts to desperate measures to keep Manunggal from any further advances.",
+      "quest_id": "",
+      "band_hint": "black_sabbath"
+    },
+    {
+      "quest_title": "Welcome to the Jungle",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami",
+        "Enoch",
+        "Pandora"
+      ],
+      "synopsis": "Izanami finds a role within the lab.",
+      "quest_id": "",
+      "band_hint": "guns_n_roses"
+    },
+    {
+      "quest_title": "Zero Sum",
+      "main_character": "Enoch",
+      "characters": [],
+      "synopsis": "Enoch succumbs to old age.",
+      "quest_id": "",
+      "band_hint": "nine_inch_nails"
+    }
+  ],
+  "seed_count": 46
+}

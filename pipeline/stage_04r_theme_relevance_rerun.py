@@ -68,6 +68,13 @@ AUTHORIAL_LANGUAGE = (
     "writing",
 )
 
+# Known THERIAC character names (for quest-song context overlap detection)
+THERIAC_CHARACTERS = frozenset({
+    "izanami", "leonidas", "pandora", "oyuun", "enoch", "joy",
+    "altruism", "ramasinta", "beau", "ruinr", "talos", "manunggal",
+    "khava",
+})
+
 PRODUCTION_ONLY_TERMS = (
     "call",
     "deadline",
@@ -331,6 +338,81 @@ def _proximity_bonus(window: dict[str, Any], accepted_by_pair: dict[str, list[di
     return 0.05
 
 
+def _quest_song_config(provider_config: dict[str, Any]) -> dict[str, Any]:
+    """Extract quest-song marker config from pipeline config."""
+    tl = provider_config.get("thematic_linking", {}) if isinstance(provider_config, dict) else {}
+    qs_cfg = tl.get("quest_song_markers", {}) if isinstance(tl, dict) else {}
+    return dict(qs_cfg) if isinstance(qs_cfg, dict) else {}
+
+
+def _load_quest_song_markers(provider_config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Load quest-song seed entries and return list of {title, main_character, characters} dicts."""
+    qs_cfg = _quest_song_config(provider_config)
+    seed_path = str(qs_cfg.get("seed_path", "")) if isinstance(qs_cfg, dict) else ""
+    if not seed_path or not qs_cfg.get("enabled", True):
+        return []
+    path = Path(seed_path)
+    if not path.exists():
+        return []
+    try:
+        payload = read_json(path)
+    except Exception:
+        return []
+    seeds = payload.get("quest_song_seeds", []) if isinstance(payload, dict) else []
+    out: list[dict[str, Any]] = []
+    for seed in seeds:
+        if not isinstance(seed, dict):
+            continue
+        title = str(seed.get("quest_title", "")).strip()
+        if not title:
+            continue
+        out.append({
+            "title": title,
+            "title_lower": title.lower(),
+            "main_character": str(seed.get("main_character", "")).strip().lower(),
+            "characters": [str(c).strip().lower() for c in seed.get("characters", []) if isinstance(c, str) and c.strip()],
+        })
+    return out
+
+
+def _matched_quest_song_terms(text: str, quest_song_markers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Check which quest-song titles appear in the text. Returns matched entries."""
+    lowered = f" {text.lower()} "
+    normalized_blob = f" {normalized_name_key(text)} "
+    matches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in quest_song_markers:
+        title_lower = entry["title_lower"]
+        if title_lower in seen:
+            continue
+        # Multi-word: check normalized blob; single-word: check word boundary
+        if " " in title_lower:
+            norm_title = normalized_name_key(title_lower)
+            if norm_title and f" {norm_title} " in normalized_blob:
+                matches.append(entry)
+                seen.add(title_lower)
+        else:
+            if re.search(rf"\b{re.escape(title_lower)}\b", lowered):
+                matches.append(entry)
+                seen.add(title_lower)
+    return matches
+
+
+def _has_character_context(text: str, quest_match: dict[str, Any]) -> bool:
+    """Check if text contains character names associated with a quest-song."""
+    lowered = text.lower()
+    check_names = [quest_match["main_character"]] if quest_match["main_character"] else []
+    check_names.extend(quest_match["characters"])
+    for name in check_names:
+        if name and name in lowered:
+            return True
+    # Also check against known THERIAC characters broadly
+    for char in THERIAC_CHARACTERS:
+        if char in lowered:
+            return True
+    return False
+
+
 def _score_window(
     window: dict[str, Any],
     themes: list[dict[str, Any]],
@@ -394,6 +476,16 @@ def _score_window(
     externality_penalty = 0.16 if warnings and not has_entity else 0.0
     generic_penalty = 0.10 if has_theme and not has_entity and not authorial_score else 0.0
     production_penalty = _production_only_penalty(text, has_theme or has_entity)
+    # Quest-song bonus: boost if conversation mentions known quest-song titles in a THERIAC-relevant context
+    quest_song_bonus = 0.0
+    quest_song_matches: list[dict[str, Any]] = []
+    if cfg.get("quest_song_markers_loaded"):
+        for qs_marker in cfg.get("_quest_song_marker_entries", []):
+            qs_matches = _matched_quest_song_terms(text, [qs_marker])
+            if qs_matches and _has_character_context(text, qs_marker):
+                quest_song_matches.append(qs_marker)
+        if quest_song_matches:
+            quest_song_bonus = min(0.30, 0.15 * len(quest_song_matches))
     score = max(
         0.0,
         min(
@@ -403,12 +495,13 @@ def _score_window(
             + repeated_motif_score
             + authorial_score
             + proximity_score
+            + quest_song_bonus
             - externality_penalty
             - generic_penalty
             - production_penalty,
         ),
     )
-    if bool(cfg.get("require_active_theme", True)) and not (has_theme or has_entity):
+    if bool(cfg.get("require_active_theme", True)) and not (has_theme or has_entity or quest_song_matches):
         score = min(score, 0.18)
     return {
         "candidate_id": stable_id("theme_rescue_candidate", str(window.get("coarse_window_id", "")), str(window.get("model_window_id", ""))),
@@ -734,6 +827,15 @@ def run(
         write_json(out_failures_json, {"generated_at_utc": generated_at, "status": "no_active_themes", "failures": []})
         logger.info("Stage 04R skipped: no approved active themes are available.")
         return
+
+    # Load quest-song markers and inject into rerun_cfg for _score_window access
+    qs_marker_entries = _load_quest_song_markers(provider_config)
+    if qs_marker_entries:
+        rerun_cfg["quest_song_markers_loaded"] = True
+        rerun_cfg["_quest_song_marker_entries"] = qs_marker_entries
+    else:
+        rerun_cfg["quest_song_markers_loaded"] = False
+        rerun_cfg["_quest_song_marker_entries"] = []
 
     conversation_cfg = conversation_config(provider_config)
     rows = read_jsonl(in_global_timeline_jsonl)

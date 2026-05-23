@@ -1,7 +1,19 @@
 <script lang="ts">
-  import type { PipelineProgress } from "../lib/types";
+  import { createEventDispatcher } from "svelte";
+  import type { PipelineProgress, PipelineStage } from "../lib/types";
 
   export let progress: PipelineProgress | null = null;
+  export let disabled = false;
+
+  const dispatch = createEventDispatcher<{ runFromStage: number }>();
+
+  function handleStageClick(stage: PipelineStage) {
+    if (disabled) return;
+    if (!confirm(`Run pipeline starting from ${stage.name} (Stage ${stage.index})? Earlier stages will be skipped.`)) {
+      return;
+    }
+    dispatch("runFromStage", stage.index);
+  }
 </script>
 
 <section class="progress-panel">
@@ -11,10 +23,16 @@
   </div>
   <div class="stage-rail">
     {#each progress?.stages ?? [] as stage}
-      <div class={`stage-node ${stage.state}`} class:row-end={stage.index % 6 === 0} title={`${stage.short_label} ${stage.name}`}>
+      <button
+        class={`stage-node ${stage.state}`}
+        class:row-end={stage.index % 6 === 0}
+        class:clickable={!disabled}
+        title={`${stage.short_label} ${stage.name} — Click to run from this stage`}
+        on:click={() => handleStageClick(stage)}
+      >
         <span class="dot">{stage.short_label}</span>
         <span>{stage.name}</span>
-      </div>
+      </button>
     {/each}
   </div>
 </section>

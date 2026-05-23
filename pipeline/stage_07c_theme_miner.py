@@ -493,6 +493,8 @@ Core rules:
 - Preserve successful theme lanes. Do not merge mythological/theological, technological/scientific, emotional/psychological, philosophical/ideological, aesthetic, or historical/political patterns unless the evidence explicitly connects them.
 - Infer the best theme_domain from the evidence. The domain is a broad lane for later review, not a fixed ontology of allowed themes.
 - DISAMBIGUATION RULE: Distinguish between abstract themes and entities named after concepts. If a narrative features characters named after abstract nouns, do not extract their literal names as themes. Extract the underlying thematic patterns they represent.
+- QUEST TITLE RULE: THERIAC quest titles are named after real-world song titles (e.g. "Sweet Child O' Mine", "Paradise City", "The Day The World Went Away"). When evidence references a song title, do not extract the song as a theme. Instead, classify the referenced quest as an in-world entity (type: quest) or leave it as an entity candidate. The song name is a quest title, not a thematic pattern.
+- CHARACTER NAMED AFTER CONCEPT RULE: Some characters in THERIAC are named after abstract nouns (e.g., Altruism, Joy) or mythological figures (e.g., Izanami, Enoch). When such names appear in evidence, look for the underlying thematic pattern they represent, not the literal name. Do not create themes called "Altruism" or "Joy" just because a character has that name; create themes for altruism-as-concept if the evidence explores the concept of selflessness.
 
 Allowed theme_domain values:
 {json_dumps(sorted(THEME_DOMAINS))}

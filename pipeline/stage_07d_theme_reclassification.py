@@ -8,6 +8,7 @@ from typing import Any
 from pipeline.common import get_logger, now_utc_iso, read_json, stable_id, write_json
 from pipeline.entity_resolution import normalized_name_key
 from pipeline.model_provider import call_model_chat, model_call_kwargs
+from pipeline.thematic_profile import _load_quest_song_seeds
 
 
 RECLASSIFICATION_SCHEMA_VERSION = 1
@@ -847,6 +848,28 @@ def clip_text(value: Any, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _load_quest_song_seed_titles(provider_config: dict[str, Any]) -> list[str]:
+    """Load quest-song titles from config seed file for matching."""
+    tl = provider_config.get("thematic_linking", {}) if isinstance(provider_config, dict) else {}
+    qs_cfg = tl.get("quest_song_markers", {}) if isinstance(tl, dict) else {}
+    if not qs_cfg or not isinstance(qs_cfg, dict) or not qs_cfg.get("enabled", True):
+        return []
+    seed_path = str(qs_cfg.get("seed_path", ""))
+    if not seed_path:
+        return []
+    return _load_quest_song_seeds(seed_path)
+
+
+def _check_quest_song_candidate_match(candidate_name: str, quest_song_titles: list[str]) -> bool:
+    """Check if a candidate name or evidence matches a known quest-song title."""
+    lowered = candidate_name.lower()
+    for title in quest_song_titles:
+        title_lower = title.lower()
+        if title_lower in lowered or lowered in title_lower:
+            return True
+    return False
 
 
 def match_themes(recommendation: dict[str, Any], candidate: dict[str, Any], themes: list[dict[str, Any]]) -> list[dict[str, Any]]:

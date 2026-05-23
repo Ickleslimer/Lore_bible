@@ -130,14 +130,18 @@ export async function undoCardAgentTransaction(payload: Record<string, unknown>)
 
 export async function startPipeline(
   artifactsRoot: string,
-  options: { resume?: boolean; ignorePending?: boolean } = {},
+  options: { resume?: boolean; ignorePending?: boolean; startStage?: number } = {},
 ): Promise<PipelineRuntimeStatus> {
-  return invoke<PipelineRuntimeStatus>("pipeline_start", {
+  const payload: Record<string, unknown> = {
     repoRoot: repoRoot || null,
     artifactsRoot,
     resume: Boolean(options.resume),
     ignorePending: Boolean(options.ignorePending),
-  });
+  };
+  if (options.startStage !== undefined && options.startStage >= 1) {
+    payload.startStage = options.startStage;
+  }
+  return invoke<PipelineRuntimeStatus>("pipeline_start", payload);
 }
 
 export async function pipelineStatus(): Promise<PipelineRuntimeStatus> {

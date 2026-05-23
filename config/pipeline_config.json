@@ -319,6 +319,11 @@
     "enabled": true,
     "runtime_updates_enabled": true,
     "runtime_min_support": 2,
+    "quest_song_markers": {
+      "enabled": true,
+      "seed_path": "config/quest_song_seed.json",
+      "min_support": 2
+    },
     "historical_markers": [
       "sparta",
       "hellenic",

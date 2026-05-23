@@ -66,6 +66,43 @@ def infer_partner_from_messages(messages: list[dict[str, Any]]) -> tuple[str, st
     return partner_id, labels.get(partner_id, "unknown")
 
 
+def _extract_embed_text(msg: dict[str, Any]) -> str:
+    """Extract embed titles and descriptions as supplemental text.
+
+    Discord embeds (especially YouTube video shares) often contain the song
+    title, artist, and description in embed fields rather than the message
+    content.  We collect those and return them as a single text block so that
+    downstream pipeline stages (segment relevance scoring, quest-song
+    detection, theme mining) do not lose this signal.
+    """
+    embeds = msg.get("embeds")
+    if not isinstance(embeds, list) or not embeds:
+        return ""
+    parts: list[str] = []
+    for embed in embeds:
+        if not isinstance(embed, dict):
+            continue
+        title = str(embed.get("title") or "").strip()
+        if title:
+            parts.append(title)
+        description = str(embed.get("description") or "").strip()
+        if description:
+            parts.append(description)
+        author_name = ""
+        author = embed.get("author")
+        if isinstance(author, dict):
+            author_name = str(author.get("name") or "").strip()
+        if author_name:
+            parts.append(author_name)
+        provider_name = ""
+        provider = embed.get("provider")
+        if isinstance(provider, dict):
+            provider_name = str(provider.get("name") or "").strip()
+        if provider_name:
+            parts.append(provider_name)
+    return " — ".join(parts)
+
+
 def normalize_one_message(
     msg: dict[str, Any],
     json_path: Path,
@@ -82,6 +119,10 @@ def normalize_one_message(
     author = msg.get("author", {}) or {}
     content = msg.get("content", "")
     content = content if isinstance(content, str) else str(content)
+    # Append embed text so song titles in YouTube embeds are not lost
+    embed_text = _extract_embed_text(msg)
+    if embed_text:
+        content = (content + " " + embed_text) if content else embed_text
     message_id = str(msg.get("id", safe_uuid()))
     is_bot_or_application = bool(
         msg.get("application_id")

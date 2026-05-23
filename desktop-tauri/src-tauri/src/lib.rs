@@ -344,6 +344,7 @@ fn pipeline_start(
     artifacts_root: String,
     resume: bool,
     ignore_pending: bool,
+    start_stage: Option<i32>,
 ) -> Result<Value, String> {
     let root = find_repo_root(repo_root)?;
     let artifacts = PathBuf::from(&artifacts_root);
@@ -355,10 +356,11 @@ fn pipeline_start(
     write_diagnostic(
         Some(&root),
         &format!(
-            "pipeline_start invoked artifacts={} resume={} ignore_pending={}",
+            "pipeline_start invoked artifacts={} resume={} ignore_pending={} start_stage={:?}",
             artifacts.display(),
             resume,
-            ignore_pending
+            ignore_pending,
+            start_stage
         ),
     );
     {
@@ -383,7 +385,7 @@ fn pipeline_start(
 
     let worker_state = state.inner().clone();
     thread::spawn(move || {
-        run_pipeline_worker(worker_state, root, artifacts, resume, ignore_pending);
+        run_pipeline_worker(worker_state, root, artifacts, resume, ignore_pending, start_stage);
     });
     write_diagnostic(
         None,
@@ -435,6 +437,7 @@ fn run_pipeline_worker(
     artifacts: PathBuf,
     resume: bool,
     ignore_pending: bool,
+    start_stage: Option<i32>,
 ) {
     write_diagnostic(Some(&root), "background worker preparing Python command");
     let (docx, conversations) = configured_pipeline_inputs(&root);
@@ -474,6 +477,12 @@ fn run_pipeline_worker(
     }
     if ignore_pending {
         args.push("--ignore-pending".to_string());
+    }
+    if let Some(stage) = start_stage {
+        if stage >= 1 && stage <= 12 {
+            args.push("--start-stage".to_string());
+            args.push(stage.to_string());
+        }
     }
 
     let log_path = worker_log_path(&artifacts);

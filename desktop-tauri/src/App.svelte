@@ -12,7 +12,7 @@
   import RelationshipGraphPanel from "./components/RelationshipGraphPanel.svelte";
   import RunSelector from "./components/RunSelector.svelte";
   import ThemeLearningPanel from "./components/ThemeLearningPanel.svelte";
-  import { loadClaimInventory, loadEntityInventory, loadIdentityClusters, loadState, selectRun } from "./lib/api";
+  import { loadClaimInventory, loadEntityInventory, loadIdentityClusters, loadState, selectRun, startPipeline } from "./lib/api";
   import type { AppState, IdentityClusterRow, InventoryRow } from "./lib/types";
 
   let state: AppState | null = null;
@@ -149,6 +149,25 @@
     mergedEntityMetadata = {};
   }
 
+  async function handleRunFromStage(event: CustomEvent<number>) {
+    const stage = event.detail;
+    if (!state?.active_root) return;
+    busy = true;
+    error = "";
+    try {
+      await withTimeout(
+        startPipeline(state.active_root, { startStage: stage, ignorePending: false }),
+        3500,
+        `Pipeline start from Stage ${stage}`,
+      );
+      await refresh();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      busy = false;
+    }
+  }
+
   function setTab(tab: ActiveTab) {
     activeTab = tab;
   }
@@ -229,7 +248,7 @@
     {#if loading}
       <div class="loading-panel">Loading review workspace...</div>
     {:else if state}
-      <ProgressRail progress={state.progress} />
+      <ProgressRail progress={state.progress} disabled={busy} on:runFromStage={handleRunFromStage} />
 
       {#if activeTab === "pipeline"}
         <PipelineControlPanel
