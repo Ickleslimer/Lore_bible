@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "theriac-watch": {
+      "command": "D:\\AppData\\Python\\Python312\\python.exe",
+      "args": ["-m", "mcp_servers.theriac_watch.server"],
+      "cwd": "D:\\Workplaces\\Enkidu Project\\Theriac\\Lore_bible",
+      "env": {
+        "PYTHONPATH": "D:\\Workplaces\\Enkidu Project\\Theriac\\Lore_bible",
+        "THERIAC_REPO_ROOT": "D:\\Workplaces\\Enkidu Project\\Theriac\\Lore_bible",
+        "THERIAC_OPENROUTER_AUTO_TOPUP": "1"
+      }
+    }
+  }
+}
