@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -23,22 +25,16 @@ _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S = 0.0
 _LAST_API_FAILURE_LOG_EPOCH_S = 0.0
 _CACHED_API_KEY: str | None = None
 _HAS_CACHED_API_KEY = False
-_CACHED_GEMINI_API_KEY: str | None = None
-_HAS_CACHED_GEMINI_API_KEY = False
 _CACHED_OPENROUTER_API_KEY: str | None = None
 _HAS_CACHED_OPENROUTER_API_KEY = False
 _LAST_MODEL_SKIP_REASON = ""
+_PROVIDER_STATE_LOCK = threading.Lock()
+
+PACING_SKIP_REASONS = frozenset({"provider_locked", "adaptive_pacing", "rate_limit_cooldown", "rate_limited_429"})
 
 TASK_ROUTING_CONTROL_KEYS = {
-    "batch_enabled",
-    "batch_initial_max_requests",
-    "batch_max_requests",
-    "batch_status_log_path",
-    "batch_status_log_min_interval_seconds",
-    "batch_poll_interval_seconds",
-    "batch_timeout_seconds",
-    "batch_display_name",
-    "batch_abort_on_chunk_failure",
+    "max_concurrent_requests",
+    "parallel_wave_size",
     "profile",
     "model_profile",
 }
@@ -62,7 +58,7 @@ def _default_openrouter_session_id(task_name: str) -> str:
 def _openrouter_trace_for_task(task_name: str, session_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
     trace: dict[str, Any] = {
         "trace_id": session_id,
-        "trace_name": f"THERIAC {task_name}",
+        "trace_name": f"Theriac {task_name}",
         "span_name": task_name,
         "generation_name": task_name,
         "pipeline_task": task_name,
@@ -79,11 +75,93 @@ def _openrouter_trace_for_task(task_name: str, session_id: str, cfg: dict[str, A
 
 
 def get_model_runtime_status() -> dict[str, Any]:
-    return {
-        "last_model_skip_reason": _LAST_MODEL_SKIP_REASON,
-        "rate_limited_until_epoch_s": _RATE_LIMITED_UNTIL_EPOCH_S,
-        "next_model_attempt_epoch_s": _NEXT_MODEL_ATTEMPT_EPOCH_S,
-    }
+    with _PROVIDER_STATE_LOCK:
+        return {
+            "last_model_skip_reason": _LAST_MODEL_SKIP_REASON,
+            "rate_limited_until_epoch_s": _RATE_LIMITED_UNTIL_EPOCH_S,
+            "next_model_attempt_epoch_s": _NEXT_MODEL_ATTEMPT_EPOCH_S,
+        }
+
+
+def provider_wait_seconds(reason: str, status: dict[str, Any], fallback_seconds: float) -> float:
+    now_s = time.time()
+    next_attempt = float(status.get("next_model_attempt_epoch_s") or 0.0)
+    rate_limited_until = float(status.get("rate_limited_until_epoch_s") or 0.0)
+    target = 0.0
+    if reason in {"provider_locked", "adaptive_pacing"}:
+        target = next_attempt
+    elif reason in {"rate_limit_cooldown", "rate_limited_429"}:
+        target = max(rate_limited_until, next_attempt)
+    if target > now_s:
+        return max(0.1, target - now_s)
+    return max(0.0, float(fallback_seconds))
+
+
+def model_max_concurrent_requests(provider_config: dict[str, Any] | None, task_name: str, default: int = 1) -> int:
+    cfg = model_task_settings(provider_config, task_name)
+    return max(1, int(cfg.get("max_concurrent_requests", default) or default))
+
+
+def _reserve_dispatch_slot(
+    *,
+    rate_state_path: Path | None,
+    min_interval_seconds: float,
+    max_interval_seconds: float,
+    provider_label: str,
+) -> dict[str, Any]:
+    global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MODEL_ATTEMPT_EPOCH_S, _LAST_PACING_LOG_EPOCH_S, _LAST_COOLDOWN_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
+    while True:
+        with _PROVIDER_STATE_LOCK:
+            now_s = time.time()
+            state = _load_rate_state(rate_state_path)
+            adaptive_interval = float(state.get("adaptive_min_interval_seconds", min_interval_seconds))
+            adaptive_interval = max(float(min_interval_seconds), min(float(max_interval_seconds), adaptive_interval))
+            if _RATE_LIMITED_UNTIL_EPOCH_S > now_s:
+                remaining = round(_RATE_LIMITED_UNTIL_EPOCH_S - now_s, 2)
+                _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
+                _LAST_MODEL_SKIP_REASON = "rate_limit_cooldown"
+                if now_s - _LAST_COOLDOWN_LOG_EPOCH_S >= 1.0:
+                    _LAST_COOLDOWN_LOG_EPOCH_S = now_s
+                    _debug_log(
+                        "model-provider-debug",
+                        "H9",
+                        "model_provider.py:_reserve_dispatch_slot",
+                        f"Waiting for {provider_label} rate-limit cooldown",
+                        {"cooldown_remaining_seconds": remaining},
+                    )
+                wait_s = max(0.05, _RATE_LIMITED_UNTIL_EPOCH_S - now_s)
+            elif _NEXT_MODEL_ATTEMPT_EPOCH_S > now_s:
+                _LAST_MODEL_SKIP_REASON = "provider_locked"
+                wait_s = max(0.05, _NEXT_MODEL_ATTEMPT_EPOCH_S - now_s)
+            else:
+                last_request = float(state.get("last_request_epoch_s", 0.0))
+                elapsed_since_last = now_s - last_request if last_request > 0 else 10**9
+                if elapsed_since_last < adaptive_interval:
+                    remaining = round(adaptive_interval - elapsed_since_last, 2)
+                    _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, last_request + adaptive_interval)
+                    _LAST_MODEL_SKIP_REASON = "adaptive_pacing"
+                    if now_s - _LAST_PACING_LOG_EPOCH_S >= 1.0:
+                        _LAST_PACING_LOG_EPOCH_S = now_s
+                        _debug_log(
+                            "model-provider-debug",
+                            "H10",
+                            "model_provider.py:_reserve_dispatch_slot",
+                            f"Waiting for {provider_label} adaptive min-interval pacing",
+                            {
+                                "remaining_seconds": remaining,
+                                "adaptive_interval_seconds": adaptive_interval,
+                                "last_request_epoch_s": last_request,
+                            },
+                        )
+                    wait_s = max(0.05, adaptive_interval - elapsed_since_last)
+                else:
+                    state["last_request_epoch_s"] = now_s
+                    state["updated_at_epoch_s"] = now_s
+                    _write_rate_state(rate_state_path, state)
+                    _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, now_s + adaptive_interval)
+                    _LAST_MODEL_SKIP_REASON = ""
+                    return state
+        time.sleep(min(wait_s, 2.0))
 
 
 # region agent log
@@ -197,20 +275,96 @@ def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) ->
     return kwargs
 
 
-def model_batch_enabled(provider_config: dict[str, Any] | None, task_name: str) -> bool:
+def model_parallel_wave_size(provider_config: dict[str, Any] | None, task_name: str, default: int = 75) -> int:
     cfg = model_task_settings(provider_config, task_name)
-    return bool(cfg.get("batch_enabled", False))
+    return max(1, int(cfg.get("parallel_wave_size", default) or default))
 
 
-def model_batch_max_requests(provider_config: dict[str, Any] | None, task_name: str, default: int = 100) -> int:
-    cfg = model_task_settings(provider_config, task_name)
-    return max(1, int(cfg.get("batch_max_requests", default)))
+def call_model_chat_with_pacing_retries(
+    prompt: str,
+    *,
+    provider_config: dict[str, Any] | None = None,
+    task_name: str,
+    max_provider_attempts: int = 4,
+    provider_retry_sleep_seconds: float = 2.0,
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    call_kwargs = dict(kwargs)
+    if not call_kwargs:
+        call_kwargs = model_call_kwargs(provider_config, task_name)
+    attempts = max(1, int(max_provider_attempts))
+    for attempt_idx in range(1, attempts + 1):
+        payload = call_model_chat(prompt=prompt, **call_kwargs)
+        if payload is not None:
+            return payload
+        status = get_model_runtime_status()
+        reason = str(status.get("last_model_skip_reason") or "provider_unavailable")
+        if reason in PACING_SKIP_REASONS:
+            time.sleep(provider_wait_seconds(reason, status, provider_retry_sleep_seconds))
+            continue
+        if attempt_idx < attempts:
+            time.sleep(max(0.0, float(provider_retry_sleep_seconds)))
+    return None
 
 
-def model_batch_initial_max_requests(provider_config: dict[str, Any] | None, task_name: str, default: int | None = None) -> int:
-    cfg = model_task_settings(provider_config, task_name)
-    fallback = default if default is not None else int(cfg.get("batch_max_requests", 100))
-    return max(1, int(cfg.get("batch_initial_max_requests", fallback)))
+def call_model_chats_parallel(
+    jobs: list[dict[str, Any]],
+    provider_config: dict[str, Any] | None,
+    task_name: str,
+    *,
+    max_workers: int | None = None,
+    max_provider_attempts: int = 4,
+    provider_retry_sleep_seconds: float = 2.0,
+) -> dict[str, dict[str, Any]]:
+    if not jobs:
+        return {}
+
+    workers = max(1, int(max_workers or model_max_concurrent_requests(provider_config, task_name, default=1)))
+    logger = get_logger(__name__)
+
+    def _run_job(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        key = str(job.get("key") or "")
+        job_task_name = str(job.get("task_name") or task_name)
+        prompt = str(job.get("prompt") or "")
+        call_kwargs = dict(job.get("call_kwargs") or model_call_kwargs(provider_config, job_task_name))
+        try:
+            payload = call_model_chat_with_pacing_retries(
+                prompt,
+                task_name=job_task_name,
+                max_provider_attempts=max_provider_attempts,
+                provider_retry_sleep_seconds=provider_retry_sleep_seconds,
+                **call_kwargs,
+            )
+        except Exception as exc:
+            return key, {"payload": None, "error": f"model_call_failed: {exc}"}
+        if payload is not None:
+            return key, {"payload": payload, "error": ""}
+        reason = str(get_model_runtime_status().get("last_model_skip_reason") or "model_call_failed")
+        return key, {"payload": None, "error": reason}
+
+    if workers == 1:
+        return {key: result for key, result in (_run_job(job) for job in jobs) if key}
+
+    results: dict[str, dict[str, Any]] = {}
+    results_lock = threading.Lock()
+    in_flight = threading.Semaphore(workers)
+    logger.info("Dispatching %d model job(s) with max_concurrent_requests=%d for task=%s.", len(jobs), workers, task_name)
+
+    def _guarded_run(job: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        in_flight.acquire()
+        try:
+            return _run_job(job)
+        finally:
+            in_flight.release()
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_guarded_run, job) for job in jobs]
+        for future in as_completed(futures):
+            key, result = future.result()
+            if key:
+                with results_lock:
+                    results[key] = result
+    return results
 
 
 def build_prompt(
@@ -221,7 +375,7 @@ def build_prompt(
 ) -> str:
     seed_preview = seed_entities[:40]
     anchor_preview = heuristic_anchor_candidates[:10]
-    return f"""You classify Discord snippets for THERIAC canon extraction.
+    return f"""You classify Discord snippets for Theriac canon extraction.
 Be conservative and avoid speculation. Return strict JSON only with no markdown.
 
 Thread profile:
@@ -305,40 +459,6 @@ def _resolve_generic_api_key() -> str | None:
     )
     # endregion
     return _CACHED_API_KEY
-
-
-def _resolve_gemini_api_key() -> str | None:
-    global _CACHED_GEMINI_API_KEY, _HAS_CACHED_GEMINI_API_KEY
-    if _HAS_CACHED_GEMINI_API_KEY:
-        return _CACHED_GEMINI_API_KEY
-
-    env_candidates = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY"]
-    for key_name in env_candidates:
-        value = os.environ.get(key_name)
-        if value and value.strip():
-            _CACHED_GEMINI_API_KEY = value.strip().strip('"').strip("'")
-            _HAS_CACHED_GEMINI_API_KEY = True
-            _debug_log(
-                "model-provider-debug",
-                "H11",
-                "model_provider.py:_resolve_gemini_api_key",
-                "Resolved Gemini API key from process env",
-                {"key_name": key_name, "source": "process_env"},
-            )
-            return _CACHED_GEMINI_API_KEY
-
-    repo_root = Path(__file__).resolve().parents[1]
-    file_value = _read_env_value_from_file(repo_root, env_candidates)
-    _CACHED_GEMINI_API_KEY = file_value
-    _HAS_CACHED_GEMINI_API_KEY = True
-    _debug_log(
-        "model-provider-debug",
-        "H11",
-        "model_provider.py:_resolve_gemini_api_key",
-        "Resolved Gemini API key from .env probe",
-        {"found": bool(file_value), "source": ".env", "repo_root": str(repo_root)},
-    )
-    return _CACHED_GEMINI_API_KEY
 
 
 def _resolve_openrouter_api_key() -> str | None:
@@ -482,57 +602,13 @@ def _call_openai_compatible_chat(
     provider_label: str = "OpenAI-Compatible API",
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
-    global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MODEL_ATTEMPT_EPOCH_S, _LAST_PACING_LOG_EPOCH_S, _LAST_COOLDOWN_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
-    _LAST_MODEL_SKIP_REASON = ""
-    now_s = time.time()
-    if _NEXT_MODEL_ATTEMPT_EPOCH_S > now_s:
-        _LAST_MODEL_SKIP_REASON = "provider_locked"
-        return None
-    state = _load_rate_state(rate_state_path)
-    adaptive_interval = float(state.get("adaptive_min_interval_seconds", min_interval_seconds))
-    if adaptive_interval < float(min_interval_seconds):
-        adaptive_interval = float(min_interval_seconds)
-    if adaptive_interval > float(max_interval_seconds):
-        adaptive_interval = float(max_interval_seconds)
-    last_request = float(state.get("last_request_epoch_s", 0.0))
-    elapsed_since_last = now_s - last_request if last_request > 0 else 10**9
-    if elapsed_since_last < adaptive_interval:
-        remaining = round(adaptive_interval - elapsed_since_last, 2)
-        _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, last_request + adaptive_interval)
-        _LAST_MODEL_SKIP_REASON = "adaptive_pacing"
-        if now_s - _LAST_PACING_LOG_EPOCH_S >= 1.0:
-            _LAST_PACING_LOG_EPOCH_S = now_s
-            # region agent log
-            _debug_log(
-                "model-provider-debug",
-                "H10",
-                "model_provider.py:_call_openai_compatible_chat",
-                f"Skipping {provider_label} due to adaptive min-interval pacing",
-                {
-                    "remaining_seconds": remaining,
-                    "adaptive_interval_seconds": adaptive_interval,
-                    "last_request_epoch_s": last_request,
-                },
-            )
-            # endregion
-        return None
-
-    if _RATE_LIMITED_UNTIL_EPOCH_S > now_s:
-        remaining = round(_RATE_LIMITED_UNTIL_EPOCH_S - now_s, 2)
-        _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
-        _LAST_MODEL_SKIP_REASON = "rate_limit_cooldown"
-        if now_s - _LAST_COOLDOWN_LOG_EPOCH_S >= 1.0:
-            _LAST_COOLDOWN_LOG_EPOCH_S = now_s
-            # region agent log
-            _debug_log(
-                "model-provider-debug",
-                "H9",
-                "model_provider.py:_call_openai_compatible_chat",
-                f"Skipping {provider_label} due to active rate-limit cooldown",
-                {"cooldown_remaining_seconds": remaining},
-            )
-            # endregion
-        return None
+    global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MODEL_ATTEMPT_EPOCH_S, _LAST_MODEL_SKIP_REASON
+    state = _reserve_dispatch_slot(
+        rate_state_path=rate_state_path,
+        min_interval_seconds=min_interval_seconds,
+        max_interval_seconds=max_interval_seconds,
+        provider_label=provider_label,
+    )
 
     endpoint = f"{api_base_url.rstrip('/')}/chat/completions"
     logger.debug(
@@ -648,16 +724,18 @@ def _call_openai_compatible_chat(
             )
             # endregion
             if int(exc.code) == 429:
-                _RATE_LIMITED_UNTIL_EPOCH_S = time.time() + max(1, int(rate_limit_cooldown_seconds))
-                _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
-                state["rate_limited_count"] = int(state.get("rate_limited_count", 0)) + 1
-                grown = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(rate_limit_growth)
-                state["adaptive_min_interval_seconds"] = max(
-                    float(min_interval_seconds),
-                    min(float(max_interval_seconds), grown),
-                )
-                state["updated_at_epoch_s"] = time.time()
-                _write_rate_state(rate_state_path, state)
+                with _PROVIDER_STATE_LOCK:
+                    _RATE_LIMITED_UNTIL_EPOCH_S = time.time() + max(1, int(rate_limit_cooldown_seconds))
+                    _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
+                    state["rate_limited_count"] = int(state.get("rate_limited_count", 0)) + 1
+                    grown = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(rate_limit_growth)
+                    state["adaptive_min_interval_seconds"] = max(
+                        float(min_interval_seconds),
+                        min(float(max_interval_seconds), grown),
+                    )
+                    state["updated_at_epoch_s"] = time.time()
+                    _write_rate_state(rate_state_path, state)
+                    _LAST_MODEL_SKIP_REASON = "rate_limited_429"
                 # region agent log
                 _debug_log(
                     "model-provider-debug",
@@ -671,7 +749,6 @@ def _call_openai_compatible_chat(
                     },
                 )
                 # endregion
-                _LAST_MODEL_SKIP_REASON = "rate_limited_429"
             else:
                 _LAST_MODEL_SKIP_REASON = f"http_error_{int(exc.code)}"
             return None
@@ -749,7 +826,12 @@ def _call_openai_compatible_chat(
     decayed = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(success_decay)
     state["adaptive_min_interval_seconds"] = max(float(min_interval_seconds), min(float(max_interval_seconds), decayed))
     state["updated_at_epoch_s"] = time.time()
-    _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, state["last_request_epoch_s"] + state["adaptive_min_interval_seconds"])
+    with _PROVIDER_STATE_LOCK:
+        _NEXT_MODEL_ATTEMPT_EPOCH_S = max(
+            _NEXT_MODEL_ATTEMPT_EPOCH_S,
+            state["last_request_epoch_s"] + state["adaptive_min_interval_seconds"],
+        )
+        _LAST_MODEL_SKIP_REASON = ""
     _write_rate_state(rate_state_path, state)
     # region agent log
     _debug_log(
@@ -764,7 +846,6 @@ def _call_openai_compatible_chat(
         },
     )
     # endregion
-    _LAST_MODEL_SKIP_REASON = ""
     logger.debug("Parsed OpenAI-Compatible API content keys=%s", sorted(parsed_content.keys()))
     return parsed_content
 
@@ -793,7 +874,7 @@ def _call_openrouter_chat(
     clean_session_id = _clean_openrouter_trace_text(session_id) or stable_id("or_session", "openrouter", model)
     trace_payload: dict[str, Any] = dict(trace) if isinstance(trace, dict) else {}
     trace_payload.setdefault("trace_id", clean_session_id)
-    trace_payload.setdefault("trace_name", "THERIAC OpenRouter API")
+    trace_payload.setdefault("trace_name", "Theriac OpenRouter API")
     trace_payload.setdefault("span_name", "openrouter_chat")
     trace_payload.setdefault("generation_name", model)
     return _call_openai_compatible_chat(
@@ -819,553 +900,10 @@ def _call_openrouter_chat(
         user=user,
         extra_headers={
             "HTTP-Referer": "https://github.com/theriac/lore-bible",
-            "X-Title": "THERIAC Lore Bible",
+            "X-Title": "Theriac Lore Bible",
         },
         provider_label="OpenRouter API",
     )
-
-
-def _extract_gemini_text(body: dict[str, Any]) -> str:
-    candidates = body.get("candidates", [])
-    if not isinstance(candidates, list) or not candidates:
-        return ""
-    first = candidates[0] if isinstance(candidates[0], dict) else {}
-    content = first.get("content", {}) if isinstance(first, dict) else {}
-    parts = content.get("parts", []) if isinstance(content, dict) else []
-    if not isinstance(parts, list):
-        return ""
-    text_parts = [str(part.get("text", "")) for part in parts if isinstance(part, dict) and str(part.get("text", "")).strip()]
-    return "\n".join(text_parts).strip()
-
-
-def _gemini_generate_content_request(prompt: str, temperature: float) -> dict[str, Any]:
-    return {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "text": "You are a precise JSON classifier. Return strict JSON only with no markdown.\n\n"
-                        + prompt
-                    }
-                ],
-            }
-        ],
-        "generationConfig": {
-            "temperature": temperature,
-            "responseMimeType": "application/json",
-            "candidateCount": 1,
-        },
-    }
-
-
-def _clean_gemini_model(model: str) -> str:
-    clean_model = model.strip()
-    if clean_model.startswith("models/"):
-        clean_model = clean_model[len("models/") :]
-    return clean_model
-
-
-def _gemini_request(
-    url: str,
-    api_key: str,
-    payload: dict[str, Any] | None = None,
-    timeout_seconds: int = 60,
-    method: str = "POST",
-) -> dict[str, Any]:
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    req = urllib.request.Request(
-        url=url,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        },
-        method=method,
-    )
-    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-        raw_body = resp.read().decode("utf-8")
-    body = json.loads(raw_body)
-    if not isinstance(body, dict):
-        raise RuntimeError(f"Gemini response root was {type(body).__name__}; expected object.")
-    return body
-
-
-def _gemini_batch_state(body: dict[str, Any]) -> str:
-    metadata = body.get("metadata", {}) if isinstance(body.get("metadata", {}), dict) else {}
-    state = str(metadata.get("state") or body.get("state") or "").strip()
-    if state:
-        return state
-    if bool(body.get("done")) and isinstance(body.get("response"), dict):
-        return "BATCH_STATE_SUCCEEDED"
-    return "BATCH_STATE_UNKNOWN"
-
-
-def _gemini_batch_stats(body: dict[str, Any]) -> dict[str, Any]:
-    metadata = body.get("metadata", {}) if isinstance(body.get("metadata", {}), dict) else {}
-    stats = metadata.get("batchStats", {}) if isinstance(metadata.get("batchStats", {}), dict) else {}
-    return {
-        "request_count": stats.get("requestCount"),
-        "pending_request_count": stats.get("pendingRequestCount"),
-        "successful_request_count": stats.get("successfulRequestCount"),
-        "failed_request_count": stats.get("failedRequestCount"),
-        "update_time": metadata.get("updateTime"),
-        "create_time": metadata.get("createTime"),
-        "end_time": metadata.get("endTime"),
-    }
-
-
-def _append_batch_status_event(path_value: Any, event: dict[str, Any]) -> None:
-    if not path_value:
-        return
-    try:
-        path = Path(str(path_value))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
-    except Exception:
-        return
-
-
-def _extract_inline_responses(body: dict[str, Any]) -> list[Any]:
-    response = body.get("response", {}) if isinstance(body.get("response", {}), dict) else {}
-    metadata = body.get("metadata", {}) if isinstance(body.get("metadata", {}), dict) else {}
-    dest = body.get("dest", {}) if isinstance(body.get("dest", {}), dict) else {}
-    output = metadata.get("output", {}) if isinstance(metadata.get("output", {}), dict) else {}
-    for source in (response, output, dest, metadata, body):
-        for key in ("inlinedResponses", "inlined_responses", "inlineResponses", "inline_responses"):
-            value = source.get(key) if isinstance(source, dict) else None
-            if isinstance(value, list):
-                return value
-            if isinstance(value, dict):
-                for nested_key in ("inlinedResponses", "inlined_responses", "inlineResponses", "inline_responses"):
-                    nested_value = value.get(nested_key)
-                    if isinstance(nested_value, list):
-                        return nested_value
-    return []
-
-
-def _inline_response_key(item: Any, fallback_key: str) -> str:
-    if not isinstance(item, dict):
-        return fallback_key
-    candidates = [item]
-    inline_response = item.get("inlineResponse") or item.get("inline_response")
-    if isinstance(inline_response, dict):
-        candidates.append(inline_response)
-    for candidate in candidates:
-        metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata", {}), dict) else {}
-        key = metadata.get("key") or candidate.get("key")
-        if key:
-            return str(key)
-    return fallback_key
-
-
-def _inline_response_payload(item: Any, logger) -> tuple[dict[str, Any] | None, str]:
-    if not isinstance(item, dict):
-        return None, "inline_response_not_object"
-    source = item.get("inlineResponse") or item.get("inline_response") or item
-    if not isinstance(source, dict):
-        return None, "inline_response_not_object"
-    error = source.get("error") or item.get("error")
-    if error:
-        return None, f"batch_item_error: {json.dumps(error, ensure_ascii=False)[:300]}"
-    response = source.get("response") or source.get("inlineResponse") or source.get("inline_response")
-    if not isinstance(response, dict):
-        return None, "batch_item_missing_response"
-    content = _extract_gemini_text(response)
-    if not content:
-        return None, "batch_item_empty_content"
-    parsed = _parse_json_content(content, logger)
-    if parsed is None:
-        return None, "batch_item_content_parse_failed"
-    return parsed, ""
-
-
-def call_gemini_batch_json(
-    provider_config: dict[str, Any] | None,
-    task_name: str,
-    requests: Iterable[dict[str, str]],
-) -> dict[str, dict[str, Any]]:
-    logger = get_logger(__name__)
-    task_cfg = model_task_settings(provider_config, task_name)
-    provider = str(task_cfg.get("provider", "auto")).lower()
-    if provider in {"google", "google_ai", "google_ai_studio", "gemini_api"}:
-        provider = "gemini"
-    if provider != "gemini":
-        raise RuntimeError(f"Batch mode currently requires Gemini provider; got provider={provider!r}.")
-
-    api_key = _resolve_gemini_api_key()
-    if not api_key:
-        raise RuntimeError("Gemini batch mode selected but no GEMINI_API_KEY/GOOGLE_API_KEY found.")
-
-    api_base_url = str(task_cfg.get("api_base_url", "https://generativelanguage.googleapis.com/v1beta"))
-    if "generativelanguage.googleapis.com" not in api_base_url:
-        api_base_url = "https://generativelanguage.googleapis.com/v1beta"
-    api_model = str(task_cfg.get("api_model", "gemini-2.5-flash-lite"))
-    clean_model = _clean_gemini_model(api_model)
-    model_path = urllib.parse.quote(clean_model, safe="")
-    timeout_seconds = int(task_cfg.get("timeout_seconds", 120))
-    poll_interval_seconds = max(1.0, float(task_cfg.get("batch_poll_interval_seconds", 30)))
-    batch_timeout_seconds = max(poll_interval_seconds, float(task_cfg.get("batch_timeout_seconds", 24 * 60 * 60)))
-    status_log_path = task_cfg.get("batch_status_log_path")
-    status_log_min_interval_seconds = max(
-        poll_interval_seconds,
-        float(task_cfg.get("batch_status_log_min_interval_seconds", poll_interval_seconds)),
-    )
-    temperature = float(task_cfg.get("temperature", 0.0))
-    display_name = str(task_cfg.get("batch_display_name", task_name.replace("_", "-")))[:80]
-
-    request_rows = [dict(row) for row in requests]
-    if not request_rows:
-        return {}
-    inline_requests = []
-    fallback_keys: list[str] = []
-    for idx, row in enumerate(request_rows, start=1):
-        key = str(row.get("key") or f"request-{idx}")
-        prompt = str(row.get("prompt", ""))
-        fallback_keys.append(key)
-        inline_requests.append(
-            {
-                "request": _gemini_generate_content_request(prompt, temperature),
-                "metadata": {"key": key},
-            }
-        )
-
-    endpoint = f"{api_base_url.rstrip('/')}/models/{model_path}:batchGenerateContent"
-    submit_payload = {
-        "batch": {
-            "display_name": display_name,
-            "input_config": {
-                "requests": {
-                    "requests": inline_requests,
-                }
-            },
-        }
-    }
-    logger.info(
-        "Submitting Gemini batch task=%s model=%s requests=%d",
-        task_name,
-        clean_model,
-        len(inline_requests),
-    )
-    try:
-        job = _gemini_request(endpoint, api_key, submit_payload, timeout_seconds=timeout_seconds, method="POST")
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-        raise RuntimeError(
-            f"Gemini batch submit failed status={exc.code} reason={exc.reason} body={err_body[:300]}"
-        ) from exc
-
-    job_name = str(job.get("name") or "")
-    if not job_name:
-        raise RuntimeError(f"Gemini batch submit response missing job name: {json.dumps(job, ensure_ascii=False)[:300]}")
-    submitted_at = time.time()
-    logger.info(
-        "Gemini batch submitted task=%s job=%s timeout=%.0fs poll_interval=%.0fs",
-        task_name,
-        job_name,
-        batch_timeout_seconds,
-        poll_interval_seconds,
-    )
-    _append_batch_status_event(
-        status_log_path,
-        {
-            "event": "submitted",
-            "task": task_name,
-            "job_name": job_name,
-            "model": clean_model,
-            "request_count": len(inline_requests),
-            "elapsed_seconds": 0,
-            "state": _gemini_batch_state(job),
-            "stats": _gemini_batch_stats(job),
-            "timestamp_epoch_s": submitted_at,
-        },
-    )
-
-    status_url = f"{api_base_url.rstrip('/')}/{job_name.lstrip('/')}"
-    deadline = time.time() + batch_timeout_seconds
-    status_body = job
-    last_status_log_at = 0.0
-    while True:
-        state = _gemini_batch_state(status_body)
-        now = time.time()
-        if now - last_status_log_at >= status_log_min_interval_seconds:
-            stats = _gemini_batch_stats(status_body)
-            elapsed = now - submitted_at
-            logger.info(
-                "Gemini batch polling task=%s job=%s state=%s elapsed=%.0fs requests=%s pending=%s ok=%s failed=%s update=%s",
-                task_name,
-                job_name,
-                state,
-                elapsed,
-                stats.get("request_count"),
-                stats.get("pending_request_count"),
-                stats.get("successful_request_count"),
-                stats.get("failed_request_count"),
-                stats.get("update_time"),
-            )
-            _append_batch_status_event(
-                status_log_path,
-                {
-                    "event": "poll",
-                    "task": task_name,
-                    "job_name": job_name,
-                    "model": clean_model,
-                    "elapsed_seconds": round(elapsed, 3),
-                    "state": state,
-                    "stats": stats,
-                    "timestamp_epoch_s": now,
-                },
-            )
-            last_status_log_at = now
-        if state in {
-            "BATCH_STATE_SUCCEEDED",
-            "BATCH_STATE_FAILED",
-            "BATCH_STATE_CANCELLED",
-            "BATCH_STATE_EXPIRED",
-            "JOB_STATE_SUCCEEDED",
-            "JOB_STATE_FAILED",
-            "JOB_STATE_CANCELLED",
-            "JOB_STATE_EXPIRED",
-        }:
-            break
-        if time.time() >= deadline:
-            _append_batch_status_event(
-                status_log_path,
-                {
-                    "event": "timeout",
-                    "task": task_name,
-                    "job_name": job_name,
-                    "model": clean_model,
-                    "elapsed_seconds": round(time.time() - submitted_at, 3),
-                    "state": state,
-                    "stats": _gemini_batch_stats(status_body),
-                    "timestamp_epoch_s": time.time(),
-                },
-            )
-            raise RuntimeError(f"Gemini batch job {job_name} timed out in state {state}.")
-        time.sleep(poll_interval_seconds)
-        try:
-            status_body = _gemini_request(status_url, api_key, None, timeout_seconds=timeout_seconds, method="GET")
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-            raise RuntimeError(
-                f"Gemini batch poll failed status={exc.code} reason={exc.reason} body={err_body[:300]}"
-            ) from exc
-
-    state = _gemini_batch_state(status_body)
-    final_stats = _gemini_batch_stats(status_body)
-    logger.info(
-        "Gemini batch finished task=%s job=%s state=%s elapsed=%.0fs requests=%s pending=%s ok=%s failed=%s",
-        task_name,
-        job_name,
-        state,
-        time.time() - submitted_at,
-        final_stats.get("request_count"),
-        final_stats.get("pending_request_count"),
-        final_stats.get("successful_request_count"),
-        final_stats.get("failed_request_count"),
-    )
-    _append_batch_status_event(
-        status_log_path,
-        {
-            "event": "finished",
-            "task": task_name,
-            "job_name": job_name,
-            "model": clean_model,
-            "elapsed_seconds": round(time.time() - submitted_at, 3),
-            "state": state,
-            "stats": final_stats,
-            "timestamp_epoch_s": time.time(),
-        },
-    )
-    if state not in {"BATCH_STATE_SUCCEEDED", "JOB_STATE_SUCCEEDED"}:
-        error = status_body.get("error")
-        raise RuntimeError(f"Gemini batch job {job_name} ended with state {state}: {error}")
-
-    inline_responses = _extract_inline_responses(status_body)
-    if not inline_responses:
-        raise RuntimeError(f"Gemini batch job {job_name} succeeded but returned no inline responses.")
-
-    results: dict[str, dict[str, Any]] = {}
-    for idx, item in enumerate(inline_responses):
-        fallback_key = fallback_keys[idx] if idx < len(fallback_keys) else f"request-{idx + 1}"
-        key = _inline_response_key(item, fallback_key)
-        payload, error = _inline_response_payload(item, logger)
-        results[key] = {"payload": payload, "error": error, "raw": item}
-
-    for key in fallback_keys:
-        results.setdefault(key, {"payload": None, "error": "missing_batch_response", "raw": None})
-    return results
-
-
-def _call_gemini_chat(
-    api_base_url: str,
-    api_key: str,
-    model: str,
-    prompt: str,
-    temperature: float,
-    timeout_seconds: int,
-    rate_limit_cooldown_seconds: int = 90,
-    rate_state_path: Path | None = None,
-    min_interval_seconds: float = 6.0,
-    max_interval_seconds: float = 120.0,
-    success_decay: float = 0.95,
-    rate_limit_growth: float = 1.8,
-    max_tokens: int = 4096,
-) -> dict[str, Any] | None:
-    logger = get_logger(__name__)
-    global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MODEL_ATTEMPT_EPOCH_S, _LAST_PACING_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
-    _LAST_MODEL_SKIP_REASON = ""
-    now_s = time.time()
-    if _NEXT_MODEL_ATTEMPT_EPOCH_S > now_s:
-        _LAST_MODEL_SKIP_REASON = "provider_locked"
-        return None
-    state = _load_rate_state(rate_state_path)
-    adaptive_interval = float(state.get("adaptive_min_interval_seconds", min_interval_seconds))
-    adaptive_interval = max(float(min_interval_seconds), min(float(max_interval_seconds), adaptive_interval))
-    last_request = float(state.get("last_request_epoch_s", 0.0))
-    elapsed_since_last = now_s - last_request if last_request > 0 else 10**9
-    if elapsed_since_last < adaptive_interval:
-        remaining = round(adaptive_interval - elapsed_since_last, 2)
-        _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, last_request + adaptive_interval)
-        _LAST_MODEL_SKIP_REASON = "adaptive_pacing"
-        if now_s - _LAST_PACING_LOG_EPOCH_S >= 1.0:
-            _LAST_PACING_LOG_EPOCH_S = now_s
-            _debug_log(
-                "model-provider-debug",
-                "H11",
-                "model_provider.py:_call_gemini_chat",
-                "Skipping Gemini API due to adaptive min-interval pacing",
-                {
-                    "remaining_seconds": remaining,
-                    "adaptive_interval_seconds": adaptive_interval,
-                    "last_request_epoch_s": last_request,
-                },
-            )
-        return None
-    if _RATE_LIMITED_UNTIL_EPOCH_S > now_s:
-        _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
-        _LAST_MODEL_SKIP_REASON = "rate_limit_cooldown"
-        return None
-
-    clean_model = model.strip()
-    if clean_model.startswith("models/"):
-        clean_model = clean_model[len("models/") :]
-    model_path = urllib.parse.quote(clean_model, safe="")
-    endpoint = f"{api_base_url.rstrip('/')}/models/{model_path}:generateContent?key={urllib.parse.quote(api_key, safe='')}"
-    logger.debug(
-        "Calling Gemini API endpoint=%s model=%s timeout=%ss temperature=%.2f prompt_chars=%d",
-        endpoint.split("?key=", 1)[0] + "?key=REDACTED",
-        clean_model,
-        timeout_seconds,
-        temperature,
-        len(prompt),
-    )
-    _debug_log(
-        "model-provider-debug",
-        "H11",
-        "model_provider.py:_call_gemini_chat",
-        "Attempting Gemini API request",
-        {"model": clean_model, "timeout_seconds": timeout_seconds},
-    )
-    payload = _gemini_generate_content_request(prompt, temperature)
-    req = urllib.request.Request(
-        url=endpoint,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        state["last_request_epoch_s"] = time.time()
-        state["updated_at_epoch_s"] = state["last_request_epoch_s"]
-        _write_rate_state(rate_state_path, state)
-        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-            raw_body = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        err_body = ""
-        try:
-            err_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            err_body = "(unable to read HTTP error body)"
-        logger.warning(
-            "Gemini API HTTP error status=%s reason=%s model=%s body_preview=%s",
-            exc.code,
-            exc.reason,
-            clean_model,
-            err_body[:300].replace("\n", "\\n"),
-        )
-        _debug_log(
-            "model-provider-debug",
-            "H11",
-            "model_provider.py:_call_gemini_chat",
-            "Gemini API HTTP error",
-            {"status": int(exc.code), "reason": str(exc.reason), "body_preview": err_body[:120]},
-        )
-        if int(exc.code) == 429:
-            retry_after = exc.headers.get("Retry-After") if exc.headers else None
-            try:
-                cooldown = int(float(retry_after)) if retry_after else int(rate_limit_cooldown_seconds)
-            except (TypeError, ValueError):
-                cooldown = int(rate_limit_cooldown_seconds)
-            _RATE_LIMITED_UNTIL_EPOCH_S = time.time() + max(1, cooldown)
-            _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, _RATE_LIMITED_UNTIL_EPOCH_S)
-            state["rate_limited_count"] = int(state.get("rate_limited_count", 0)) + 1
-            grown = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(rate_limit_growth)
-            state["adaptive_min_interval_seconds"] = max(
-                float(min_interval_seconds),
-                min(float(max_interval_seconds), grown),
-            )
-            state["updated_at_epoch_s"] = time.time()
-            _write_rate_state(rate_state_path, state)
-            _LAST_MODEL_SKIP_REASON = "rate_limited_429"
-        else:
-            _LAST_MODEL_SKIP_REASON = f"http_error_{int(exc.code)}"
-        return None
-    except (urllib.error.URLError, TimeoutError) as exc:
-        _LAST_MODEL_SKIP_REASON = "connection_error"
-        logger.warning("Gemini API connection failure model=%s error=%s", clean_model, exc)
-        return None
-    except Exception as exc:
-        _LAST_MODEL_SKIP_REASON = "unexpected_error"
-        logger.warning("Gemini API request failed unexpectedly model=%s error=%s", clean_model, exc)
-        return None
-
-    try:
-        body = json.loads(raw_body)
-    except json.JSONDecodeError:
-        _LAST_MODEL_SKIP_REASON = "invalid_json"
-        logger.warning("Gemini API response was not valid JSON. response_preview=%s", raw_body[:300].replace("\n", "\\n"))
-        return None
-    if not isinstance(body, dict):
-        _LAST_MODEL_SKIP_REASON = "invalid_envelope"
-        logger.warning("Gemini API response root was %s (expected object).", type(body).__name__)
-        return None
-    content = _extract_gemini_text(body)
-    if not content:
-        _LAST_MODEL_SKIP_REASON = "empty_content"
-        logger.warning("Gemini API response contained no assistant text. response_keys=%s", sorted(body.keys()))
-        return None
-    parsed_content = _parse_json_content(content, logger)
-    if parsed_content is None:
-        _LAST_MODEL_SKIP_REASON = "content_parse_failed"
-        _debug_log(
-            "model-provider-debug",
-            "H11",
-            "model_provider.py:_call_gemini_chat",
-            "Gemini content parse failed",
-            {"content_preview": content[:120]},
-        )
-        return None
-    state["success_count"] = int(state.get("success_count", 0)) + 1
-    decayed = float(state.get("adaptive_min_interval_seconds", min_interval_seconds)) * float(success_decay)
-    state["adaptive_min_interval_seconds"] = max(float(min_interval_seconds), min(float(max_interval_seconds), decayed))
-    state["updated_at_epoch_s"] = time.time()
-    _NEXT_MODEL_ATTEMPT_EPOCH_S = max(_NEXT_MODEL_ATTEMPT_EPOCH_S, state["last_request_epoch_s"] + state["adaptive_min_interval_seconds"])
-    _write_rate_state(rate_state_path, state)
-    _LAST_MODEL_SKIP_REASON = ""
-    logger.debug("Parsed Gemini API content keys=%s", sorted(parsed_content.keys()))
-    return parsed_content
 
 
 def call_model_chat(
@@ -1394,20 +932,21 @@ def call_model_chat(
     logger = get_logger(__name__)
     global _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S, _LAST_API_FAILURE_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
     now_s = time.time()
-    resolved_provider = (provider or "auto").lower()
-    if resolved_provider in {"google", "google_ai", "google_ai_studio", "gemini_api"}:
-        resolved_provider = "gemini"
+    resolved_provider = (provider or "openrouter").lower()
+    if resolved_provider in {"google", "google_ai", "google_ai_studio", "gemini_api", "gemini"}:
+        resolved_provider = "openrouter"
     if resolved_provider in {"open_router", "openrouter_api"}:
         resolved_provider = "openrouter"
-    supported_providers = {"auto", "gemini", "openrouter", "openai_compatible", "api"}
+    if resolved_provider == "auto":
+        resolved_provider = "openrouter"
+    supported_providers = {"openrouter", "openai_compatible", "api"}
     if resolved_provider not in supported_providers:
         logger.warning("Unsupported model provider selected: %s.", resolved_provider)
         _LAST_MODEL_SKIP_REASON = "unsupported_provider"
         return None
 
-    gemini_key = _resolve_gemini_api_key() if resolved_provider == "gemini" else None
     openrouter_key = _resolve_openrouter_api_key() if resolved_provider == "openrouter" else None
-    api_key = _resolve_generic_api_key() if resolved_provider in {"auto", "api", "openai_compatible"} else None
+    api_key = _resolve_generic_api_key() if resolved_provider in {"api", "openai_compatible"} else None
     if now_s - _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S >= 1.0:
         _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S = now_s
         # region agent log
@@ -1418,36 +957,11 @@ def call_model_chat(
             "Resolved provider mode before dispatch",
             {
                 "provider": resolved_provider,
-                "has_api_key": bool(api_key or gemini_key or openrouter_key),
+                "has_api_key": bool(api_key or openrouter_key),
                 "api_model": api_model,
             },
         )
         # endregion
-
-    if resolved_provider == "gemini":
-        if not gemini_key:
-            logger.warning("Gemini provider selected but no GEMINI_API_KEY/GOOGLE_API_KEY found in environment/.env.")
-            _LAST_MODEL_SKIP_REASON = "missing_api_key"
-            return None
-        gemini_base_url = api_base_url
-        if "generativelanguage.googleapis.com" not in gemini_base_url:
-            gemini_base_url = "https://generativelanguage.googleapis.com/v1beta"
-        gemini_model = api_model if api_model and api_model != "qwen/qwen3.5-flash-02-23" else "gemini-2.5-flash-lite"
-        return _call_gemini_chat(
-            gemini_base_url,
-            gemini_key,
-            gemini_model,
-            prompt,
-            temperature,
-            timeout_seconds,
-            rate_limit_cooldown_seconds=rate_limit_cooldown_seconds,
-            rate_state_path=rate_state_path,
-            min_interval_seconds=min_interval_seconds,
-            max_interval_seconds=max_interval_seconds,
-            success_decay=success_decay,
-            rate_limit_growth=rate_limit_growth,
-            max_tokens=max_tokens,
-        )
 
     if resolved_provider == "openrouter":
         if not openrouter_key:
@@ -1506,37 +1020,6 @@ def call_model_chat(
             tools=tools,
         )
 
-    # auto: prefer the generic OpenAI-compatible API when its key is available.
-    if api_key:
-        api_result = _call_openai_compatible_chat(
-            api_base_url,
-            api_key,
-            api_model,
-            prompt,
-            temperature,
-            timeout_seconds,
-            retries=api_retries,
-            rate_limit_cooldown_seconds=rate_limit_cooldown_seconds,
-            rate_state_path=rate_state_path,
-            min_interval_seconds=min_interval_seconds,
-            max_interval_seconds=max_interval_seconds,
-            success_decay=success_decay,
-            rate_limit_growth=rate_limit_growth,
-            max_tokens=max_tokens,
-            response_format_json=True,
-            json_schema=json_schema,
-            tools=tools,
-        )
-        if api_result is not None:
-            return api_result
-        if _LAST_MODEL_SKIP_REASON in {"provider_locked", "adaptive_pacing", "rate_limit_cooldown"}:
-            # Pacing/cooldown skips are expected; avoid noisy fallback loops.
-            return None
-        if now_s - _LAST_API_FAILURE_LOG_EPOCH_S >= 2.0:
-            logger.warning("OpenAI-compatible API attempt failed in auto mode.")
-            _LAST_API_FAILURE_LOG_EPOCH_S = now_s
-        return None
-
     return None
 
 
@@ -1558,7 +1041,7 @@ Task:
 - Do not emit abstract themes, motifs, aesthetics, philosophies, or psychological ideas as entities; those belong in the theme profile, not the entity graph.
 - Include initial aliases only when explicitly indicated in text.
 - Include relationship hints only when clearly stated.
-- THERIAC quest titles may be named after songs. Do not down-rank, block, or reclassify a named quest solely because it matches a song title. If a song-title name is associated with a path, ending, mission, or quest progression, classify it as quest rather than theme.
+- Theriac quest titles may be named after songs. Do not down-rank, block, or reclassify a named quest solely because it matches a song title. If a song-title name is associated with a path, ending, mission, or quest progression, classify it as quest rather than theme.
 
 Lore excerpt:
 \"\"\"{doc_excerpt}\"\"\"

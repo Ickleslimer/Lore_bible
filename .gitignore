@@ -21,6 +21,7 @@ theriac-lore-tauri.exe
 artifacts/
 canon/*
 !canon/review_memory.json
+!canon/narrative_works.json
 discord_conversations/
 *.docx
 

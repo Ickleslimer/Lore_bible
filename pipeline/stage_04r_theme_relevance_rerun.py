@@ -9,7 +9,11 @@ from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, stable_id, write_json, write_jsonl
 from pipeline.entity_resolution import load_entity_records, normalized_name_key
-from pipeline.model_provider import call_model_chat, model_call_kwargs
+from pipeline.model_provider import (
+    call_model_chat_with_pacing_retries,
+    call_model_chats_parallel,
+    model_max_concurrent_requests,
+)
 from pipeline.stage_04_conversation_segmentation import (
     annotate_dm_pairs,
     build_coarse_windows,
@@ -68,8 +72,8 @@ AUTHORIAL_LANGUAGE = (
     "writing",
 )
 
-# Known THERIAC character names (for quest-song context overlap detection)
-THERIAC_CHARACTERS = frozenset({
+# Known Theriac character names (for quest-song context overlap detection)
+KNOWN_CHARACTER_MARKERS = frozenset({
     "izanami", "leonidas", "pandora", "oyuun", "enoch", "joy",
     "altruism", "ramasinta", "beau", "ruinr", "talos", "manunggal",
     "khava",
@@ -121,25 +125,128 @@ def theme_aware_rerun_config(provider_config: dict[str, Any]) -> dict[str, Any]:
         "enabled": False,
         "max_iterations": 1,
         "rerun_only_previous_rejects": True,
+        "rerun_include_previous_accepts": False,
         "require_active_theme": True,
         "require_human_approval_for_new_theme_use": True,
+        "require_human_approval_to_start_rescue": True,
         "min_rescue_confidence": 0.72,
         "prefilter_min_score": 0.32,
         "model_adjudication_enabled": True,
         "fallback_to_heuristic_on_model_failure": True,
-        "max_candidate_windows_per_run": 500,
-        "max_rescued_conversations_per_run": 100,
+        "max_candidate_windows_per_run": 0,
+        "max_rescued_conversations_per_run": 0,
         "max_windows_per_model_call": 8,
+        "max_concurrent_adjudication_calls": 1,
+        "adjudication_provider_retries": 5,
+        "adjudication_provider_retry_sleep_seconds": 2.0,
     }
     cfg.update(raw_cfg)
     cfg["enabled"] = bool(cfg.get("enabled", False))
     cfg["max_iterations"] = max(0, int(cfg.get("max_iterations", 1) or 0))
     cfg["min_rescue_confidence"] = _unit(cfg.get("min_rescue_confidence", 0.72), 0.72)
     cfg["prefilter_min_score"] = _unit(cfg.get("prefilter_min_score", 0.32), 0.32)
-    cfg["max_candidate_windows_per_run"] = max(0, int(cfg.get("max_candidate_windows_per_run", 500) or 0))
-    cfg["max_rescued_conversations_per_run"] = max(0, int(cfg.get("max_rescued_conversations_per_run", 100) or 0))
+    cfg["max_candidate_windows_per_run"] = max(0, int(cfg.get("max_candidate_windows_per_run", 0) or 0))
+    cfg["max_rescued_conversations_per_run"] = max(0, int(cfg.get("max_rescued_conversations_per_run", 0) or 0))
     cfg["max_windows_per_model_call"] = max(1, int(cfg.get("max_windows_per_model_call", 8) or 8))
+    cfg["max_concurrent_adjudication_calls"] = max(1, int(cfg.get("max_concurrent_adjudication_calls", 1) or 1))
+    cfg["adjudication_provider_retries"] = max(1, int(cfg.get("adjudication_provider_retries", 5) or 5))
+    cfg["adjudication_provider_retry_sleep_seconds"] = max(0.0, float(cfg.get("adjudication_provider_retry_sleep_seconds", 2.0) or 0.0))
     return cfg
+
+
+def _include_previous_accepts(cfg: dict[str, Any]) -> bool:
+    if bool(cfg.get("rerun_include_previous_accepts", False)):
+        return True
+    return not bool(cfg.get("rerun_only_previous_rejects", True))
+
+
+def _candidate_message_key(message_ids: list[str]) -> str:
+    return ",".join(sorted(str(message_id).strip() for message_id in message_ids if str(message_id).strip()))
+
+
+def _windows_from_accepted_segments(
+    accepted_by_pair: dict[str, list[dict[str, Any]]],
+    rows_by_id: dict[str, dict[str, Any]],
+    conversation_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    windows: list[dict[str, Any]] = []
+    for segments in accepted_by_pair.values():
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            message_ids = [str(message_id).strip() for message_id in segment.get("message_ids", []) or [] if str(message_id).strip() in rows_by_id]
+            if not message_ids:
+                continue
+            rows = [rows_by_id[message_id] for message_id in message_ids]
+            rows.sort(key=lambda row: (str(row.get("timestamp_utc", "")), str(row.get("message_id", ""))))
+            coarse_window = {
+                "coarse_window_id": str(segment.get("conversation_id") or segment.get("source_model_window_id") or stable_id("accepted_segment", *message_ids)),
+                "dm_pair_id": str(segment.get("dm_pair_id") or rows[0].get("dm_pair_id", "")),
+                "partner_id": str(segment.get("partner_id") or rows[0].get("partner_id", "unknown")),
+                "partner_label": str(segment.get("partner_label") or rows[0].get("partner_label", "unknown")),
+                "participant_ids": segment.get("participant_ids", rows[0].get("participant_ids", [])),
+                "participant_labels": segment.get("participant_labels", rows[0].get("participant_labels", {})),
+                "message_ids": message_ids,
+                "timestamp_start_utc": segment.get("timestamp_start_utc") or rows[0].get("timestamp_utc"),
+                "timestamp_end_utc": segment.get("timestamp_end_utc") or rows[-1].get("timestamp_utc"),
+                "message_count": len(rows),
+                "rows": rows,
+                "source_scope": "previous_accept",
+                "_source_segment": segment,
+            }
+            model_chunks = split_window_for_model(
+                coarse_window,
+                int(conversation_cfg.get("model_window_max_messages", 80)),
+                int(conversation_cfg.get("model_window_max_chars", 14000)),
+            )
+            for model_window in model_chunks:
+                model_window["source_scope"] = "previous_accept"
+                model_window["_source_segment"] = segment
+                windows.append(model_window)
+    return windows
+
+
+def _candidate_rank_key(candidate: dict[str, Any]) -> tuple[float, str]:
+    return (
+        -float(candidate.get("theme_relevance_score", 0.0) or 0.0),
+        str(candidate.get("timestamp_start_utc", "")),
+    )
+
+
+def _append_scored_candidate(
+    candidates: list[dict[str, Any]],
+    seen_message_sets: set[str],
+    scored: dict[str, Any],
+) -> bool:
+    message_key = _candidate_message_key(scored.get("message_ids", []))
+    if not message_key or message_key in seen_message_sets:
+        return False
+    seen_message_sets.add(message_key)
+    candidates.append(scored)
+    return True
+
+
+def _apply_candidate_window_cap(
+    candidates: list[dict[str, Any]],
+    max_candidate_windows: int,
+) -> tuple[list[dict[str, Any]], int]:
+    if not max_candidate_windows or len(candidates) <= max_candidate_windows:
+        return candidates, 0
+    ranked = sorted(candidates, key=_candidate_rank_key)
+    kept = ranked[:max_candidate_windows]
+    return kept, len(candidates) - len(kept)
+
+
+def _passes_prefilter(scored: dict[str, Any], rerun_cfg: dict[str, Any]) -> bool:
+    if float(scored.get("theme_relevance_score", 0.0) or 0.0) < float(rerun_cfg["prefilter_min_score"]):
+        return False
+    if bool(rerun_cfg.get("require_active_theme", True)) and not (
+        scored.get("matched_themes")
+        or scored.get("known_entity_links")
+        or float(scored.get("heuristic_components", {}).get("quest_song_bonus", 0) or 0) > 0
+    ):
+        return False
+    return True
 
 
 def active_approved_themes(theme_profile: dict[str, Any]) -> list[dict[str, Any]]:
@@ -406,8 +513,8 @@ def _has_character_context(text: str, quest_match: dict[str, Any]) -> bool:
     for name in check_names:
         if name and name in lowered:
             return True
-    # Also check against known THERIAC characters broadly
-    for char in THERIAC_CHARACTERS:
+    # Also check against known Theriac characters broadly
+    for char in KNOWN_CHARACTER_MARKERS:
         if char in lowered:
             return True
     return False
@@ -422,6 +529,8 @@ def _score_window(
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
     text = _text_for_rows(list(window.get("rows", [])))
+    source_scope = str(window.get("source_scope") or "previous_reject")
+    proximity_pair_map = {} if source_scope == "previous_accept" else accepted_by_pair
     matched_themes: list[dict[str, Any]] = []
     known_links: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -472,11 +581,11 @@ def _score_window(
     entity_score = 0.34 if has_entity else 0.0
     repeated_motif_score = 0.10 if sum(len(item.get("matched_terms", [])) for item in matched_themes) >= 2 else 0.0
     authorial_score = 0.12 if _has_authorial_language(text) else 0.0
-    proximity_score = _proximity_bonus(window, accepted_by_pair)
+    proximity_score = _proximity_bonus(window, proximity_pair_map)
     externality_penalty = 0.16 if warnings and not has_entity else 0.0
     generic_penalty = 0.10 if has_theme and not has_entity and not authorial_score else 0.0
     production_penalty = _production_only_penalty(text, has_theme or has_entity)
-    # Quest-song bonus: boost if conversation mentions known quest-song titles in a THERIAC-relevant context
+    # Quest-song bonus: boost if conversation mentions known quest-song titles in a Theriac-relevant context
     quest_song_bonus = 0.0
     quest_song_matches: list[dict[str, Any]] = []
     if cfg.get("quest_song_markers_loaded"):
@@ -505,6 +614,7 @@ def _score_window(
         score = min(score, 0.18)
     return {
         "candidate_id": stable_id("theme_rescue_candidate", str(window.get("coarse_window_id", "")), str(window.get("model_window_id", ""))),
+        "source_scope": source_scope,
         "source_coarse_window_id": str(window.get("coarse_window_id", "")),
         "source_model_window_id": str(window.get("model_window_id", window.get("coarse_window_id", ""))),
         "dm_pair_id": str(window.get("dm_pair_id", "")),
@@ -529,8 +639,10 @@ def _score_window(
             "externality_penalty": round(externality_penalty, 3),
             "generic_theme_penalty": round(generic_penalty, 3),
             "production_only_penalty": round(production_penalty, 3),
+            "quest_song_bonus": round(quest_song_bonus, 3),
         },
         "text_preview": text[:1600],
+        "_source_segment": window.get("_source_segment"),
     }
 
 
@@ -545,6 +657,7 @@ def _candidate_prompt_rows(candidates: list[dict[str, Any]]) -> list[dict[str, A
                 "timestamp_start_utc": candidate["timestamp_start_utc"],
                 "timestamp_end_utc": candidate["timestamp_end_utc"],
                 "message_count": candidate["message_count"],
+                "source_scope": candidate.get("source_scope", "previous_reject"),
                 "heuristic_theme_relevance_score": candidate["theme_relevance_score"],
                 "matched_themes": candidate["matched_themes"],
                 "known_entity_links": candidate["known_entity_links"],
@@ -556,17 +669,18 @@ def _candidate_prompt_rows(candidates: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def build_adjudication_prompt(candidates: list[dict[str, Any]], cfg: dict[str, Any]) -> str:
-    return f"""You are running THERIAC Stage 04R: Theme-Aware Relevance Rerun.
+    return f"""You are running Theriac Stage 04R: Theme-Aware Relevance Rerun.
 Return strict JSON only with no markdown.
 
 You are not deciding canon.
 You are deciding whether a previously rejected or ignored conversation deserves a second pass for snippet extraction.
+If a candidate is marked source_scope=previous_accept, it was already accepted by strict Stage 04 and you are deciding whether updated theme/entity/quest-song signals justify a supplemental snippet-extraction pass.
 
 Guardrails:
 - Use approved active themes as relevance priors only.
 - Do not introduce, infer, or approve a new theme.
 - Do not rescue a conversation merely because it contains a mythological, historical, scientific, or technological term.
-- Rescue only if the term appears in a context plausibly connected to the THERIAC project, an approved active theme, or a known lore entity.
+- Rescue only if the term appears in a context plausibly connected to the Theriac project, an approved active theme, or a known lore entity.
 - Prefer false negatives over flooding the pipeline with unrelated material.
 - External IP only, generic mythology/history chat, production-only/team-only discussion, and no relation to accepted lore themes should stay rejected.
 
@@ -629,24 +743,60 @@ def _adjudicate_candidates(
     decisions: dict[str, dict[str, Any]] = {}
     call_count = 0
     chunk_size = int(cfg.get("max_windows_per_model_call", 8))
+    max_workers = max(
+        int(cfg.get("max_concurrent_adjudication_calls", 1) or 1),
+        model_max_concurrent_requests(provider_config, TASK_NAME, default=1),
+    )
+    provider_retries = int(cfg.get("adjudication_provider_retries", 5))
+    provider_retry_sleep = float(cfg.get("adjudication_provider_retry_sleep_seconds", 2.0))
+
+    chunks: list[tuple[str, list[dict[str, Any]], set[str]]] = []
     for offset in range(0, len(candidates), chunk_size):
         chunk = candidates[offset : offset + chunk_size]
+        chunk_key = stable_id("stage_04r_chunk", *(str(candidate.get("candidate_id")) for candidate in chunk))
         candidate_ids = {str(candidate.get("candidate_id")) for candidate in chunk}
-        prompt = build_adjudication_prompt(chunk, cfg)
-        kwargs = model_call_kwargs(provider_config, TASK_NAME)
-        try:
-            payload = call_model_chat(prompt=prompt, **kwargs)
-            call_count += 1
-        except Exception as exc:
-            payload = None
-            failures.append({"candidate_ids": sorted(candidate_ids), "reason": f"model_call_failed: {exc}"})
-        normalized = _normalize_model_decisions(payload, candidate_ids)
+        chunks.append((chunk_key, chunk, candidate_ids))
+
+    jobs = [
+        {
+            "key": chunk_key,
+            "prompt": build_adjudication_prompt(chunk, cfg),
+        }
+        for chunk_key, chunk, _candidate_ids in chunks
+    ]
+    logger.info(
+        "Stage 04R: adjudicating %d candidate window(s) in %d chunk(s) with max_concurrent_requests=%d.",
+        len(candidates),
+        len(chunks),
+        max_workers,
+    )
+    chunk_results = call_model_chats_parallel(
+        jobs,
+        provider_config,
+        TASK_NAME,
+        max_workers=max_workers,
+        max_provider_attempts=provider_retries,
+        provider_retry_sleep_seconds=provider_retry_sleep,
+    )
+    call_count = len(jobs)
+
+    for chunk_index, (chunk_key, chunk, candidate_ids) in enumerate(chunks, start=1):
+        result = chunk_results.get(chunk_key, {"payload": None, "error": "missing_chunk_response"})
+        payload = result.get("payload")
+        if not isinstance(payload, dict) and result.get("error"):
+            failures.append({"candidate_ids": sorted(candidate_ids), "reason": str(result.get("error"))})
+        normalized = _normalize_model_decisions(payload if isinstance(payload, dict) else None, candidate_ids)
         missing = candidate_ids - set(normalized)
         if missing and bool(cfg.get("hard_retry_enabled", False)):
             retry_prompt = build_adjudication_prompt([candidate for candidate in chunk if candidate["candidate_id"] in missing], cfg)
-            retry_kwargs = model_call_kwargs(provider_config, HARD_RETRY_TASK_NAME)
             try:
-                retry_payload = call_model_chat(prompt=retry_prompt, **retry_kwargs)
+                retry_payload = call_model_chat_with_pacing_retries(
+                    retry_prompt,
+                    provider_config=provider_config,
+                    task_name=HARD_RETRY_TASK_NAME,
+                    max_provider_attempts=provider_retries,
+                    provider_retry_sleep_seconds=provider_retry_sleep,
+                )
                 call_count += 1
                 normalized.update(_normalize_model_decisions(retry_payload, missing))
             except Exception as exc:
@@ -655,10 +805,9 @@ def _adjudicate_candidates(
             failures.append({"candidate_ids": sorted(missing - set(normalized)), "reason": "missing_or_invalid_model_decision"})
         decisions.update(normalized)
         logger.info(
-            "Stage 04R adjudication chunk %d-%d/%d: decisions=%d failures=%d",
-            offset + 1,
-            min(offset + len(chunk), len(candidates)),
-            len(candidates),
+            "Stage 04R adjudication chunk %d/%d: decisions=%d failures=%d",
+            chunk_index,
+            len(chunks),
             len(normalized),
             len(failures),
         )
@@ -666,6 +815,12 @@ def _adjudicate_candidates(
 
 
 def _fallback_reason(candidate: dict[str, Any], min_confidence: float) -> str:
+    if str(candidate.get("source_scope") or "") == "previous_accept":
+        if not candidate.get("matched_themes") and not candidate.get("known_entity_links"):
+            return "Previously accepted conversation lacks approved active theme, known lore entity, or quest-song context for rescan."
+        if float(candidate.get("theme_relevance_score", 0.0) or 0.0) < min_confidence:
+            return "Previously accepted conversation scored below the rescan threshold."
+        return "Previously accepted conversation matches updated theme or quest-song signals and deserves supplemental snippet extraction."
     if not candidate.get("matched_themes") and not candidate.get("known_entity_links"):
         return "No approved active theme or known lore entity matched this missed conversation."
     if float(candidate.get("theme_relevance_score", 0.0) or 0.0) < min_confidence:
@@ -744,28 +899,40 @@ def _materialize_rescue_rows(rows_by_id: dict[str, dict[str, Any]], decisions: l
         message_ids = [str(message_id) for message_id in decision.get("message_ids", []) if str(message_id) in rows_by_id]
         anchors = _rescue_anchor_entities(decision)
         theme_labels = [str(theme.get("theme_label") or "") for theme in decision.get("matched_themes", []) if isinstance(theme, dict)]
-        topic_label = "Theme rescue"
-        if theme_labels:
-            topic_label = f"Theme rescue: {theme_labels[0]}"
+        source_segment = decision.get("_source_segment") if isinstance(decision.get("_source_segment"), dict) else None
+        is_accept_rescan = str(decision.get("source_scope") or "") == "previous_accept"
+        if is_accept_rescan and source_segment:
+            topic_label = str(source_segment.get("topic_label") or "Theme rescan")
+            conversation_id = str(source_segment.get("conversation_id") or decision.get("conversation_id"))
+            rescue_source = "stage_04r_accepted_segment_rescan"
+            topic_summary = str(source_segment.get("topic_summary") or decision.get("reasoning_summary") or "")
+        else:
+            topic_label = "Theme rescue"
+            if theme_labels:
+                topic_label = f"Theme rescue: {theme_labels[0]}"
+            conversation_id = str(decision.get("conversation_id"))
+            rescue_source = "stage_04r_theme_relevance_rerun"
+            topic_summary = str(decision.get("reasoning_summary") or "")
         for index, message_id in enumerate(message_ids, start=1):
-            key = (str(decision.get("conversation_id")), message_id)
+            key = (conversation_id, message_id)
             if key in seen:
                 continue
             seen.add(key)
             row = dict(rows_by_id[message_id])
-            row["conversation_id"] = str(decision.get("conversation_id"))
+            row["conversation_id"] = conversation_id
             row["dm_pair_id"] = str(decision.get("dm_pair_id"))
             row["conversation_message_index"] = index
             row["conversation_topic_label"] = topic_label
-            row["conversation_topic_summary"] = str(decision.get("reasoning_summary") or "")
-            row["conversation_track"] = "lore"
-            row["conversation_anchor_entities"] = anchors
-            row["conversation_relevance_type"] = "theme_aware_rescue"
+            row["conversation_topic_summary"] = topic_summary
+            row["conversation_track"] = str(source_segment.get("track") if source_segment else "lore")
+            row["conversation_anchor_entities"] = anchors or _list_strings(source_segment.get("anchor_entities", [])) if source_segment else anchors
+            row["conversation_relevance_type"] = "theme_aware_rescan" if is_accept_rescan else "theme_aware_rescue"
             row["conversation_relevance_rationale"] = str(decision.get("reasoning_summary") or "")
             row["conversation_relevance_confidence"] = float(decision.get("confidence", 0.0) or 0.0)
             row["conversation_model_confidence"] = float(decision.get("confidence", 0.0) or 0.0)
             row["conversation_source_model_window_id"] = str(decision.get("source_model_window_id") or "")
-            row["conversation_rescue_source"] = "stage_04r_theme_relevance_rerun"
+            row["conversation_rescue_source"] = rescue_source
+            row["conversation_rescue_rescan_of_accepted"] = is_accept_rescan
             row["conversation_rescue_requires_human_review"] = bool(decision.get("requires_human_review", True))
             row["conversation_rescue_matched_themes"] = decision.get("matched_themes", [])
             row["conversation_rescue_known_entity_links"] = decision.get("known_entity_links", [])
@@ -850,8 +1017,13 @@ def run(
     externality = _externality_terms(in_externality_cache_json)
 
     candidates: list[dict[str, Any]] = []
+    seen_message_sets: set[str] = set()
     dropped_by_prefilter = 0
+    ignored_candidate_count = 0
+    accepted_candidate_count = 0
     max_candidate_windows = int(rerun_cfg["max_candidate_windows_per_run"])
+    include_previous_accepts = _include_previous_accepts(rerun_cfg)
+
     for coarse_window in coarse_windows:
         model_chunks = split_window_for_model(
             coarse_window,
@@ -859,20 +1031,30 @@ def run(
             int(conversation_cfg.get("model_window_max_chars", 14000)),
         )
         for model_window in model_chunks:
+            model_window["source_scope"] = "previous_reject"
             scored = _score_window(model_window, themes, known_entities, externality, accepted_by_pair, rerun_cfg)
-            if float(scored.get("theme_relevance_score", 0.0) or 0.0) < float(rerun_cfg["prefilter_min_score"]):
+            if not _passes_prefilter(scored, rerun_cfg):
                 dropped_by_prefilter += 1
                 continue
-            if bool(rerun_cfg.get("require_active_theme", True)) and not (scored.get("matched_themes") or scored.get("known_entity_links")):
-                dropped_by_prefilter += 1
-                continue
-            candidates.append(scored)
-            if max_candidate_windows and len(candidates) >= max_candidate_windows:
-                break
-        if max_candidate_windows and len(candidates) >= max_candidate_windows:
-            break
+            if _append_scored_candidate(candidates, seen_message_sets, scored):
+                ignored_candidate_count += 1
 
-    candidates.sort(key=lambda item: (-float(item.get("theme_relevance_score", 0.0) or 0.0), str(item.get("timestamp_start_utc", ""))))
+    if include_previous_accepts:
+        accepted_windows = _windows_from_accepted_segments(accepted_by_pair, rows_by_id, conversation_cfg)
+        for model_window in accepted_windows:
+            scored = _score_window(model_window, themes, known_entities, externality, accepted_by_pair, rerun_cfg)
+            if not _passes_prefilter(scored, rerun_cfg):
+                dropped_by_prefilter += 1
+                continue
+            if _append_scored_candidate(candidates, seen_message_sets, scored):
+                accepted_candidate_count += 1
+
+    prefilter_candidate_count = len(candidates)
+    candidates, dropped_by_candidate_cap = _apply_candidate_window_cap(candidates, max_candidate_windows)
+    ignored_candidate_count = sum(1 for candidate in candidates if str(candidate.get("source_scope") or "") == "previous_reject")
+    accepted_candidate_count = sum(1 for candidate in candidates if str(candidate.get("source_scope") or "") == "previous_accept")
+
+    candidates.sort(key=_candidate_rank_key)
     model_decisions, failures, model_call_count = _adjudicate_candidates(candidates, provider_config, rerun_cfg)
     decisions = _finalize_decisions(candidates, model_decisions, rerun_cfg)
     rescued = [decision for decision in decisions if decision.get("rerun_decision") == "rescue_for_snippet_extraction"]
@@ -908,7 +1090,11 @@ def run(
             "track": "lore",
             "topic_label": f"Theme rescue: {decision['matched_themes'][0]['theme_label']}" if decision.get("matched_themes") else "Theme rescue",
             "topic_summary": decision.get("reasoning_summary", ""),
-            "topic_shift_reason": "Previously ignored by strict Stage 04; rescued by approved active theme or known entity signal.",
+            "topic_shift_reason": (
+                "Previously accepted by strict Stage 04; rescanned for supplemental snippet extraction after theme/quest-song signal update."
+                if str(decision.get("source_scope") or "") == "previous_accept"
+                else "Previously ignored by strict Stage 04; rescued by approved active theme or known entity signal."
+            ),
             "anchor_entities": _rescue_anchor_entities(decision),
             "relevance_type": "theme_aware_rescue",
             "relevance_rationale": decision.get("reasoning_summary", ""),
@@ -947,6 +1133,11 @@ def run(
             "accepted_strict_message_count": len(accepted_ids),
             "ignored_message_count": len(ignored_rows),
             "ignored_coarse_window_count": len(coarse_windows),
+            "include_previous_accepts": include_previous_accepts,
+            "prefiltered_candidate_window_count": prefilter_candidate_count,
+            "dropped_by_candidate_cap_count": dropped_by_candidate_cap,
+            "ignored_candidate_window_count": ignored_candidate_count,
+            "accepted_rescan_candidate_window_count": accepted_candidate_count,
             "candidate_window_count": len(candidates),
             "dropped_by_prefilter_count": dropped_by_prefilter,
             "rescued_conversation_count": len(rescued),

@@ -17,19 +17,19 @@ from pipeline.common import (
     stable_id,
 )
 from pipeline.model_provider import (
-    call_gemini_batch_json,
     call_model_chat,
+    call_model_chats_parallel,
     get_model_runtime_status,
     load_seed_entities,
-    model_batch_enabled,
-    model_batch_initial_max_requests,
-    model_batch_max_requests,
     model_call_kwargs,
+    model_max_concurrent_requests,
+    model_parallel_wave_size,
 )
 from pipeline.stage_06_snippet_extraction import LORE_KEYWORDS, META_KEYWORDS, meta_intent_hits
 
 
 VALID_TRACKS = {"lore", "meta", "both"}
+STAGE_04_TASK_NAME = "stage_04_conversation_segmentation"
 PACING_SKIP_REASONS = {"provider_locked", "adaptive_pacing", "rate_limit_cooldown"}
 NEGATIVE_RELEVANCE_VALUES = {"none", "irrelevant", "unrelated", "external_only", "personal_only", "unknown"}
 POSITIVE_RELEVANCE_VALUES = {"direct_lore", "direct_project_meta", "direct_inspiration", "both"}
@@ -417,20 +417,20 @@ def build_segmentation_prompt(window: dict[str, Any], cfg: dict[str, Any], seed_
         )
 
     seed_preview = seed_entities[:80]
-    return f"""You segment 1:1 Discord DMs for THERIAC lore-card extraction.
+    return f"""You segment 1:1 Discord DMs for Theriac lore-card extraction.
 Return strict JSON only with no markdown.
 
-THERIAC-relevant means:
+Theriac-relevant means:
 - lore/canon/story/worldbuilding discussion; or
-- meta/design/production discussion about THERIAC, its plot, mechanics, release, marketing, writing, or canon decisions.
+- meta/design/production discussion about Theriac, its plot, mechanics, release, marketing, writing, or canon decisions.
 
 Strict relevance gate:
-- Include a segment only when the messages themselves make a direct THERIAC connection.
-- External media, other games, anime, music, science, history, career advice, personal updates, relationships, jobs, food, and general life chat are irrelevant unless the same segment explicitly connects them to a THERIAC entity, quest, mechanic, style decision, production decision, or canon question.
-- Inspiration/vibes alone are not enough. A segment about another work is relevant only if the speakers explicitly apply it to THERIAC.
-- Do not classify another game's internal lore, factions, quests, character builds, faction bonuses, or character relationships as THERIAC lore. If retained because it is explicitly applied to THERIAC, anchor the segment to the THERIAC concept being designed, not to the external-media names.
-- For project-wide meta discussion, include "THERIAC" in anchor_entities.
-- If the topic summary or rationale would say "unrelated to THERIAC" or "no direct connection to THERIAC", do not emit that segment.
+- Include a segment only when the messages themselves make a direct Theriac connection.
+- External media, other games, anime, music, science, history, career advice, personal updates, relationships, jobs, food, and general life chat are irrelevant unless the same segment explicitly connects them to a Theriac entity, quest, mechanic, style decision, production decision, or canon question.
+- Inspiration/vibes alone are not enough. A segment about another work is relevant only if the speakers explicitly apply it to Theriac.
+- Do not classify another game's internal lore, factions, quests, character builds, faction bonuses, or character relationships as Theriac lore. If retained because it is explicitly applied to Theriac, anchor the segment to the Theriac concept being designed, not to the external-media names.
+- For project-wide meta discussion, include "Theriac" in anchor_entities.
+- If the topic summary or rationale would say "unrelated to Theriac" or "no direct connection to Theriac", do not emit that segment.
 
 Discard unrelated chat. Do not emit irrelevant segments.
 Split the candidate window when the material topic changes: different entity, quest, plot thread, mechanic, production concern, or canon question.
@@ -467,7 +467,7 @@ Return JSON object:
       "topic_shift_reason": "why this is separate from adjacent material",
       "anchor_entities": ["entity or concept names"],
       "relevance_type": "direct_lore|direct_project_meta|direct_inspiration",
-      "relevance_rationale": "specific direct THERIAC tie, naming the entity, quest, mechanic, style decision, production decision, or canon question",
+      "relevance_rationale": "specific direct Theriac tie, naming the entity, quest, mechanic, style decision, production decision, or canon question",
       "relevance_confidence": 0.0,
       "confidence": 0.0
     }}
@@ -476,12 +476,12 @@ Return JSON object:
 
 Use only message indices and message_id values shown in the Messages list above.
 Prefer start_message_index/end_message_index when possible; include message IDs too if you are confident.
-If the window contains no THERIAC-relevant material, return {{"segments":[]}}.
+If the window contains no Theriac-relevant material, return {{"segments":[]}}.
 """
 
 
 def _call_model(prompt: str, provider_config: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any] | None:
-    call_kwargs = model_call_kwargs(provider_config, "stage_04_conversation_segmentation")
+    call_kwargs = model_call_kwargs(provider_config, STAGE_04_TASK_NAME)
     if cfg.get("provider"):
         call_kwargs["provider"] = str(cfg["provider"])
     if cfg.get("api_retries") is not None:
@@ -852,29 +852,14 @@ def segment_window_with_model(
     raise RuntimeError(last_reason)
 
 
-def provider_config_with_task_overrides(
-    provider_config: dict[str, Any],
-    task_name: str,
-    overrides: dict[str, Any],
-) -> dict[str, Any]:
-    next_config = dict(provider_config or {})
-    routing = dict(next_config.get("model_routing", {}) if isinstance(next_config.get("model_routing", {}), dict) else {})
-    tasks = dict(routing.get("tasks", {}) if isinstance(routing.get("tasks", {}), dict) else {})
-    task_cfg = dict(tasks.get(task_name, {}) if isinstance(tasks.get(task_name, {}), dict) else {})
-    task_cfg.update(overrides)
-    tasks[task_name] = task_cfg
-    routing["tasks"] = tasks
-    next_config["model_routing"] = routing
-    return next_config
-
-
-def segment_windows_with_batch(
+def segment_windows_with_parallel(
     windows: list[dict[str, Any]],
     provider_config: dict[str, Any],
     cfg: dict[str, Any],
     seed_entities: list[str],
+    *,
+    max_workers: int,
     relevance_events: list[dict[str, Any]] | None = None,
-    batch_status_log_path: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     requests = [
         {
@@ -883,23 +868,25 @@ def segment_windows_with_batch(
         }
         for window in windows
     ]
-    batch_provider_config = provider_config
-    if batch_status_log_path is not None:
-        batch_provider_config = provider_config_with_task_overrides(
-            provider_config,
-            "stage_04_conversation_segmentation",
-            {"batch_status_log_path": str(batch_status_log_path)},
-        )
-    batch_results = call_gemini_batch_json(batch_provider_config, "stage_04_conversation_segmentation", requests)
+    provider_attempts = max(1, 1 + int(cfg.get("segmentation_provider_retries", 0)))
+    retry_sleep = float(cfg.get("segmentation_provider_retry_sleep_seconds", 90))
+    parallel_results = call_model_chats_parallel(
+        requests,
+        provider_config,
+        STAGE_04_TASK_NAME,
+        max_workers=max_workers,
+        max_provider_attempts=provider_attempts,
+        provider_retry_sleep_seconds=retry_sleep,
+    )
     normalized_by_window: dict[str, dict[str, Any]] = {}
     for window in windows:
         key = str(window.get("model_window_id", window.get("coarse_window_id", "")))
-        result = batch_results.get(key, {"payload": None, "error": "missing_batch_response"})
+        result = parallel_results.get(key, {"payload": None, "error": "missing_parallel_response"})
         payload = result.get("payload")
         if not isinstance(payload, dict):
             normalized_by_window[key] = {
                 "segments": None,
-                "error": str(result.get("error") or "batch_response_not_json_object"),
+                "error": str(result.get("error") or "parallel_response_not_json_object"),
                 "payload": payload,
             }
             continue
@@ -1072,7 +1059,6 @@ def write_stage_outputs(
     model_windows: int,
     status: str,
     planned_model_windows: int | None = None,
-    batch_status_log_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     generated_at = now_utc_iso()
     relevant_rows = annotate_rows_for_segments(rows_by_id, segments)
@@ -1110,7 +1096,6 @@ def write_stage_outputs(
             "conversation_segments": str(out_segments_json),
             "conversation_index": str(out_index_json),
             "conversation_segmentation_failures": str(out_failures_json),
-            "gemini_batch_status": str(batch_status_log_path) if batch_status_log_path else "",
         },
     }
     _write_jsonl_atomic(out_jsonl, relevant_rows)
@@ -1183,10 +1168,6 @@ def run(
     completed_coarse_windows = 0
     planned_model_windows: int | None = None
     progress_every = max(1, len(coarse_windows) // 10)
-    batch_enabled = model_batch_enabled(provider_config, "stage_04_conversation_segmentation")
-    batch_status_log_path = out_index_json.parent / "gemini_batch_status.jsonl" if batch_enabled else None
-    if batch_status_log_path and batch_status_log_path.exists():
-        batch_status_log_path.unlink()
 
     write_stage_outputs(
         out_jsonl=out_jsonl,
@@ -1208,11 +1189,13 @@ def run(
         dropped_prefilter=dropped_prefilter,
         model_windows=model_windows,
         status="in_progress",
-        batch_status_log_path=batch_status_log_path,
     )
 
-    if batch_enabled:
+    parallel_workers = model_max_concurrent_requests(provider_config, STAGE_04_TASK_NAME, default=1)
+    use_parallel_sync = parallel_workers > 1
+    if use_parallel_sync:
         model_jobs: list[tuple[dict[str, Any], dict[str, Any], int]] = []
+        planned_model_windows = 0
         for window_idx, coarse_window in enumerate(coarse_windows, start=1):
             if bool(cfg.get("cheap_prefilter_enabled", False)) and not is_candidate_window(coarse_window, seed_entities):
                 dropped_prefilter += 1
@@ -1223,128 +1206,62 @@ def run(
                 int(cfg["model_window_max_messages"]),
                 int(cfg["model_window_max_chars"]),
             )
+            planned_model_windows += len(model_chunks)
             for model_window in model_chunks:
                 model_jobs.append((coarse_window, model_window, window_idx))
-
-        planned_model_windows = len(model_jobs)
-        max_batch_requests = model_batch_max_requests(provider_config, "stage_04_conversation_segmentation", default=100)
-        initial_batch_requests = min(
-            max_batch_requests,
-            model_batch_initial_max_requests(provider_config, "stage_04_conversation_segmentation", default=max_batch_requests),
-        )
-        routing_cfg = provider_config.get("model_routing", {}) if isinstance(provider_config, dict) else {}
-        tasks_cfg = routing_cfg.get("tasks", {}) if isinstance(routing_cfg, dict) else {}
-        task_cfg = tasks_cfg.get("stage_04_conversation_segmentation", {}) if isinstance(tasks_cfg, dict) else {}
-        abort_on_chunk_failure = bool(task_cfg.get("batch_abort_on_chunk_failure", True)) if isinstance(task_cfg, dict) else True
-        write_stage_outputs(
-            out_jsonl=out_jsonl,
-            out_segments_json=out_segments_json,
-            out_index_json=out_index_json,
-            out_failures_json=out_failures_json,
-            rows_by_id=rows_by_id,
-            segments=segments,
-            failures=failures,
-            overlap_events=overlap_events,
-            relevance_events=relevance_events,
-            annotated_rows=annotated_rows,
-            self_user_id=self_user_id,
-            max_gap_hours=float(cfg["max_gap_hours"]),
-            messages_in=len(rows),
-            coarse_windows=len(coarse_windows),
-            completed_coarse_windows=completed_coarse_windows,
-            candidate_windows=candidate_windows,
-            dropped_prefilter=dropped_prefilter,
-            model_windows=model_windows,
-            planned_model_windows=planned_model_windows,
-            status="in_progress",
-            batch_status_log_path=batch_status_log_path,
-        )
         logger.info(
-            "Stage 04: batch mode enabled; prepared %d candidate coarse window(s), %d model window(s), first chunk=%d, later chunks=%d.",
-            candidate_windows,
+            "Stage 04: parallel sync mode enabled; planned %d model window call(s) across %d coarse window(s), max_concurrent_requests=%d.",
             planned_model_windows,
-            initial_batch_requests,
-            max_batch_requests,
+            len(coarse_windows),
+            parallel_workers,
+        )
+        wave_size = max(
+            parallel_workers * 4,
+            model_parallel_wave_size(provider_config, STAGE_04_TASK_NAME, default=75),
         )
         offset = 0
-        chunk_index = 0
+        wave_index = 0
         while offset < len(model_jobs):
-            chunk_index += 1
-            chunk_limit = initial_batch_requests if chunk_index == 1 else max_batch_requests
-            job_chunk = model_jobs[offset : offset + chunk_limit]
+            wave_index += 1
+            job_wave = model_jobs[offset : offset + wave_size]
+            chunk_windows = [model_window for _coarse, model_window, _idx in job_wave]
             logger.info(
-                "Stage 04: submitting batch chunk %d (%d-%d of %d model windows).",
-                chunk_index,
+                "Stage 04: submitting parallel wave %d (%d-%d of %d model windows).",
+                wave_index,
                 offset + 1,
-                offset + len(job_chunk),
+                offset + len(job_wave),
                 len(model_jobs),
             )
-            chunk_windows = [model_window for _coarse, model_window, _idx in job_chunk]
             try:
-                batch_outputs = segment_windows_with_batch(
+                parallel_outputs = segment_windows_with_parallel(
                     chunk_windows,
                     provider_config,
                     cfg,
                     seed_entities,
-                    relevance_events,
-                    batch_status_log_path=batch_status_log_path,
+                    max_workers=parallel_workers,
+                    relevance_events=relevance_events,
                 )
             except Exception as exc:
-                model_windows += len(job_chunk)
-                for coarse_window, model_window, _window_idx in job_chunk:
-                    failures.append(build_segmentation_failure(coarse_window, model_window, f"batch_model_call_failed: {exc}"))
-                completed_coarse_windows = max((window_idx for _coarse, _model, window_idx in job_chunk), default=completed_coarse_windows)
-                write_stage_outputs(
-                    out_jsonl=out_jsonl,
-                    out_segments_json=out_segments_json,
-                    out_index_json=out_index_json,
-                    out_failures_json=out_failures_json,
-                    rows_by_id=rows_by_id,
-                    segments=segments,
-                    failures=failures,
-                    overlap_events=overlap_events,
-                    relevance_events=relevance_events,
-                    annotated_rows=annotated_rows,
-                    self_user_id=self_user_id,
-                    max_gap_hours=float(cfg["max_gap_hours"]),
-                    messages_in=len(rows),
-                    coarse_windows=len(coarse_windows),
-                    completed_coarse_windows=completed_coarse_windows,
-                    candidate_windows=candidate_windows,
-                    dropped_prefilter=dropped_prefilter,
-                    model_windows=model_windows,
-                    planned_model_windows=len(model_jobs),
-                    status="in_progress",
-                    batch_status_log_path=batch_status_log_path,
-                )
-                if abort_on_chunk_failure:
-                    raise RuntimeError(
-                        "Stage 04 batch chunk failed; stopping before submitting additional chunks. "
-                        f"chunk={chunk_index}, model_windows={offset + 1}-{offset + len(job_chunk)}, error={exc}"
-                    ) from exc
-            else:
-                for coarse_window, model_window, _window_idx in job_chunk:
-                    key = str(model_window.get("model_window_id", model_window.get("coarse_window_id", "")))
-                    result = batch_outputs.get(key, {"segments": None, "error": "missing_batch_response"})
+                for coarse_window, model_window, _window_idx in job_wave:
                     model_windows += 1
-                    logger.info(
-                        "Stage 04 model call %d/%d: batch_chunk=%d coarse_window=%s model_window=%s dm_pair=%s partner=%s messages=%d.",
-                        model_windows,
-                        len(model_jobs),
-                        chunk_index,
-                        coarse_window.get("coarse_window_id"),
-                        model_window.get("model_window_id"),
-                        coarse_window.get("dm_pair_id"),
-                        coarse_window.get("partner_label"),
-                        int(model_window.get("message_count", 0) or 0),
-                    )
+                    failures.append(build_segmentation_failure(coarse_window, model_window, f"parallel_model_call_failed: {exc}"))
+            else:
+                for coarse_window, model_window, window_idx in job_wave:
+                    model_windows += 1
+                    key = str(model_window.get("model_window_id", model_window.get("coarse_window_id", "")))
+                    result = parallel_outputs.get(key, {"segments": None, "error": "missing_parallel_response"})
                     model_segments = result.get("segments")
                     if isinstance(model_segments, list):
                         segments.extend(materialize_segments(model_window, model_segments, overlap_events))
                     else:
-                        failures.append(build_segmentation_failure(coarse_window, model_window, str(result.get("error", ""))))
-
-            completed_coarse_windows = max((window_idx for _coarse, _model, window_idx in job_chunk), default=completed_coarse_windows)
+                        failures.append(
+                            build_segmentation_failure(
+                                coarse_window,
+                                model_window,
+                                str(result.get("error") or "parallel_segmentation_failed"),
+                            )
+                        )
+                    completed_coarse_windows = max(completed_coarse_windows, window_idx)
             write_stage_outputs(
                 out_jsonl=out_jsonl,
                 out_segments_json=out_segments_json,
@@ -1364,18 +1281,17 @@ def run(
                 candidate_windows=candidate_windows,
                 dropped_prefilter=dropped_prefilter,
                 model_windows=model_windows,
-                planned_model_windows=len(model_jobs),
+                planned_model_windows=planned_model_windows,
                 status="in_progress",
-                batch_status_log_path=batch_status_log_path,
             )
             logger.info(
-                "Stage 04 batch progress: %d/%d model windows, segments=%d, failures=%d.",
-                min(offset + len(job_chunk), len(model_jobs)),
+                "Stage 04 parallel progress: %d/%d model windows, segments=%d, failures=%d.",
+                min(offset + len(job_wave), len(model_jobs)),
                 len(model_jobs),
                 len(segments),
                 len(failures),
             )
-            offset += len(job_chunk)
+            offset += len(job_wave)
         completed_coarse_windows = len(coarse_windows)
     else:
         planned_model_windows = 0
@@ -1504,7 +1420,6 @@ def run(
         model_windows=model_windows,
         planned_model_windows=planned_model_windows,
         status="complete",
-        batch_status_log_path=batch_status_log_path,
     )
 
     logger.info(

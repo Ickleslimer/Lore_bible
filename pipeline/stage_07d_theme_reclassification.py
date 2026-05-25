@@ -7,7 +7,12 @@ from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, stable_id, write_json
 from pipeline.entity_resolution import normalized_name_key
-from pipeline.model_provider import call_model_chat, model_call_kwargs
+from pipeline.model_provider import (
+    call_model_chat_with_pacing_retries,
+    call_model_chats_parallel,
+    model_call_kwargs,
+    model_max_concurrent_requests,
+)
 from pipeline.thematic_profile import _load_quest_song_seeds
 
 
@@ -329,41 +334,101 @@ def annotate_reclassifications_with_model(
         int(task_cfg.get("max_candidates_per_call", DEFAULT_MAX_MODEL_CANDIDATES_PER_CALL) or DEFAULT_MAX_MODEL_CANDIDATES_PER_CALL),
     )
     batch_count = (len(model_rows) + max_per_call - 1) // max_per_call
+    max_workers = model_max_concurrent_requests(provider_config, TASK_NAME, default=1)
+    provider_retries = max(1, int(task_cfg.get("provider_pacing_retries", DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS) or DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS))
+    provider_retry_sleep = float(task_cfg.get("provider_retry_sleep_seconds", 2.0) or 0.0)
     logger.info(
-        "Stage 07D: requesting model theme reclassification for %d/%d eligible candidate(s) in %d initial batch(es).",
+        "Stage 07D: requesting model theme reclassification for %d/%d eligible candidate(s) in %d initial batch(es), max_concurrent_requests=%d.",
         len(model_rows),
         len(eligible_rows),
         batch_count,
+        max_workers,
     )
     annotations_by_key: dict[str, dict[str, Any]] = {}
     failures: list[dict[str, Any]] = []
     model_call_count = 0
+    chunk_specs: list[tuple[str, list[dict[str, Any]], str, int]] = []
     for batch_index, offset in enumerate(range(0, len(model_rows), max_per_call), start=1):
         chunk = model_rows[offset : offset + max_per_call]
-        logger.info(
-            "Stage 07D model batch %d/%d: candidates=%d offset=%d model=%s",
-            batch_index,
-            batch_count,
-            len(chunk),
-            offset,
-            kwargs.get("api_model", ""),
+        batch_label = f"{batch_index}/{batch_count}"
+        chunk_key = stable_id("stage_07d_chunk", batch_label, str(offset))
+        chunk_specs.append((chunk_key, chunk, batch_label, offset))
+
+    if max_workers > 1 and len(chunk_specs) > 1:
+        jobs = [
+            {
+                "key": chunk_key,
+                "prompt": build_theme_reclassification_prompt(chunk, keyed_recommendations, candidates, themes),
+            }
+            for chunk_key, chunk, _batch_label, _offset in chunk_specs
+        ]
+        parallel_results = call_model_chats_parallel(
+            jobs,
+            provider_config,
+            TASK_NAME,
+            max_workers=max_workers,
+            max_provider_attempts=provider_retries,
+            provider_retry_sleep_seconds=provider_retry_sleep,
         )
-        annotations, chunk_failures, chunk_call_count = request_model_reclassifications_for_chunk(
-            chunk,
-            keyed_recommendations,
-            candidates,
-            themes,
-            kwargs,
-            logger,
-            batch_label=f"{batch_index}/{batch_count}",
-            offset=offset,
-        )
-        model_call_count += chunk_call_count
-        failures.extend(chunk_failures)
-        for annotation in annotations:
-            key = candidate_key(annotation)
-            if key:
-                annotations_by_key[key] = annotation
+        model_call_count = len(jobs)
+        for chunk_key, chunk, batch_label, offset in chunk_specs:
+            result = parallel_results.get(chunk_key, {"payload": None, "error": "missing_chunk_response"})
+            payload = result.get("payload")
+            annotations = normalize_model_reclassification_response(payload) if isinstance(payload, dict) else None
+            if annotations is not None:
+                for annotation in annotations:
+                    key = candidate_key(annotation)
+                    if key:
+                        annotations_by_key[key] = annotation
+                continue
+            logger.warning(
+                "Stage 07D parallel batch %s failed (%s); falling back to sequential chunk retry.",
+                batch_label,
+                result.get("error") or "invalid_model_json",
+            )
+            annotations, chunk_failures, chunk_call_count = request_model_reclassifications_for_chunk(
+                chunk,
+                keyed_recommendations,
+                candidates,
+                themes,
+                kwargs,
+                logger,
+                batch_label=batch_label,
+                offset=offset,
+            )
+            model_call_count += chunk_call_count
+            failures.extend(chunk_failures)
+            for annotation in annotations:
+                key = candidate_key(annotation)
+                if key:
+                    annotations_by_key[key] = annotation
+    else:
+        for batch_index, offset in enumerate(range(0, len(model_rows), max_per_call), start=1):
+            chunk = model_rows[offset : offset + max_per_call]
+            batch_label = f"{batch_index}/{batch_count}"
+            logger.info(
+                "Stage 07D model batch %s: candidates=%d offset=%d model=%s",
+                batch_label,
+                len(chunk),
+                offset,
+                kwargs.get("api_model", ""),
+            )
+            annotations, chunk_failures, chunk_call_count = request_model_reclassifications_for_chunk(
+                chunk,
+                keyed_recommendations,
+                candidates,
+                themes,
+                kwargs,
+                logger,
+                batch_label=batch_label,
+                offset=offset,
+            )
+            model_call_count += chunk_call_count
+            failures.extend(chunk_failures)
+            for annotation in annotations:
+                key = candidate_key(annotation)
+                if key:
+                    annotations_by_key[key] = annotation
 
     known_themes = known_theme_lookup(themes)
     applied_count = 0
@@ -475,7 +540,15 @@ def request_model_reclassifications_for_chunk(
             depth,
         )
         try:
-            response = call_model_chat(prompt=prompt, **kwargs)
+            response = call_model_chat_with_pacing_retries(
+                prompt,
+                max_provider_attempts=max(
+                    1,
+                    int(kwargs.get("provider_pacing_retries", DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS) or DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS),
+                ),
+                provider_retry_sleep_seconds=float(kwargs.get("provider_retry_sleep_seconds", 2.0) or 0.0),
+                **kwargs,
+            )
         except Exception as exc:
             attempt_failures.append(
                 {
@@ -574,7 +647,7 @@ def build_theme_reclassification_prompt(
         model_candidate_row(row, recommendations.get(str(row.get("normalized_key", "")), {}), candidates.get(str(row.get("normalized_key", "")), {}))
         for row in rows
     ]
-    return f"""You are Stage 07D of the THERIAC Lore Bible pipeline.
+    return f"""You are Stage 07D of the Theriac Lore Bible pipeline.
 Use the active theme profile to refine candidate entity review recommendations.
 Return strict JSON only.
 
@@ -982,7 +1055,7 @@ def theme_review_question(recommendation: dict[str, Any], theme_matches: list[di
     name = str(recommendation.get("candidate_name", "") or "this candidate")
     if theme_matches:
         labels = ", ".join(str(match.get("label", "")) for match in theme_matches[:2] if str(match.get("label", "")).strip())
-        return f"Does {name} belong to the established {labels} theme lane in THERIAC, or is it only an external comparison?"
+        return f"Does {name} belong to the established {labels} theme lane in Theriac, or is it only an external comparison?"
     return str(recommendation.get("human_review_question", "")) or f"Should {name} be treated as lore, meta, alias evidence, or ignored?"
 
 

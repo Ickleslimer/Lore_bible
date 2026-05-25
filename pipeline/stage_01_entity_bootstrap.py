@@ -244,7 +244,7 @@ def run(
                 "timeline_node",
                 "term"
             ],
-            "notes": "Ontology seed for THERIAC lore cards. Not canon evidence."
+            "notes": "Ontology seed for Theriac lore cards. Not canon evidence."
         }
     )
     logger.info("Stage 01 complete: wrote %d entity seed(s).", len(entities))

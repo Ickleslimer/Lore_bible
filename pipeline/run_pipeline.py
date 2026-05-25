@@ -11,20 +11,24 @@ from pipeline.stage_01_entity_bootstrap import run as run_stage_01
 from pipeline.stage_02_message_normalization import run as run_stage_02
 from pipeline.stage_03_timeline_merge import run as run_stage_03
 from pipeline.stage_04_conversation_segmentation import run as run_stage_04
-from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
+from pipeline.stage_05_lore_development_ledger import run as run_stage_05_ledger
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
+from pipeline.stage_08w_narrative_work_tagging import run as run_stage_08w
 from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
 from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
 from pipeline.stage_07c_theme_miner import run as run_stage_07c
 from pipeline.stage_07d_theme_reclassification import run as run_stage_07d
+from pipeline.stage_07e_theme_lineage_web import run as run_stage_07e
 from pipeline.stage_04r_theme_relevance_rerun import run as run_stage_04r
 from pipeline.stage_06r_theme_rescue_snippet_extraction import run as run_stage_06r
 from pipeline.stage_09_claim_drafting import run as run_stage_09
 from pipeline.stage_10_identity_merge import run as run_stage_10
 from pipeline.stage_11_card_synthesis import run as run_stage_11
+from pipeline.stage_11w_work_card_synthesis import run as run_stage_11w
 from pipeline.stage_12_notion_export import run as run_stage_12
-from pipeline.notion_draft_sync import sync_draft_cards_to_notion
+from pipeline.theme_rescue_status import require_rescue_approval, theme_rescue_approved
+from pipeline.notion_draft_sync import sync_canonical_cards_to_notion, sync_draft_cards_to_notion, sync_work_cards_to_notion
 from pipeline.card_architecture_agent import load_card_edit_requests, load_card_architecture_proposals, pending_card_architecture_actions
 
 
@@ -36,6 +40,8 @@ REVIEW_GATE_MARKERS = (
     "card architecture proposal",
     "claim review",
     "card review",
+    "theme rescue approval",
+    "theme rescue gate",
 )
 
 
@@ -222,11 +228,98 @@ def _theme_rerun_enabled() -> bool:
 
 
 def _effective_snippets_path(paths: ArtifactPaths) -> Path:
-    return paths.snippets_with_theme_rescue if paths.snippets_with_theme_rescue.exists() else paths.snippets
+    return paths.effective_snippets()
+
+
+def _stage6_entity_outputs(p: ArtifactPaths) -> list[Path]:
+    return [
+        p.resolved_entities,
+        p.alias_map,
+        p.entity_timelines,
+        p.entity_candidate_harvest,
+        p.entity_adjudication_recommendations,
+        p.externality_cache,
+        p.theme_profile_update_report,
+        p.theme_candidate_reclassification,
+    ]
+
+
+def _stage6_rescue_outputs(p: ArtifactPaths) -> list[Path]:
+    return [p.theme_relevance_rerun, p.snippets_with_theme_rescue]
+
+
+def _run_theme_rescue_phases(logger, total_stages: int, p: ArtifactPaths, thematic_runtime_path: Path, root: Path) -> None:
+    if not _theme_rerun_enabled():
+        return
+    if require_rescue_approval() and not theme_rescue_approved(root):
+        _pause_for_review(
+            logger,
+            6,
+            total_stages,
+            "Stage 06 Theme Rescue Gate",
+            "Theme learning complete. Approve theme rescue (04R/06R) in the Theme Rescue tab before continuing.",
+        )
+
+    theme_learning_outputs = [p.theme_profile_update_report, p.theme_candidate_reclassification]
+    rerun_stale = _newer_than_outputs(theme_learning_outputs, [p.theme_relevance_rerun])
+    if not p.theme_relevance_rerun.exists() or rerun_stale:
+        _run_stage(
+            logger,
+            6,
+            total_stages,
+            "Stage 04R Theme-Aware Relevance Rerun",
+            run_stage_04r,
+            p.global_timeline,
+            p.conversation_segments,
+            p.resolved_entities,
+            Path("canon/theme_profile.json"),
+            p.externality_cache,
+            p.theme_relevance_rerun,
+            p.theme_rescue_messages,
+            p.theme_rescue_segments,
+            p.theme_relevance_rerun_failures,
+            Path("config/pipeline_config.json"),
+        )
+        stage_04r = read_json(p.theme_relevance_rerun)
+        logger.info(
+            "Stage 04R summary: candidates=%d rescued=%d rescued_messages=%d",
+            int(stage_04r.get("summary", {}).get("candidate_window_count", 0)),
+            int(stage_04r.get("summary", {}).get("rescued_conversation_count", 0)),
+            int(stage_04r.get("summary", {}).get("rescued_message_count", 0)),
+        )
+
+    merge_stale = _newer_than_outputs([p.theme_relevance_rerun], [p.snippets_with_theme_rescue])
+    if p.theme_relevance_rerun.exists() and (not p.snippets_with_theme_rescue.exists() or merge_stale):
+        _run_stage(
+            logger,
+            6,
+            total_stages,
+            "Stage 06R Theme Rescue Snippet Extraction",
+            run_stage_06r,
+            p.theme_rescue_messages,
+            p.source_profiles,
+            p.snippets,
+            p.snippets_needs_review,
+            p.theme_rescue_snippets,
+            p.theme_rescue_snippets_needs_review,
+            p.theme_rescue_source_profiles,
+            p.snippets_with_theme_rescue,
+            p.snippets_needs_review_with_theme_rescue,
+            p.theme_rescue_snippet_merge_report,
+            Path("config/pipeline_config.json"),
+            p.entity_seed,
+            thematic_runtime_path,
+        )
+        merge_report = read_json(p.theme_rescue_snippet_merge_report)
+        logger.info(
+            "Stage 06R summary: rescue_snippets=%d combined_snippets=%d",
+            int(merge_report.get("summary", {}).get("rescue_snippet_count", 0)),
+            int(merge_report.get("summary", {}).get("combined_snippet_count", 0)),
+        )
 
 
 def _effective_snippets_review_path(paths: ArtifactPaths) -> Path:
-    return paths.snippets_needs_review_with_theme_rescue if paths.snippets_needs_review_with_theme_rescue.exists() else paths.snippets_needs_review
+    return paths.effective_snippets_needs_review()
 
 
 def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tuple[int, str]:
@@ -246,22 +339,15 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
         p.conversation_segments,
         p.conversation_index,
     ]
-    stage5 = [p.conversation_patch_notes]
-    stage6 = [p.snippets, p.source_profiles]
-    stage7 = [
-        p.resolved_entities,
-        p.alias_map,
-        p.entity_timelines,
-        p.entity_candidate_harvest,
-        p.entity_adjudication_recommendations,
-        p.externality_cache,
-        p.theme_profile_update_report,
-        p.theme_candidate_reclassification,
-    ]
+    stage5 = [p.snippets, p.source_profiles]
+    stage6_entity = _stage6_entity_outputs(p)
+    stage6 = list(stage6_entity)
+    stage6_resolution_outputs = list(stage6_entity)
     theme_rerun_enabled = _theme_rerun_enabled()
     if theme_rerun_enabled:
-        stage7.extend([p.theme_relevance_rerun, p.snippets_with_theme_rescue])
+        stage6.extend(_stage6_rescue_outputs(p))
     effective_snippets = _effective_snippets_path(p)
+    stage7 = [p.lore_development_ledger_index, p.entity_development_history]
     stage8 = [p.snippet_clusters_lore, p.snippet_clusters_meta]
     stage9 = [p.claim_drafts]
     stage10 = [p.identity_merge_proposals]
@@ -280,15 +366,35 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
         return 3, "Stage 03 merged timeline artifacts are missing."
     if _missing(stage4):
         return 4, "Stage 04 relevant conversation artifacts are missing."
-    if _missing(stage5) or str(_json_field(stage5[0], "status", "")).strip().lower() != "complete":
-        return 5, "Stage 05 patch notes are missing or incomplete."
-    if _missing(stage6) or _newer_than_outputs(stage5 + stage4, stage6):
-        return 6, "Stage 06 snippets are missing or older than conversation patch notes."
+    if _missing(stage5) or _newer_than_outputs(stage4, stage5):
+        return 5, "Stage 05 snippet extraction artifacts are missing or older than conversation segmentation."
 
-    if _missing(stage7):
-        return 7, "Stage 07A/07B entity candidate harvest/adjudication artifacts are missing."
+    if _missing(stage6_entity):
+        return 6, "Stage 06 entity candidate harvest/adjudication artifacts are missing."
 
-    if _missing(stage8) or _newer_than_outputs([effective_snippets, p.resolved_entities], stage8):
+    if theme_rerun_enabled:
+        rescue_outputs = _stage6_rescue_outputs(p)
+        rescue_incomplete = _missing(rescue_outputs) or _newer_than_outputs(stage6_entity, rescue_outputs)
+        if require_rescue_approval() and not theme_rescue_approved(root) and rescue_incomplete:
+            return 0, "Paused for theme rescue approval; review learned themes, then begin 04R/06R in the Theme Rescue tab."
+        if rescue_incomplete:
+            return 6, "Stage 06 theme rescue (04R/06R) is pending or stale relative to theme learning."
+
+    if theme_rerun_enabled and p.snippets_with_theme_rescue.exists() and _newer_than_outputs([effective_snippets], stage6_resolution_outputs):
+        return 6, "Stage 06 artifacts are stale relative to the theme-rescue merged snippet corpus."
+
+    ledger_inputs = [
+        p.resolved_entities,
+        p.alias_map,
+        p.conversation_segments,
+        effective_snippets,
+    ]
+    if theme_rerun_enabled:
+        ledger_inputs.extend([p.theme_rescue_segments, p.theme_rescue_messages])
+    if _missing(stage7) or str(_json_field(stage7[0], "status", "")).strip().lower() != "complete" or _newer_than_outputs(ledger_inputs, stage7):
+        return 7, "Stage 07 lore development ledger is missing, incomplete, or stale."
+
+    if _missing(stage8) or _newer_than_outputs([effective_snippets, p.resolved_entities, p.entity_development_history], stage8):
         return 8, "Stage 08 grouping artifacts are missing or stale."
     if _missing(stage9) or _newer_than_outputs(stage8 + [p.resolved_entities, p.alias_map, effective_snippets], stage9):
         return 9, "Stage 09 claim drafts are missing or stale."
@@ -326,6 +432,7 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
             stage9[0],
             p.resolved_entities,
             effective_snippets,
+            p.entity_development_history,
             claim_decisions,
             author_claims,
             author_directives,
@@ -386,7 +493,7 @@ def _pause_for_review(logger, stage_idx: int, total_stages: int, stage_name: str
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the full THERIAC lore card pipeline.")
+    parser = argparse.ArgumentParser(description="Run the full Theriac lore card pipeline.")
     parser.add_argument("--docx", type=Path, required=True)
     parser.add_argument("--conversations-root", type=Path, required=True)
     parser.add_argument("--artifacts-root", type=Path, required=True)
@@ -523,31 +630,7 @@ def main() -> None:
             logger,
             5,
             total_stages,
-            "Stage 05 Conversation Patch Notes",
-            run_stage_05,
-            p.relevant_messages,
-            p.conversation_segments,
-            p.conversation_patch_notes,
-            p.conversation_patch_notes_jsonl,
-            p.conversation_patch_note_failures,
-            Path("config/pipeline_config.json"),
-        )
-        stage_05_index = read_json(p.conversation_patch_notes)
-        logger.info(
-            "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
-            int(stage_05_index.get("notes_count", 0)),
-            int(stage_05_index.get("conversation_count", 0)),
-            int(stage_05_index.get("failure_count", 0)),
-        )
-    else:
-        logger.info("[5/%d] SKIP  Stage 05 Conversation Patch Notes (resume starts at Stage %02d)", total_stages, start_stage)
-
-    if start_stage <= 6:
-        _run_stage(
-            logger,
-            6,
-            total_stages,
-            "Stage 06 Snippet Extraction",
+            "Stage 05 Snippet Extraction",
             run_stage_06,
             p.relevant_messages,
             p.source_profiles,
@@ -557,159 +640,172 @@ def main() -> None:
             Path("config/pipeline_config.json"),
             p.entity_seed,
             thematic_runtime_path,
-            p.conversation_patch_notes,
+            None,
         )
         logger.info(
-            "Stage 06 summary: snippets=%d, needs_review=%d, profiles=%d",
+            "Stage 05 summary: snippets=%d, needs_review=%d, profiles=%d",
             _count_jsonl(p.snippets),
             _count_jsonl(p.snippets_needs_review),
             len(read_json(p.source_profiles).get("profiles", [])),
         )
     else:
-        logger.info("[6/%d] SKIP  Stage 06 Snippet Extraction (resume starts at Stage %02d)", total_stages, start_stage)
+        logger.info("[5/%d] SKIP  Stage 05 Snippet Extraction (resume starts at Stage %02d)", total_stages, start_stage)
+
+    if start_stage <= 6:
+        snippets_for_07a = _effective_snippets_path(p)
+        stage6_entity = _stage6_entity_outputs(p)
+        entity_learning_stale = _newer_than_outputs([snippets_for_07a], stage6_entity)
+        if _missing(stage6_entity) or entity_learning_stale:
+            logger.info(
+                "Stage 06A will harvest entity candidates from %s (%d snippet(s)).",
+                snippets_for_07a,
+                _count_jsonl(snippets_for_07a),
+            )
+            _run_stage(
+                logger,
+                6,
+                total_stages,
+                "Stage 06A Entity Candidate Harvest",
+                run_stage_07,
+                snippets_for_07a,
+                p.entity_seed,
+                p.alias_map,
+                p.entity_timelines,
+                p.resolved_entities,
+                Path("canon/review_memory.json"),
+                p.entity_candidate_harvest,
+                Path("config/pipeline_config.json"),
+            )
+            logger.info(
+                "Stage 06A summary: resolved_entities=%d seed_only_entities=%d entity_candidates=%d aliases=%d entity_timelines=%d",
+                len(read_json(p.resolved_entities).get("resolved_entities", [])),
+                len(read_json(p.resolved_entities).get("seed_only_entities", [])),
+                len(read_json(p.entity_candidate_harvest).get("candidates", [])),
+                len(read_json(p.alias_map).get("aliases", [])),
+                len(read_json(p.entity_timelines).get("entity_timelines", {})),
+            )
+            _run_stage(
+                logger,
+                6,
+                total_stages,
+                "Stage 06B Entity Adjudication",
+                run_stage_07b,
+                p.entity_candidate_harvest,
+                p.entity_adjudication_recommendations,
+                p.externality_cache,
+                Path("config/pipeline_config.json"),
+                Path("canon/theme_profile.json"),
+            )
+            stage_07b = read_json(p.entity_adjudication_recommendations)
+            logger.info(
+                "Stage 06B summary: recommendations=%d web_selected=%d web_calls=%d cache_hits=%d failures=%d",
+                len(stage_07b.get("recommendations", [])),
+                int(stage_07b.get("summary", {}).get("web_selected_candidate_count", 0)),
+                int(stage_07b.get("summary", {}).get("web_call_count", 0)),
+                int(stage_07b.get("summary", {}).get("cache_hit_count", 0)),
+                int(stage_07b.get("summary", {}).get("failure_count", 0)),
+            )
+            _run_stage(
+                logger,
+                6,
+                total_stages,
+                "Stage 06C Theme Miner",
+                run_stage_07c,
+                p.entity_candidate_harvest,
+                p.entity_adjudication_recommendations,
+                p.resolved_entities,
+                Path("canon/review_memory.json"),
+                Path("canon/theme_profile.json"),
+                p.theme_profile_update_report,
+                Path("config/pipeline_config.json"),
+            )
+            stage_07c = read_json(p.theme_profile_update_report)
+            logger.info(
+                "Stage 06C summary: themes=%d evidence_packets=%d applied_updates=%d failures=%d",
+                int(stage_07c.get("summary", {}).get("theme_count", 0)),
+                int(stage_07c.get("inputs", {}).get("evidence_packet_count", 0)),
+                int(stage_07c.get("summary", {}).get("applied_update_count", 0)),
+                int(stage_07c.get("summary", {}).get("failure_count", 0)),
+            )
+            _run_stage(
+                logger,
+                6,
+                total_stages,
+                "Stage 06D Theme-Aware Candidate Reclassification",
+                run_stage_07d,
+                p.entity_candidate_harvest,
+                p.entity_adjudication_recommendations,
+                Path("canon/theme_profile.json"),
+                p.theme_candidate_reclassification,
+                Path("config/pipeline_config.json"),
+            )
+            stage_07d = read_json(p.theme_candidate_reclassification)
+            logger.info(
+                "Stage 06D summary: reclassifications=%d theme_matched=%d",
+                len(stage_07d.get("candidate_reclassifications", [])),
+                int(stage_07d.get("summary", {}).get("theme_matched_candidate_count", 0)),
+            )
+            _run_stage(
+                logger,
+                6,
+                total_stages,
+                "Stage 06E Theme Lineage Web",
+                run_stage_07e,
+                Path("canon/theme_profile.json"),
+                p.theme_lineage_web_report,
+                p.theme_lineage_cache,
+                Path("config/pipeline_config.json"),
+            )
+            stage_07e = read_json(p.theme_lineage_web_report)
+            logger.info(
+                "Stage 06E summary: selected=%d web_calls=%d cache_hits=%d applied=%d failures=%d",
+                int(stage_07e.get("summary", {}).get("selected_theme_count", 0)),
+                int(stage_07e.get("summary", {}).get("web_call_count", 0)),
+                int(stage_07e.get("summary", {}).get("cache_hit_count", 0)),
+                int(stage_07e.get("summary", {}).get("applied_count", 0)),
+                int(stage_07e.get("summary", {}).get("failure_count", 0)),
+            )
+        else:
+            logger.info("[6/%d] SKIP  Stage 06A-06D Entity + Theme Learning (artifacts current)", total_stages)
+
+        _run_theme_rescue_phases(logger, total_stages, p, thematic_runtime_path, root)
+        snippets_for_downstream = _effective_snippets_path(p)
+        snippets_review_for_downstream = _effective_snippets_review_path(p)
+    else:
+        logger.info("[6/%d] SKIP  Stage 06 Entity Resolution + Theme Learning (resume starts at Stage %02d)", total_stages, start_stage)
+        snippets_for_downstream = _effective_snippets_path(p)
+        snippets_review_for_downstream = _effective_snippets_review_path(p)
 
     if start_stage <= 7:
         _run_stage(
             logger,
             7,
             total_stages,
-            "Stage 07A Entity Candidate Harvest",
-            run_stage_07,
-            p.snippets,
-            p.entity_seed,
+            "Stage 07 Lore Development Ledger",
+            run_stage_05_ledger,
+            p.relevant_messages,
+            p.theme_rescue_messages,
+            p.conversation_segments,
+            p.theme_rescue_segments,
+            p.resolved_entities,
             p.alias_map,
-            p.entity_timelines,
-            p.resolved_entities,
-            Path("canon/review_memory.json"),
-            p.entity_candidate_harvest,
+            snippets_for_downstream,
+            p.lore_development_ledger_index,
+            p.lore_development_ledger_jsonl,
+            p.entity_development_history,
+            p.lore_development_ledger_failures,
             Path("config/pipeline_config.json"),
+            p.entity_seed,
         )
+        stage_07_index = read_json(p.lore_development_ledger_index)
         logger.info(
-            "Stage 07A summary: resolved_entities=%d seed_only_entities=%d entity_candidates=%d aliases=%d entity_timelines=%d",
-            len(read_json(p.resolved_entities).get("resolved_entities", [])),
-            len(read_json(p.resolved_entities).get("seed_only_entities", [])),
-            len(read_json(p.entity_candidate_harvest).get("candidates", [])),
-            len(read_json(p.alias_map).get("aliases", [])),
-            len(read_json(p.entity_timelines).get("entity_timelines", {})),
+            "Stage 07 summary: entries=%d, segments=%d, failures=%d",
+            int(stage_07_index.get("entry_count", 0)),
+            int(stage_07_index.get("segment_count", 0)),
+            int(stage_07_index.get("failure_count", 0)),
         )
-        _run_stage(
-            logger,
-            7,
-            total_stages,
-            "Stage 07B Entity Adjudication",
-            run_stage_07b,
-            p.entity_candidate_harvest,
-            p.entity_adjudication_recommendations,
-            p.externality_cache,
-            Path("config/pipeline_config.json"),
-            Path("canon/theme_profile.json"),
-        )
-        stage_07b = read_json(p.entity_adjudication_recommendations)
-        logger.info(
-            "Stage 07B summary: recommendations=%d web_selected=%d web_calls=%d cache_hits=%d failures=%d",
-            len(stage_07b.get("recommendations", [])),
-            int(stage_07b.get("summary", {}).get("web_selected_candidate_count", 0)),
-            int(stage_07b.get("summary", {}).get("web_call_count", 0)),
-            int(stage_07b.get("summary", {}).get("cache_hit_count", 0)),
-            int(stage_07b.get("summary", {}).get("failure_count", 0)),
-        )
-        _run_stage(
-            logger,
-            7,
-            total_stages,
-            "Stage 07C Theme Miner",
-            run_stage_07c,
-            p.entity_candidate_harvest,
-            p.entity_adjudication_recommendations,
-            p.resolved_entities,
-            Path("canon/review_memory.json"),
-            Path("canon/theme_profile.json"),
-            p.theme_profile_update_report,
-            Path("config/pipeline_config.json"),
-        )
-        stage_07c = read_json(p.theme_profile_update_report)
-        logger.info(
-            "Stage 07C summary: themes=%d evidence_packets=%d applied_updates=%d failures=%d",
-            int(stage_07c.get("summary", {}).get("theme_count", 0)),
-            int(stage_07c.get("inputs", {}).get("evidence_packet_count", 0)),
-            int(stage_07c.get("summary", {}).get("applied_update_count", 0)),
-            int(stage_07c.get("summary", {}).get("failure_count", 0)),
-        )
-        _run_stage(
-            logger,
-            7,
-            total_stages,
-            "Stage 07D Theme-Aware Candidate Reclassification",
-            run_stage_07d,
-            p.entity_candidate_harvest,
-            p.entity_adjudication_recommendations,
-            Path("canon/theme_profile.json"),
-            p.theme_candidate_reclassification,
-            Path("config/pipeline_config.json"),
-        )
-        stage_07d = read_json(p.theme_candidate_reclassification)
-        logger.info(
-            "Stage 07D summary: reclassifications=%d theme_matched=%d",
-            len(stage_07d.get("candidate_reclassifications", [])),
-            int(stage_07d.get("summary", {}).get("theme_matched_candidate_count", 0)),
-        )
-        if _theme_rerun_enabled():
-            _run_stage(
-                logger,
-                7,
-                total_stages,
-                "Stage 04R Theme-Aware Relevance Rerun",
-                run_stage_04r,
-                p.global_timeline,
-                p.conversation_segments,
-                p.resolved_entities,
-                Path("canon/theme_profile.json"),
-                p.externality_cache,
-                p.theme_relevance_rerun,
-                p.theme_rescue_messages,
-                p.theme_rescue_segments,
-                p.theme_relevance_rerun_failures,
-                Path("config/pipeline_config.json"),
-            )
-            stage_04r = read_json(p.theme_relevance_rerun)
-            logger.info(
-                "Stage 04R summary: candidates=%d rescued=%d rescued_messages=%d",
-                int(stage_04r.get("summary", {}).get("candidate_window_count", 0)),
-                int(stage_04r.get("summary", {}).get("rescued_conversation_count", 0)),
-                int(stage_04r.get("summary", {}).get("rescued_message_count", 0)),
-            )
-            _run_stage(
-                logger,
-                7,
-                total_stages,
-                "Stage 06R Theme Rescue Snippet Extraction",
-                run_stage_06r,
-                p.theme_rescue_messages,
-                p.source_profiles,
-                p.snippets,
-                p.snippets_needs_review,
-                p.theme_rescue_snippets,
-                p.theme_rescue_snippets_needs_review,
-                p.theme_rescue_source_profiles,
-                p.snippets_with_theme_rescue,
-                p.snippets_needs_review_with_theme_rescue,
-                p.theme_rescue_snippet_merge_report,
-                Path("config/pipeline_config.json"),
-                p.entity_seed,
-                thematic_runtime_path,
-            )
-            merge_report = read_json(p.theme_rescue_snippet_merge_report)
-            logger.info(
-                "Stage 06R summary: rescue_snippets=%d combined_snippets=%d",
-                int(merge_report.get("summary", {}).get("rescue_snippet_count", 0)),
-                int(merge_report.get("summary", {}).get("combined_snippet_count", 0)),
-            )
-            snippets_for_downstream = _effective_snippets_path(p)
-            snippets_review_for_downstream = _effective_snippets_review_path(p)
     else:
-        logger.info("[7/%d] SKIP  Stage 07A-07D Entity Candidate Harvest + Adjudication + Themes (resume starts at Stage %02d)", total_stages, start_stage)
-        snippets_for_downstream = _effective_snippets_path(p)
-        snippets_review_for_downstream = _effective_snippets_review_path(p)
+        logger.info("[7/%d] SKIP  Stage 07 Lore Development Ledger (resume starts at Stage %02d)", total_stages, start_stage)
 
     if start_stage <= 8:
         _run_stage(
@@ -732,6 +828,26 @@ def main() -> None:
         )
     else:
         logger.info("[8/%d] SKIP  Stage 08 Snippet Grouping (resume starts at Stage %02d)", total_stages, start_stage)
+
+    nw_cfg = (read_json(Path("config/pipeline_config.json")).get("narrative_works") or {}) if Path("config/pipeline_config.json").exists() else {}
+    if start_stage <= 8 and bool(nw_cfg.get("enabled", True)):
+        _run_stage(
+            logger,
+            8,
+            total_stages,
+            "Stage 08W Narrative Work Tagging",
+            run_stage_08w,
+            snippets_for_downstream,
+            p.narrative_work_tags,
+            Path("config/pipeline_config.json"),
+            Path("canon/review_memory.json"),
+        )
+        logger.info(
+            "Stage 08W summary: tagged_snippets=%d",
+            _count_jsonl(p.narrative_work_tags),
+        )
+    elif not bool(nw_cfg.get("enabled", True)):
+        logger.info("[8W] SKIP  Stage 08W Narrative Work Tagging (disabled in config)")
 
     if start_stage <= 9:
         _run_stage(
@@ -800,6 +916,23 @@ def main() -> None:
             f"Stage 10 produced {pending_identity_merges} identity cluster proposal(s) requiring review before Stage 11.",
         )
 
+    if start_stage <= 11 and bool(nw_cfg.get("enabled", True)):
+        _run_stage(
+            logger,
+            11,
+            total_stages,
+            "Stage 11W Work Card Synthesis",
+            run_stage_11w,
+            snippets_for_downstream,
+            p.narrative_work_tags,
+            p.work_cards,
+            Path("config/pipeline_config.json"),
+        )
+        logger.info(
+            "Stage 11W summary: work_cards=%d",
+            len(read_json(p.work_cards).get("works", []) if p.work_cards.exists() else []),
+        )
+
     if start_stage <= 11:
         _run_stage(
             logger,
@@ -818,6 +951,7 @@ def main() -> None:
             p.merge_log,
             Path("config/pipeline_config.json"),
             snippets_for_downstream,
+            p.entity_development_history,
         )
         logger.info(
             "Stage 11 summary: card_drafts=%d canonical_cards=%d merge_log=%d",
@@ -830,6 +964,19 @@ def main() -> None:
             Path("config/pipeline_config.json"),
             Path(".env"),
             progress_callback=lambda message: logger.info(message),
+        )
+        work_sync_report = sync_work_cards_to_notion(
+            root,
+            Path("config/pipeline_config.json"),
+            Path(".env"),
+            progress_callback=lambda message: logger.info(message),
+        )
+        logger.info(
+            "Stage 11 Notion work sync: status=%s created=%d updated=%d failed=%d reason=%s",
+            work_sync_report.get("status", "unknown"),
+            int(work_sync_report.get("created_pages", 0) or 0),
+            int(work_sync_report.get("updated_pages", 0) or 0),
+            work_sync_report.get("reason", ""),
         )
         logger.info(
             "Stage 11 Notion draft sync: status=%s created=%d updated=%d failed=%d report=%s reason=%s",
@@ -867,10 +1014,26 @@ def main() -> None:
             p.source_profiles,
             p.merge_log,
             p.notion_import,
+            p.work_cards,
         )
         logger.info(
             "Stage 12 summary: notion_records=%d",
             _count_jsonl(p.notion_import),
+        )
+        canonical_sync_report = sync_canonical_cards_to_notion(
+            root,
+            Path("config/pipeline_config.json"),
+            Path(".env"),
+            progress_callback=lambda message: logger.info(message),
+        )
+        logger.info(
+            "Stage 12 Notion canonical sync: status=%s created=%d updated=%d failed=%d report=%s reason=%s",
+            canonical_sync_report.get("status", "unknown"),
+            int(canonical_sync_report.get("created_pages", 0) or 0),
+            int(canonical_sync_report.get("updated_pages", 0) or 0),
+            len(canonical_sync_report.get("failed_pages", []) or []),
+            p.notion_canonical_sync_report,
+            canonical_sync_report.get("reason", ""),
         )
     else:
         logger.info("[12/%d] SKIP  Stage 12 Notion Export (resume starts at Stage %02d)", total_stages, start_stage)

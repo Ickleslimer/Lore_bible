@@ -475,7 +475,7 @@ def build_card_architecture_prompt(
         "entity_merges": review_memory.get("entity_merges", [])[-80:],
         "approved_aliases": review_memory.get("approved_aliases", [])[-120:],
     }
-    return f"""You are the THERIAC card-base architecture agent.
+    return f"""You are the Theriac card-base architecture agent.
 Your job is to propose structural edits to the card base before prose drafting. Return strict JSON only.
 
 Only propose actions that are directly responsive to the user requests and supported by existing accepted claims, author claims, aliases, memory, or source snippets. Do not write final card prose here.

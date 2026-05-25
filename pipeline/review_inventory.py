@@ -13,7 +13,18 @@ from typing import Any
 
 from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import now_utc_iso, stable_id, write_json
-from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalize_entity_type, normalized_name_key
+from pipeline.entity_resolution import (
+    card_id_for_entity,
+    load_entity_records,
+    normalize_entity_type,
+    normalized_name_key,
+)
+from pipeline.referent_kind import (
+    infer_referent_kind,
+    inventory_bucket_for_referent_kind,
+    referent_kind_label,
+    should_suppress_entity_inventory_row,
+)
 from pipeline.ui_review_app import (
     _claim_attention_by_id,
     _human_decision_ids,
@@ -127,17 +138,6 @@ def load_project_env(repo_root: Path) -> None:
             os.environ[key] = value
 
 
-TERMINAL_GEMINI_BATCH_STATES = {
-    "BATCH_STATE_SUCCEEDED",
-    "BATCH_STATE_FAILED",
-    "BATCH_STATE_CANCELLED",
-    "BATCH_STATE_EXPIRED",
-    "JOB_STATE_SUCCEEDED",
-    "JOB_STATE_FAILED",
-    "JOB_STATE_CANCELLED",
-    "JOB_STATE_EXPIRED",
-}
-
 REVIEW_REQUIRED_MARKERS = (
     "Pipeline paused for review",
     "requiring review",
@@ -152,64 +152,6 @@ RUN_FROM_STAGE05_STAGE_INDEX_MAP = {
     4: 8,
     5: 9,
 }
-
-
-def gemini_api_key_from_env() -> str:
-    for key_name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY"):
-        value = os.environ.get(key_name, "").strip().strip('"').strip("'")
-        if value:
-            return value
-    return ""
-
-
-def cancel_gemini_batch(job_name: str) -> str:
-    api_key = gemini_api_key_from_env()
-    if not api_key:
-        return f"Skipped Gemini batch cancel for {job_name}: no API key in environment."
-    url = f"https://generativelanguage.googleapis.com/v1beta/{job_name.lstrip('/')}:cancel"
-    req = urllib.request.Request(
-        url=url,
-        data=b"{}",
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": api_key,
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30):
-            return f"Cancel request sent for Gemini batch {job_name}."
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-        return f"Gemini batch cancel failed for {job_name}: HTTP {exc.code} {exc.reason} {body[:180]}"
-    except Exception as exc:
-        return f"Gemini batch cancel failed for {job_name}: {exc}"
-
-
-def cancellable_gemini_batches_for_run(artifacts_root: Path) -> list[str]:
-    latest_by_job: dict[str, dict[str, Any]] = {}
-    for status_path in artifacts_root.rglob("gemini_batch_status.jsonl"):
-        try:
-            lines = status_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:
-            continue
-        for line in lines:
-            try:
-                event = json.loads(line)
-            except Exception:
-                continue
-            job_name = str(event.get("job_name", "")).strip()
-            if not job_name:
-                continue
-            previous = latest_by_job.get(job_name)
-            if previous is None or float(event.get("timestamp_epoch_s", 0) or 0) >= float(previous.get("timestamp_epoch_s", 0) or 0):
-                latest_by_job[job_name] = event
-    jobs: list[str] = []
-    for job_name, event in latest_by_job.items():
-        state = str(event.get("state", "")).strip()
-        if state not in TERMINAL_GEMINI_BATCH_STATES:
-            jobs.append(job_name)
-    return sorted(jobs)
 
 
 def stop_process_tree_by_pid(pid: int) -> None:
@@ -750,37 +692,135 @@ def _candidate_inventory_by_key(items: Any) -> dict[str, dict[str, Any]]:
     return out
 
 
+HIDDEN_ENTITY_CANDIDATE_BUCKETS = frozenset({"generic", "ignore"})
+
+
+_LEGACY_ALIAS_GROUP_TITLE_RE = re.compile(r"\baliases\s*\(\d+\)\s*$", re.I)
+
+
+def _is_legacy_inventory_group_title(label: str) -> bool:
+    return bool(_LEGACY_ALIAS_GROUP_TITLE_RE.search(str(label or "").strip()))
+
+
+def candidate_inventory_display_name(canonical_name: str, raw_name: str) -> str:
+    """Card title is always the canonical name; alternates belong in alias chips only."""
+    canonical = str(canonical_name or "").strip()
+    raw = str(raw_name or "").strip()
+    if _is_legacy_inventory_group_title(raw):
+        raw = ""
+    if canonical:
+        return canonical
+    return raw or "(unnamed)"
+
+
+def _inventory_title_keys(canonical_name: str, raw_name: str) -> tuple[str, str]:
+    canonical = str(canonical_name or "").strip()
+    raw = str(raw_name or "").strip()
+    title = canonical or raw
+    return normalized_name_key(title), title
+
+
+def candidate_inventory_group_alias_labels(canonical_name: str, alias_names: list[str]) -> list[str]:
+    """Alias-review-group rows: list explicit child candidate names, not legacy group titles."""
+    title_key, _title = _inventory_title_keys(str(canonical_name or "").strip(), "")
+    labels: list[str] = []
+    seen: set[str] = set()
+    for name in alias_names:
+        text = str(name or "").strip()
+        if not text or _is_legacy_inventory_group_title(text):
+            continue
+        key = normalized_name_key(text)
+        if not key or key == title_key or key in seen:
+            continue
+        seen.add(key)
+        labels.append(text)
+    return labels
+
+
+def _should_show_inventory_alias_label(label: str, title_key: str, canonical_key: str, raw_key: str) -> bool:
+    if _is_legacy_inventory_group_title(label):
+        return False
+    key = normalized_name_key(label)
+    if not key or not title_key or key == title_key:
+        return False
+    if key == canonical_key or key == raw_key:
+        return True
+    # Path / quest shorthand: subtitle or prefix of the canonical title.
+    if title_key.startswith(key + " ") or title_key.startswith(key + ":"):
+        return True
+    if key.startswith(title_key + " ") or key.startswith(title_key + ":"):
+        return True
+    if title_key.endswith(" " + key) or title_key.endswith(":" + key):
+        return True
+    return False
+
+
+def candidate_inventory_alias_labels(
+    canonical_name: str,
+    raw_name: str,
+    *,
+    surface_forms: list[str] | None = None,
+    extra_aliases: list[str] | None = None,
+) -> list[str]:
+    """Surface alternate anchors in alias chips when they are not duplicated in the card title."""
+    canonical = str(canonical_name or "").strip()
+    raw = str(raw_name or "").strip()
+    title_key, _title = _inventory_title_keys(canonical, raw)
+    canonical_key = normalized_name_key(canonical)
+    raw_key = normalized_name_key(raw)
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    def add(label: str) -> None:
+        text = str(label or "").strip()
+        if not text:
+            return
+        if not _should_show_inventory_alias_label(text, title_key, canonical_key, raw_key):
+            return
+        key = normalized_name_key(text)
+        if key in seen:
+            return
+        seen.add(key)
+        labels.append(text)
+
+    for label in (raw, *(extra_aliases or []), *(surface_forms or [])):
+        add(str(label))
+    return labels
+
+
 def _candidate_harvest_bucket(
     candidate: dict[str, Any],
     recommendation: dict[str, Any],
     reclassification: dict[str, Any],
 ) -> str:
+    referent_kind = infer_referent_kind(candidate)
     action = str(
         reclassification.get("theme_adjusted_recommended_action")
         or recommendation.get("recommended_action")
         or ""
     ).strip()
-    if action in {"keep_lore_candidate", "needs_author_review"}:
-        return "review"
-    if action == "review_alias":
-        return "alias"
-    if action == "demote_meta":
-        return "meta"
-    if action == "mark_generic":
-        return "generic"
-    if action == "no_action":
-        return "ignore"
     track = str(
         reclassification.get("theme_adjusted_recommended_track")
         or recommendation.get("recommended_track")
         or candidate.get("recommended_track")
         or ""
     ).strip()
-    if track == "lore_candidate":
-        return "review"
-    if track in {"meta", "ignore", "mixed"}:
-        return track
-    return "harvested"
+    fallback = "harvested"
+    if action in {"keep_lore_candidate", "needs_author_review"}:
+        fallback = "review"
+    elif action == "review_alias":
+        fallback = "review"
+    elif action == "demote_meta":
+        fallback = "meta"
+    elif action == "mark_generic":
+        fallback = "generic"
+    elif action == "no_action":
+        fallback = "ignore"
+    elif track == "lore_candidate":
+        fallback = "review"
+    elif track in {"meta", "ignore", "mixed"}:
+        fallback = track
+    return inventory_bucket_for_referent_kind(referent_kind, fallback_bucket=fallback)
 
 
 def _candidate_harvest_category(
@@ -814,7 +854,15 @@ def _candidate_harvest_reason(
     ).strip()
     externality = str(recommendation.get("externality_class") or "").strip()
     if action:
-        pieces.append(action.replace("_", " "))
+        action_display = {
+            "review_alias": "name variant review",
+            "keep_lore_candidate": "keep lore candidate",
+            "needs_author_review": "needs author review",
+            "demote_meta": "demote meta",
+            "mark_generic": "mark generic",
+            "no_action": "no action",
+        }.get(action, action.replace("_", " "))
+        pieces.append(action_display)
     if externality:
         pieces.append(f"externality: {externality.replace('_', ' ')}")
     theme_matches = reclassification.get("theme_matches") if isinstance(reclassification, dict) else []
@@ -844,7 +892,15 @@ def _candidate_harvest_review_priority(
     ).strip()
     confidence = recommendation.get("confidence")
     externality = str(recommendation.get("externality_class") or "").strip()
-    parts = [action.replace("_", " ") if action else "harvested"]
+    action_display = {
+        "review_alias": "name variant review",
+        "keep_lore_candidate": "keep lore candidate",
+        "needs_author_review": "needs author review",
+        "demote_meta": "demote meta",
+        "mark_generic": "mark generic",
+        "no_action": "no action",
+    }.get(action, action.replace("_", " ") if action else "harvested")
+    parts = [action_display]
     if externality:
         parts.append(externality.replace("_", " "))
     try:
@@ -892,7 +948,12 @@ def entity_candidate_harvest_browser_rows(harvest_path: Path, decisions_path: Pa
                 or candidate.get("canonical_name")
                 or ""
             ).strip()
-        display_name = f"{canonical_name} (alias: {raw_name})" if canonical_name and canonical_name.lower() != raw_name.lower() else raw_name
+        display_name = candidate_inventory_display_name(canonical_name, raw_name)
+        row_aliases = candidate_inventory_alias_labels(
+            canonical_name,
+            raw_name,
+            surface_forms=candidate.get("surface_forms", []) if isinstance(candidate.get("surface_forms"), list) else [],
+        )
         proposed_type = (
             decision.get("entity_type")
             or recommendation.get("recommended_entity_type")
@@ -900,28 +961,60 @@ def entity_candidate_harvest_browser_rows(harvest_path: Path, decisions_path: Pa
             or candidate.get("initial_proposed_entity_type")
             or "term"
         )
+        recommended_action = str(
+            reclassification.get("theme_adjusted_recommended_action")
+            or recommendation.get("recommended_action")
+            or ""
+        ).strip()
+        externality_class = str(recommendation.get("externality_class") or "").strip()
+        referent_kind = infer_referent_kind(
+            {
+                **candidate,
+                "adjudication_recommendation": recommendation,
+                "item": {"adjudication_recommendation": recommendation},
+            }
+        )
+        bucket = _candidate_harvest_bucket(candidate, recommendation, reclassification)
         rows.append(
             {
                 "row_id": f"entity_candidate_harvest:{candidate_id or key or index}",
-                "bucket": _candidate_harvest_bucket(candidate, recommendation, reclassification),
+                "bucket": bucket,
                 "source_bucket": "entity_candidate_harvest",
                 "category": _candidate_harvest_category(candidate, recommendation, reclassification),
                 "candidate_name": display_name,
                 "raw_candidate_name": raw_name,
                 "canonical_name": canonical_name,
+                "aliases": row_aliases,
                 "proposed_entity_type": normalize_entity_type(proposed_type),
                 "evidence_count": int(candidate.get("evidence_count", 0) or 0),
                 "topics": _as_text_list(candidate.get("candidate_topics")),
                 "tracks": _as_text_list(candidate.get("knowledge_tracks")),
                 "triage_reason": _candidate_harvest_reason(candidate, recommendation, reclassification),
                 "review_priority": _candidate_harvest_review_priority(recommendation, reclassification),
+                "recommended_action": recommended_action,
+                "externality_class": externality_class,
+                "referent_kind": referent_kind,
+                "referent_kind_label": referent_kind_label(referent_kind),
                 "decision": str(decision.get("decision", "") or ""),
                 "item": item,
                 "latest_decision": decision,
             }
         )
     rows.sort(key=lambda row: (row["bucket"], row["category"], -int(row.get("evidence_count", 0) or 0), str(row["candidate_name"]).lower()))
-    return rows
+    return promotable_entity_candidate_harvest_rows(rows)
+
+
+def promotable_entity_candidate_harvest_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hide incidental language and ignored rows from the default entity review queue."""
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and not should_suppress_entity_inventory_row(
+            str(row.get("referent_kind") or infer_referent_kind(row.get("item", {}) if isinstance(row.get("item"), dict) else row)),
+            bucket=str(row.get("bucket") or ""),
+        )
+    ]
 
 
 def _latest_conversation_entity_decisions(decisions_path: Path | None) -> dict[str, dict[str, Any]]:
@@ -1015,9 +1108,8 @@ def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path 
         latest_decision = _conversation_entity_decision_for_item(proposal, decisions_by_id)
         if latest_decision:
             canonical_name = str(latest_decision.get("canonical_name") or canonical_name).strip()
-        display_name = canonical_name if canonical_name else raw_name
-        if canonical_name and canonical_name.lower() != raw_name.lower():
-            display_name = f"{canonical_name} (alias: {raw_name})"
+        display_name = candidate_inventory_display_name(canonical_name, raw_name)
+        row_aliases = candidate_inventory_alias_labels(canonical_name, raw_name)
         merged_item = {**proposal, "auto_review_attention": item}
         rows.append(
             {
@@ -1028,6 +1120,7 @@ def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path 
                 "candidate_name": display_name,
                 "raw_candidate_name": raw_name,
                 "canonical_name": canonical_name,
+                "aliases": row_aliases,
                 "proposed_entity_type": normalize_entity_type(item.get("entity_type", proposal.get("proposed_entity_type", "term"))),
                 "evidence_count": int(proposal.get("evidence_count", item.get("evidence_count", 0)) or 0),
                 "topics": _as_text_list(proposal.get("candidate_topics")),
@@ -1046,20 +1139,23 @@ def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path 
         raw_name = str(item.get("candidate_name", "")).strip() or str(item.get("suggested_canonical_name", "")).strip() or "(alias group)"
         canonical_name = str(item.get("suggested_canonical_name", "")).strip()
         alias_names = [str(alias.get("candidate_name", "")).strip() for alias in item.get("alias_candidates", []) or [] if isinstance(alias, dict)]
+        display_name = candidate_inventory_display_name(canonical_name, raw_name)
+        row_aliases = candidate_inventory_group_alias_labels(canonical_name, alias_names)
         decision_summary, latest_decision = _alias_group_decision_summary(item, decisions_by_id)
         row = {
             "row_id": f"alias_review_groups:{item.get('proposal_id') or index}",
             "bucket": "promoted",
             "source_bucket": "alias_review_groups",
             "category": candidate_inventory_category(item),
-            "candidate_name": raw_name,
+            "candidate_name": display_name,
             "raw_candidate_name": raw_name,
             "canonical_name": canonical_name,
+            "aliases": row_aliases,
             "proposed_entity_type": normalize_entity_type(item.get("proposed_entity_type", "term")),
             "evidence_count": int(item.get("evidence_count", 0) or 0),
-            "topics": ["alias"],
+            "topics": [],
             "tracks": [],
-            "triage_reason": str(item.get("triage_reason", "") or f"{len(alias_names)} alias candidates"),
+            "triage_reason": str(item.get("triage_reason", "") or f"{len(alias_names)} name variants"),
             "review_priority": str(item.get("review_priority", "") or ""),
             "decision": decision_summary,
             "item": item,
@@ -1077,10 +1173,12 @@ def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path 
             canonical_name = str(decision.get("canonical_name", "")).strip()
             if not canonical_name:
                 canonical_name = str(item.get("canonical_name") or item.get("suggested_canonical_name") or "").strip()
-            if canonical_name and canonical_name.lower() != raw_name.lower():
-                name = f"{canonical_name} (alias: {raw_name})"
-            else:
-                name = raw_name
+            name = candidate_inventory_display_name(canonical_name, raw_name)
+            row_aliases = candidate_inventory_alias_labels(
+                canonical_name,
+                raw_name,
+                surface_forms=item.get("surface_forms", []) if isinstance(item.get("surface_forms"), list) else [],
+            )
             topics = _as_text_list(item.get("candidate_topics"))
             tracks = _as_text_list(item.get("knowledge_tracks"))
             row = {
@@ -1091,6 +1189,7 @@ def candidate_inventory_browser_rows(proposals_path: Path, decisions_path: Path 
                 "candidate_name": name,
                 "raw_candidate_name": raw_name,
                 "canonical_name": canonical_name,
+                "aliases": row_aliases,
                 "proposed_entity_type": normalize_entity_type(item.get("proposed_entity_type", item.get("initial_proposed_entity_type", "term"))),
                 "evidence_count": int(item.get("evidence_count", 0) or 0),
                 "topics": topics,

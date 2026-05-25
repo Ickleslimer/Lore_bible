@@ -14,6 +14,7 @@ from pipeline.entity_resolution import (
     resolve_entities,
 )
 from pipeline.review_memory import load_review_memory
+from pipeline.referent_kind import attach_referent_kind, infer_referent_kind, normalize_referent_kind
 from pipeline.stage_07_entity_resolution import (
     CANON_ADOPTION_MARKERS,
     CONVERSATION_ENTITY_NAME_STOPWORDS,
@@ -41,7 +42,12 @@ from pipeline.stage_07_entity_resolution import (
     text_marker_hits,
     triage_conversation_entity_proposal,
 )
-from pipeline.model_provider import call_model_chat, model_call_kwargs
+from pipeline.model_provider import (
+    call_model_chat_with_pacing_retries,
+    call_model_chats_parallel,
+    model_call_kwargs,
+    model_max_concurrent_requests,
+)
 
 
 HARVEST_SCHEMA_VERSION = 1
@@ -229,6 +235,11 @@ def run(
         "stage": "07A_entity_candidate_harvest",
         "inputs": {
             "snippets_jsonl": str(in_snippets_jsonl),
+            "snippet_corpus": (
+                "theme_rescue_merged"
+                if in_snippets_jsonl.name == "snippets_candidates_with_theme_rescue.jsonl"
+                else "strict_stage_06"
+            ),
             "entity_seed_json": str(in_seed_json),
             "review_memory_json": str(in_review_memory_json) if in_review_memory_json else "",
             "snippet_count": len(snippets),
@@ -335,37 +346,97 @@ def annotate_candidates_with_model(
     batch_count = (len(model_candidates) + max_per_call - 1) // max_per_call
     known_entities = model_known_entities(resolved_entities)
     model_call_count = 0
+    max_workers = model_max_concurrent_requests(provider_config, TASK_NAME, default=1)
+    provider_retries = max(1, int(task_cfg.get("provider_pacing_retries", DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS) or DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS))
+    provider_retry_sleep = float(task_cfg.get("provider_retry_sleep_seconds", 2.0) or 0.0)
     logger.info(
-        "Stage 07A: requesting Qwen candidate harvest annotations for %d candidate(s) in %d initial batch(es).",
+        "Stage 07A: requesting Qwen candidate harvest annotations for %d candidate(s) in %d initial batch(es), max_concurrent_requests=%d.",
         len(model_candidates),
         batch_count,
+        max_workers,
     )
+    chunk_specs: list[tuple[str, list[dict[str, Any]], str, int]] = []
     for batch_index, offset in enumerate(range(0, len(model_candidates), max_per_call), start=1):
         chunk = model_candidates[offset : offset + max_per_call]
-        logger.info(
-            "Stage 07A model batch %d/%d: candidates=%d offset=%d model=%s",
-            batch_index,
-            batch_count,
-            len(chunk),
-            offset,
-            kwargs.get("api_model", ""),
+        batch_label = f"{batch_index}/{batch_count}"
+        chunk_key = stable_id("stage_07a_chunk", batch_label, str(offset))
+        chunk_specs.append((chunk_key, chunk, batch_label, offset))
+
+    if max_workers > 1 and len(chunk_specs) > 1:
+        jobs = [
+            {
+                "key": chunk_key,
+                "prompt": build_candidate_harvest_prompt(chunk, known_entities),
+            }
+            for chunk_key, chunk, _batch_label, _offset in chunk_specs
+        ]
+        parallel_results = call_model_chats_parallel(
+            jobs,
+            provider_config,
+            TASK_NAME,
+            max_workers=max_workers,
+            max_provider_attempts=provider_retries,
+            provider_retry_sleep_seconds=provider_retry_sleep,
         )
-        annotations, chunk_failures, chunk_call_count = request_model_annotations_for_chunk(
-            chunk,
-            known_entities,
-            kwargs,
-            logger,
-            batch_label=f"{batch_index}/{batch_count}",
-            offset=offset,
-        )
-        model_call_count += chunk_call_count
-        if chunk_failures:
-            failures.extend(chunk_failures)
-            continue
-        for annotation in annotations:
-            key = model_annotation_key(annotation)
-            if key:
-                annotations_by_key[key] = annotation
+        model_call_count = len(jobs)
+        for chunk_key, chunk, batch_label, offset in chunk_specs:
+            result = parallel_results.get(chunk_key, {"payload": None, "error": "missing_chunk_response"})
+            payload = result.get("payload")
+            annotations = normalize_model_annotation_response(payload) if isinstance(payload, dict) else None
+            if annotations is not None:
+                for annotation in annotations:
+                    key = model_annotation_key(annotation)
+                    if key:
+                        annotations_by_key[key] = annotation
+                continue
+            logger.warning(
+                "Stage 07A parallel batch %s failed (%s); falling back to sequential chunk retry.",
+                batch_label,
+                result.get("error") or "invalid_model_json",
+            )
+            annotations, chunk_failures, chunk_call_count = request_model_annotations_for_chunk(
+                chunk,
+                known_entities,
+                kwargs,
+                logger,
+                batch_label=batch_label,
+                offset=offset,
+            )
+            model_call_count += chunk_call_count
+            if chunk_failures:
+                failures.extend(chunk_failures)
+                continue
+            for annotation in annotations:
+                key = model_annotation_key(annotation)
+                if key:
+                    annotations_by_key[key] = annotation
+    else:
+        for batch_index, offset in enumerate(range(0, len(model_candidates), max_per_call), start=1):
+            chunk = model_candidates[offset : offset + max_per_call]
+            batch_label = f"{batch_index}/{batch_count}"
+            logger.info(
+                "Stage 07A model batch %s: candidates=%d offset=%d model=%s",
+                batch_label,
+                len(chunk),
+                offset,
+                kwargs.get("api_model", ""),
+            )
+            annotations, chunk_failures, chunk_call_count = request_model_annotations_for_chunk(
+                chunk,
+                known_entities,
+                kwargs,
+                logger,
+                batch_label=batch_label,
+                offset=offset,
+            )
+            model_call_count += chunk_call_count
+            if chunk_failures:
+                failures.extend(chunk_failures)
+                continue
+            for annotation in annotations:
+                key = model_annotation_key(annotation)
+                if key:
+                    annotations_by_key[key] = annotation
 
     missing_keys = [
         str(candidate.get("normalized_name_key", ""))
@@ -441,7 +512,15 @@ def request_model_annotations_for_chunk(
             depth,
         )
         try:
-            response = call_model_chat(prompt=prompt, **kwargs)
+            response = call_model_chat_with_pacing_retries(
+                prompt,
+                max_provider_attempts=max(
+                    1,
+                    int(kwargs.get("provider_pacing_retries", DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS) or DEFAULT_MODEL_CHUNK_RETRY_ATTEMPTS),
+                ),
+                provider_retry_sleep_seconds=float(kwargs.get("provider_retry_sleep_seconds", 2.0) or 0.0),
+                **kwargs,
+            )
         except Exception as exc:
             attempt_failures.append(
                 {
@@ -556,17 +635,23 @@ def model_known_entities(resolved_entities: list[dict[str, Any]], limit: int = 1
 
 def build_candidate_harvest_prompt(candidates: list[dict[str, Any]], known_entities: list[dict[str, Any]]) -> str:
     candidate_rows = [model_candidate_row(candidate) for candidate in candidates]
-    return f"""You are Stage 07A of the THERIAC Lore Bible pipeline.
+    return f"""You are Stage 07A of the Theriac Lore Bible pipeline.
 Classify local Discord-derived candidate entity anchors into reviewable harvest metadata.
 Return strict JSON only.
 
 Core rules:
-- Use only the local THERIAC evidence in the candidate rows and the known entity list.
+- Use only the local Theriac evidence in the candidate rows and the known entity list.
 - Do not use web search.
 - Do not decide from evidence count alone. Ask what the candidate phrase denotes in context.
 - Do not promote canon. Human review remains the canon gate.
 - Externality, meta context, aliases, and generic phrases are metadata for later review, not final canon decisions.
-- DISAMBIGUATION RULE: THERIAC features characters codenamed after emotional concepts (Love, Loss, Fear, Greed, Altruism). If the local context treats the entity as a person, faction member, or actor (e.g., having a spouse, feeling emotions, wearing a suit), propose `character`. If it discusses an abstract concept, motif, aesthetic, philosophy, or lineage, keep it as `term`; theme learning is handled by Stage 07C, not the entity graph.
+- DISAMBIGUATION RULE: Theriac features characters codenamed after emotional concepts (Love, Loss, Fear, Greed, Altruism). If the local context treats the entity as a person, faction member, or actor (e.g., having a spouse, feeling emotions, wearing a suit), propose `character`. If it discusses an abstract concept, motif, aesthetic, philosophy, or lineage, keep it as `term`; theme learning is handled by Stage 07C, not the entity graph.
+- REFERENT KIND (how the phrase functions in Theriac discourse — not the same as entity type):
+  - stable_in_world_label: a durable proper name or label for one in-world referent (HECTR, RUINR).
+  - working_shorthand: informal place/org/thing name used as shorthand and never formally renamed (e.g. "The Lab").
+  - role_referent: an unnamed slot referred to by role ("the player", "the narrator") — still lore, not English glue.
+  - incidental_language: prepositions, conjunctions, sentence fragments, capitalized "With" at sentence start — NOT an entity.
+  - mixed_or_uncertain: genuinely unclear from local evidence.
 
 Known approved/seed entities:
 {json_dumps(known_entities)}
@@ -577,6 +662,7 @@ Candidate evidence packets:
 For every candidate row, return exactly one annotation with the same normalized_name_key.
 Use these enum values:
 - denotation_class: likely_lore_entity | likely_meta_reference | likely_external_reference | likely_alias | likely_generic_phrase | mixed_or_uncertain
+- referent_kind: stable_in_world_label | working_shorthand | role_referent | incidental_language | mixed_or_uncertain
 - proposed_entity_type: character | faction | organization | location | quest | event | timeline_node | term
 - recommended_track: lore | meta | mixed | unknown
 
@@ -588,6 +674,7 @@ Return JSON object:
       "candidate_name": "best display name from local evidence",
       "proposed_entity_type": "term",
       "denotation_class": "mixed_or_uncertain",
+      "referent_kind": "mixed_or_uncertain",
       "recommended_track": "unknown",
       "local_lore_prior": 0.0,
       "external_reference_prior": 0.0,
@@ -697,11 +784,13 @@ def fallback_model_annotation(candidate: dict[str, Any], reason: str) -> dict[st
     flags = candidate.get("signal_flags", {}) if isinstance(candidate.get("signal_flags"), dict) else {}
     tracks = {str(track).strip().lower() for track in candidate.get("knowledge_tracks", []) or [] if str(track).strip()}
     denotation = "mixed_or_uncertain"
+    referent_kind = infer_referent_kind(candidate)
     recommended_track = "unknown"
     local_lore_prior = 0.35
     external_reference_prior = 0.35
-    if flags.get("generic_phrase") or flags.get("low_value_phrase"):
+    if referent_kind == "incidental_language" or flags.get("generic_phrase") or flags.get("low_value_phrase"):
         denotation = "likely_generic_phrase"
+        referent_kind = "incidental_language"
         recommended_track = "unknown"
         local_lore_prior = 0.15
         external_reference_prior = 0.25
@@ -730,6 +819,7 @@ def fallback_model_annotation(candidate: dict[str, Any], reason: str) -> dict[st
         "candidate_name": candidate.get("candidate_name", ""),
         "proposed_entity_type": candidate.get("proposed_entity_type") or candidate.get("initial_proposed_entity_type") or "term",
         "denotation_class": denotation,
+        "referent_kind": referent_kind,
         "recommended_track": recommended_track,
         "local_lore_prior": local_lore_prior,
         "external_reference_prior": external_reference_prior,
@@ -762,6 +852,7 @@ def apply_model_annotation(candidate: dict[str, Any], annotation: dict[str, Any]
         "candidate_name": str(annotation.get("candidate_name") or merged.get("candidate_name", "")).strip(),
         "proposed_entity_type": model_type,
         "denotation_class": normalize_denotation_class(annotation.get("denotation_class")),
+        "referent_kind": normalize_referent_kind(annotation.get("referent_kind")),
         "recommended_track": normalize_recommended_track(annotation.get("recommended_track")),
         "local_lore_prior": clamp_float(annotation.get("local_lore_prior")),
         "external_reference_prior": clamp_float(annotation.get("external_reference_prior")),
@@ -782,7 +873,7 @@ def apply_model_annotation(candidate: dict[str, Any], annotation: dict[str, Any]
         merged["model_suggested_canonical_name"] = merged["model_annotation"]["canonical_name"]
     if merged["model_annotation"]["alias_of"]:
         merged["model_suggested_alias_of"] = merged["model_annotation"]["alias_of"]
-    return merged
+    return attach_referent_kind(merged)
 
 
 def normalize_denotation_class(value: Any) -> str:
@@ -855,6 +946,8 @@ def harvestable_snippet_candidates(snip: dict[str, Any], lower_evidence_text: st
 def is_harvestable_candidate_name(candidate: str) -> bool:
     key = normalized_name_key(candidate)
     if not key:
+        return False
+    if infer_referent_kind({"normalized_name_key": key, "candidate_name": candidate}) == "incidental_language":
         return False
     if key.isdigit():
         return False
@@ -972,7 +1065,7 @@ def finalize_candidate(
         **metrics,
     }
     output["harvest_reason"] = "Observed local candidate anchor retained for Stage 07B adjudication."
-    return output
+    return attach_referent_kind(output)
 
 
 def candidate_signal_flags(

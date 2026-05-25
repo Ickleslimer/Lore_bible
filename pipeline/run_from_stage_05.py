@@ -6,7 +6,7 @@ from time import perf_counter
 
 from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import get_logger, read_json, read_jsonl, setup_logging
-from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
+from pipeline.stage_05_lore_development_ledger import run as run_stage_05_ledger
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
 from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
@@ -50,7 +50,7 @@ def _theme_rerun_enabled() -> bool:
 
 
 def _effective_snippets_path(paths: ArtifactPaths) -> Path:
-    return paths.snippets_with_theme_rescue if paths.snippets_with_theme_rescue.exists() else paths.snippets
+    return paths.effective_snippets()
 
 
 def _run_stage(logger, stage_idx: int, total_stages: int, stage_name: str, fn, *args) -> float:
@@ -71,7 +71,9 @@ def _run_stage(logger, stage_idx: int, total_stages: int, stage_name: str, fn, *
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Resume the THERIAC pipeline from Stage 05 using completed Stage 04 artifacts.")
+    parser = argparse.ArgumentParser(
+        description="Resume the Theriac pipeline from Stage 05 (snippet extraction) using completed Stage 04 artifacts."
+    )
     parser.add_argument("--artifacts-root", type=Path, required=True)
     parser.add_argument("--log-level", type=str, default=None)
     args = parser.parse_args()
@@ -88,28 +90,7 @@ def main() -> None:
         logger,
         5,
         total_stages,
-        "Stage 05 Conversation Patch Notes",
-        run_stage_05,
-        paths.relevant_messages,
-        paths.conversation_segments,
-        paths.conversation_patch_notes,
-        paths.conversation_patch_notes_jsonl,
-        paths.conversation_patch_note_failures,
-        Path("config/pipeline_config.json"),
-    )
-    stage_05_index = read_json(paths.conversation_patch_notes)
-    logger.info(
-        "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
-        int(stage_05_index.get("notes_count", 0)),
-        int(stage_05_index.get("conversation_count", 0)),
-        int(stage_05_index.get("failure_count", 0)),
-    )
-
-    _run_stage(
-        logger,
-        6,
-        total_stages,
-        "Stage 06 Snippet Extraction",
+        "Stage 05 Snippet Extraction",
         run_stage_06,
         paths.relevant_messages,
         paths.source_profiles,
@@ -119,22 +100,28 @@ def main() -> None:
         Path("config/pipeline_config.json"),
         paths.entity_seed,
         thematic_runtime_path,
-        paths.conversation_patch_notes,
+        None,
     )
     logger.info(
-        "Stage 06 summary: snippets=%d, needs_review=%d, profiles=%d",
+        "Stage 05 summary: snippets=%d, needs_review=%d, profiles=%d",
         _count_jsonl(paths.snippets),
         _count_jsonl(paths.snippets_needs_review),
         len(read_json(paths.source_profiles).get("profiles", [])),
     )
 
+    snippets_for_07a = _effective_snippets_path(paths)
+    logger.info(
+        "Stage 06A will harvest entity candidates from %s (%d snippet(s)).",
+        snippets_for_07a,
+        _count_jsonl(snippets_for_07a),
+    )
     _run_stage(
         logger,
-        7,
+        6,
         total_stages,
-        "Stage 07A Entity Candidate Harvest",
+        "Stage 06A Entity Candidate Harvest",
         run_stage_07,
-        paths.snippets,
+        snippets_for_07a,
         paths.entity_seed,
         paths.alias_map,
         paths.entity_timelines,
@@ -146,9 +133,9 @@ def main() -> None:
 
     _run_stage(
         logger,
-        7,
+        6,
         total_stages,
-        "Stage 07B Entity Adjudication",
+        "Stage 06B Entity Adjudication",
         run_stage_07b,
         paths.entity_candidate_harvest,
         paths.entity_adjudication_recommendations,
@@ -159,9 +146,9 @@ def main() -> None:
 
     _run_stage(
         logger,
-        7,
+        6,
         total_stages,
-        "Stage 07C Theme Miner",
+        "Stage 06C Theme Miner",
         run_stage_07c,
         paths.entity_candidate_harvest,
         paths.entity_adjudication_recommendations,
@@ -174,9 +161,9 @@ def main() -> None:
 
     _run_stage(
         logger,
-        7,
+        6,
         total_stages,
-        "Stage 07D Theme-Aware Candidate Reclassification",
+        "Stage 06D Theme-Aware Candidate Reclassification",
         run_stage_07d,
         paths.entity_candidate_harvest,
         paths.entity_adjudication_recommendations,
@@ -185,10 +172,24 @@ def main() -> None:
         Path("config/pipeline_config.json"),
     )
 
+    from pipeline.stage_07e_theme_lineage_web import run as run_stage_07e
+
+    _run_stage(
+        logger,
+        6,
+        total_stages,
+        "Stage 06E Theme Lineage Web",
+        run_stage_07e,
+        Path("canon/theme_profile.json"),
+        paths.theme_lineage_web_report,
+        paths.theme_lineage_cache,
+        Path("config/pipeline_config.json"),
+    )
+
     if _theme_rerun_enabled():
         _run_stage(
             logger,
-            7,
+            6,
             total_stages,
             "Stage 04R Theme-Aware Relevance Rerun",
             run_stage_04r,
@@ -205,7 +206,7 @@ def main() -> None:
         )
         _run_stage(
             logger,
-            7,
+            6,
             total_stages,
             "Stage 06R Theme Rescue Snippet Extraction",
             run_stage_06r,
@@ -224,6 +225,34 @@ def main() -> None:
             thematic_runtime_path,
         )
         snippets_for_downstream = _effective_snippets_path(paths)
+
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07 Lore Development Ledger",
+        run_stage_05_ledger,
+        paths.relevant_messages,
+        paths.theme_rescue_messages,
+        paths.conversation_segments,
+        paths.theme_rescue_segments,
+        paths.resolved_entities,
+        paths.alias_map,
+        snippets_for_downstream,
+        paths.lore_development_ledger_index,
+        paths.lore_development_ledger_jsonl,
+        paths.entity_development_history,
+        paths.lore_development_ledger_failures,
+        Path("config/pipeline_config.json"),
+        paths.entity_seed,
+    )
+    stage_07_index = read_json(paths.lore_development_ledger_index)
+    logger.info(
+        "Stage 07 summary: entries=%d, segments=%d, failures=%d",
+        int(stage_07_index.get("entry_count", 0)),
+        int(stage_07_index.get("segment_count", 0)),
+        int(stage_07_index.get("failure_count", 0)),
+    )
 
     _run_stage(
         logger,

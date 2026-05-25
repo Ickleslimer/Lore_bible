@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, stable_id, write_json
-from pipeline.entity_resolution import normalize_entity_type, normalized_name_key
+from pipeline.entity_resolution import is_protected_lore_entity_key, normalize_entity_type, normalized_name_key
 from pipeline.model_provider import call_model_chat, model_call_kwargs
+from pipeline.referent_kind import referent_kind_for_candidate, should_clamp_to_generic_phrase
+from pipeline.stage_07_entity_resolution import is_generic_conversation_entity_name
 
 
 ADJUDICATION_SCHEMA_VERSION = 1
@@ -344,13 +346,13 @@ def should_web_adjudicate(candidate: dict[str, Any], task_cfg: dict[str, Any]) -
 def build_web_adjudication_prompt(candidate: dict[str, Any], selection_reasons: list[str], theme_profile: dict[str, Any]) -> str:
     packet = candidate_packet(candidate)
     theme_summary = theme_profile_summary(theme_profile)
-    return f"""You are Stage 07B of the THERIAC Lore Bible pipeline.
+    return f"""You are Stage 07B of the Theriac Lore Bible pipeline.
 Use OpenRouter web search only to detect whether a candidate phrase has a strong external referent.
 
 Critical policy:
 - Web search detects externality; it does not decide canon.
-- Local THERIAC evidence and human review decide canon.
-- Externality is not disqualifying: historical, mythological, and real-world names may still be canon if THERIAC adopted them.
+- Local Theriac evidence and human review decide canon.
+- Externality is not disqualifying: historical, mythological, and real-world names may still be canon if Theriac adopted them.
 - Strong external fictional IP plus weak local in-world usage should default to meta/inspiration review.
 - Generic phrases should be judged mainly by local evidence.
 - Do not promote canon directly.
@@ -481,6 +483,13 @@ def normalize_recommendation(raw: dict[str, Any], candidate: dict[str, Any], sel
     local_lore_prior = clamp_float(raw.get("local_lore_prior", candidate.get("local_lore_prior", 0.0)))
     external_reference_prior = clamp_float(raw.get("external_reference_prior", candidate.get("external_reference_prior", 0.0)))
     action = normalize_enum(raw.get("recommended_action"), RECOMMENDED_ACTIONS, infer_recommended_action(externality_class, candidate, local_lore_prior))
+    track = normalize_enum(raw.get("recommended_track"), RECOMMENDED_TRACKS, infer_recommended_track(action, externality_class, candidate))
+    if should_clamp_to_generic_phrase(candidate, externality_class) or (
+        not is_protected_lore_entity_key(key) and is_generic_conversation_entity_name(key)
+    ):
+        externality_class = "generic_phrase"
+        action = "mark_generic"
+        track = "ignore"
     return {
         "recommendation_id": stable_id("entity_adjudication", key),
         "candidate_id": candidate.get("candidate_id", ""),
@@ -489,7 +498,7 @@ def normalize_recommendation(raw: dict[str, Any], candidate: dict[str, Any], sel
         "source_snippet_ids": list(candidate.get("source_snippet_ids", []) or []),
         "evidence_count": int(candidate.get("evidence_count", 0) or 0),
         "recommended_action": action,
-        "recommended_track": normalize_enum(raw.get("recommended_track"), RECOMMENDED_TRACKS, infer_recommended_track(action, externality_class, candidate)),
+        "recommended_track": track,
         "recommended_entity_type": normalize_entity_type(raw.get("recommended_entity_type") or candidate.get("proposed_entity_type") or "term"),
         "canonical_name": optional_text(raw.get("canonical_name")),
         "alias_of": optional_text(raw.get("alias_of")),
@@ -505,6 +514,7 @@ def normalize_recommendation(raw: dict[str, Any], candidate: dict[str, Any], sel
         "human_review_question": clean_text(raw.get("human_review_question") or default_review_question(candidate, externality_class), 500),
         "selection_reasons": selection_reasons,
         "source_model_denotation_class": candidate.get("model_denotation_class", ""),
+        "source_referent_kind": referent_kind_for_candidate(candidate),
         "source_model_reasoning_summary": candidate.get("model_reasoning_summary", ""),
         "adjudication_policy": "Web search detects externality; human review decides canon.",
     }
@@ -540,9 +550,14 @@ def build_local_recommendation(candidate: dict[str, Any], selection_reasons: lis
 
 
 def infer_externality_class(candidate: dict[str, Any]) -> str:
+    key = normalized_name_key(str(candidate.get("candidate_name") or candidate.get("normalized_name_key") or ""))
+    if is_protected_lore_entity_key(key):
+        return "none_detected"
+    if is_generic_conversation_entity_name(key):
+        return "generic_phrase"
     flags = candidate.get("signal_flags", {}) if isinstance(candidate.get("signal_flags"), dict) else {}
     denotation = str(candidate.get("model_denotation_class") or "").strip()
-    if bool(flags.get("generic_phrase")) or denotation == "likely_generic_phrase":
+    if bool(flags.get("generic_phrase")) or bool(flags.get("stopword_name")) or denotation == "likely_generic_phrase":
         return "generic_phrase"
     if bool(flags.get("external_media_marker")):
         return "ambiguous"
@@ -588,7 +603,7 @@ def local_in_world_signals(candidate: dict[str, Any]) -> list[str]:
     if clamp_float(candidate.get("local_lore_prior", 0.0)) >= 0.65:
         signals.append("07A local lore prior is high")
     if candidate.get("known_entities_co_mentioned"):
-        signals.append("Co-mentioned with known THERIAC entities")
+        signals.append("Co-mentioned with known Theriac entities")
     flags = candidate.get("signal_flags", {}) if isinstance(candidate.get("signal_flags"), dict) else {}
     if bool(flags.get("canon_adoption_marker")):
         signals.append("Local text contains canon-adoption wording")
@@ -619,12 +634,12 @@ def local_reasoning_summary(candidate: dict[str, Any], externality_class: str) -
 def default_review_question(candidate: dict[str, Any], externality_class: str) -> str:
     name = str(candidate.get("candidate_name") or candidate_key(candidate) or "this candidate").strip()
     if externality_class == "external_fictional_ip":
-        return f"Is {name} only an inspiration/reference, or has it been fictionalized into THERIAC canon?"
+        return f"Is {name} only an inspiration/reference, or has it been fictionalized into Theriac canon?"
     if externality_class in {"real_world_person", "real_world_org", "historical_or_mythological"}:
-        return f"Is {name} an adopted THERIAC lore element, or only an external reference?"
+        return f"Is {name} an adopted Theriac lore element, or only an external reference?"
     if externality_class == "generic_phrase":
-        return f"Does {name} denote a specific THERIAC entity in local context, or is it just a generic phrase?"
-    return f"Should {name} be treated as THERIAC lore, meta/reference context, alias evidence, or ignored?"
+        return f"Does {name} denote a specific Theriac entity in local context, or is it just a generic phrase?"
+    return f"Should {name} be treated as Theriac lore, meta/reference context, alias evidence, or ignored?"
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:

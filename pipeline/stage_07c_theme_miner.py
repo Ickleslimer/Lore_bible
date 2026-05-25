@@ -9,6 +9,7 @@ from typing import Any
 from pipeline.common import get_logger, now_utc_iso, read_json, stable_id, write_json
 from pipeline.entity_resolution import normalized_name_key
 from pipeline.model_provider import call_model_chat, model_call_kwargs
+from pipeline.theme_evidence import adjudication_supports_theme_evidence
 
 
 THEME_PROFILE_SCHEMA_VERSION = 1
@@ -264,10 +265,19 @@ def collect_theme_evidence(
     packets.extend(review_memory_theme_packets(review_memory, limit=review_limit, seed_theme_keys=seed_theme_keys))
     packets.extend(adjudication_theme_packets(adjudication, candidate_by_key, limit=adjudication_limit))
 
+    return dedupe_theme_evidence_packets(packets, limit=limit)
+
+
+def dedupe_theme_evidence_packets(packets: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
     for packet in packets:
-        key = stable_id("theme_evidence", str(packet.get("source", "")), str(packet.get("entity_name", "")), str(packet.get("text", ""))[:500])
+        key = stable_id(
+            "theme_evidence",
+            str(packet.get("source", "")),
+            str(packet.get("entity_name", "")),
+            str(packet.get("text", ""))[:500],
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -282,7 +292,7 @@ def adjudication_theme_packets(adjudication: dict[str, Any], candidate_by_key: d
     if limit <= 0:
         return packets
     for rec in adjudication.get("recommendations", []) or []:
-        if not isinstance(rec, dict) or not adjudication_supports_theme_learning(rec):
+        if not isinstance(rec, dict) or not adjudication_supports_theme_evidence(rec):
             continue
         key = normalized_name_key(str(rec.get("normalized_key") or rec.get("candidate_name") or ""))
         candidate = candidate_by_key.get(key, {})
@@ -312,18 +322,6 @@ def adjudication_theme_packets(adjudication: dict[str, Any], candidate_by_key: d
         if len(packets) >= limit:
             break
     return packets
-
-
-def adjudication_supports_theme_learning(rec: dict[str, Any]) -> bool:
-    if str(rec.get("recommended_action", "")) in {"demote_meta", "mark_generic", "no_action"}:
-        return False
-    if str(rec.get("recommended_track", "")) not in {"lore_candidate", "mixed", "unknown"}:
-        return False
-    if str(rec.get("externality_class", "")) in {"external_fictional_ip", "real_world_person", "real_world_org", "generic_phrase"}:
-        return False
-    if rec.get("theme_matches"):
-        return True
-    return str(rec.get("externality_class", "")) == "historical_or_mythological"
 
 
 def review_memory_theme_label_packets(review_memory: dict[str, Any], limit: int) -> list[dict[str, Any]]:
@@ -480,21 +478,24 @@ def round_robin_seed_packets(priority_groups: dict[str, list[dict[str, Any]]], s
 
 
 def build_theme_miner_prompt(profile: dict[str, Any], evidence_packets: list[dict[str, Any]]) -> str:
-    return f"""You are Stage 07C, the THERIAC Theme Miner.
+    return f"""You are Stage 07C, the Theriac Theme Miner.
 Update the persistent theme profile from accepted or plausible local evidence.
 
 Core rules:
 - Learn transitive thematic patterns, not transitive canon.
 - A theme match can raise future relevance priors, but never promotes a candidate into canon.
 - Every theme must have provenance in accepted entities, accepted claims, author answers, review memory, or plausible local adjudication evidence.
-- Historical/mythological/theological origin alone is not enough; require local THERIAC usage or explicit author/review evidence.
+- Historical/mythological/theological origin alone is not enough; require local Theriac usage or explicit author/review evidence.
 - Mark purely external inspiration lanes as meta_only when local evidence does not support in-world use.
 - Keep updates compact and reviewable.
 - Preserve successful theme lanes. Do not merge mythological/theological, technological/scientific, emotional/psychological, philosophical/ideological, aesthetic, or historical/political patterns unless the evidence explicitly connects them.
 - Infer the best theme_domain from the evidence. The domain is a broad lane for later review, not a fixed ontology of allowed themes.
+- WIKI THEME RULE: Themes should describe recurring in-fiction patterns useful for a lore wiki and theme rescue (faction motifs, research programs, device classes, institutions). Do NOT create catch-all aesthetic/meta themes that merely restate art direction or aggregate faction motifs; mark those meta_only or deprecate them.
+- TECHNOLOGY THEME RULE: When evidence describes recurring in-world science/technology (research programs, device classes, augmentation, AI systems, preservation medicine, etc.), infer technological_scientific themes from the evidence. Name themes from patterns you observe — do not copy a fixed list from these instructions.
+- FACTION MOTIF RULE: Mythological/historical borrowings used as faction signatures (Spartan secret police, Enoch Watchers, Majapahit names) stay in mythological_theological or historical_political lanes, separate from technology lanes, unless evidence explicitly ties them to a tech program.
 - DISAMBIGUATION RULE: Distinguish between abstract themes and entities named after concepts. If a narrative features characters named after abstract nouns, do not extract their literal names as themes. Extract the underlying thematic patterns they represent.
-- QUEST TITLE RULE: THERIAC quest titles are named after real-world song titles (e.g. "Sweet Child O' Mine", "Paradise City", "The Day The World Went Away"). When evidence references a song title, do not extract the song as a theme. Instead, classify the referenced quest as an in-world entity (type: quest) or leave it as an entity candidate. The song name is a quest title, not a thematic pattern.
-- CHARACTER NAMED AFTER CONCEPT RULE: Some characters in THERIAC are named after abstract nouns (e.g., Altruism, Joy) or mythological figures (e.g., Izanami, Enoch). When such names appear in evidence, look for the underlying thematic pattern they represent, not the literal name. Do not create themes called "Altruism" or "Joy" just because a character has that name; create themes for altruism-as-concept if the evidence explores the concept of selflessness.
+- QUEST TITLE RULE: Theriac quest titles are named after real-world song titles (e.g. "Sweet Child O' Mine", "Paradise City", "The Day The World Went Away"). When evidence references a song title, do not extract the song as a theme. Instead, classify the referenced quest as an in-world entity (type: quest) or leave it as an entity candidate. The song name is a quest title, not a thematic pattern.
+- CHARACTER NAMED AFTER CONCEPT RULE: Some characters in Theriac are named after abstract nouns (e.g., Altruism, Joy) or mythological figures (e.g., Izanami, Enoch). When such names appear in evidence, look for the underlying thematic pattern they represent, not the literal name. Do not create themes called "Altruism" or "Joy" just because a character has that name; create themes for altruism-as-concept if the evidence explores the concept of selflessness.
 
 Allowed theme_domain values:
 {json_dumps(sorted(THEME_DOMAINS))}

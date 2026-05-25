@@ -11,7 +11,7 @@ from pipeline.stage_01_entity_bootstrap import run as run_stage_01
 from pipeline.stage_02_message_normalization import run as run_stage_02
 from pipeline.stage_03_timeline_merge import run as run_stage_03
 from pipeline.stage_04_conversation_segmentation import run as run_stage_04
-from pipeline.stage_05_conversation_patch_notes import run as run_stage_05
+from pipeline.stage_05_lore_development_ledger import run as run_stage_05_ledger
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
 from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
@@ -269,28 +269,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         logger,
         5,
         total_stages,
-        "Stage 05 Conversation Patch Notes",
-        run_stage_05,
-        paths.relevant_messages,
-        paths.conversation_segments,
-        paths.conversation_patch_notes,
-        paths.conversation_patch_notes_jsonl,
-        paths.conversation_patch_note_failures,
-        base_dir.parent / "config" / "pipeline_config.json",
-    )
-    stage_05_index = read_json(paths.conversation_patch_notes)
-    logger.info(
-        "Stage 05 summary: patch_notes=%d, conversations=%d, failures=%d",
-        int(stage_05_index.get("notes_count", 0)),
-        int(stage_05_index.get("conversation_count", 0)),
-        int(stage_05_index.get("failure_count", 0)),
-    )
-
-    _run_stage(
-        logger,
-        6,
-        total_stages,
-        "Stage 06 Snippet Extraction",
+        "Stage 05 Snippet Extraction",
         run_stage_06,
         paths.relevant_messages,
         paths.source_profiles,
@@ -300,10 +279,10 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         base_dir.parent / "config" / "pipeline_config.json",
         paths.entity_seed,
         thematic_runtime_path,
-        paths.conversation_patch_notes,
+        None,
     )
     logger.info(
-        "Stage 06 summary: snippets=%d, needs_review=%d, profiles=%d",
+        "Stage 05 summary: snippets=%d, needs_review=%d, profiles=%d",
         _count_jsonl(paths.snippets),
         _count_jsonl(paths.snippets_needs_review),
         len(read_json(paths.source_profiles).get("profiles", [])),
@@ -311,9 +290,9 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
 
     _run_stage(
         logger,
-        7,
+        6,
         total_stages,
-        "Stage 07A Entity Candidate Harvest",
+        "Stage 06A Entity Candidate Harvest",
         run_stage_07,
         paths.snippets,
         paths.entity_seed,
@@ -325,7 +304,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
         base_dir.parent / "config" / "pipeline_config.json",
     )
     logger.info(
-        "Stage 07A summary: resolved_entities=%d seed_only_entities=%d entity_candidates=%d aliases=%d entity_timelines=%d",
+        "Stage 06A summary: resolved_entities=%d seed_only_entities=%d entity_candidates=%d aliases=%d entity_timelines=%d",
         len(read_json(paths.resolved_entities).get("resolved_entities", [])),
         len(read_json(paths.resolved_entities).get("seed_only_entities", [])),
         len(read_json(paths.entity_candidate_harvest).get("candidates", [])),
@@ -334,9 +313,9 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     )
     _run_stage(
         logger,
-        7,
+        6,
         total_stages,
-        "Stage 07B Entity Adjudication",
+        "Stage 06B Entity Adjudication",
         run_stage_07b,
         paths.entity_candidate_harvest,
         paths.entity_adjudication_recommendations,
@@ -346,7 +325,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     )
     stage_07b = read_json(paths.entity_adjudication_recommendations)
     logger.info(
-        "Stage 07B summary: recommendations=%d web_selected=%d web_calls=%d cache_hits=%d failures=%d",
+        "Stage 06B summary: recommendations=%d web_selected=%d web_calls=%d cache_hits=%d failures=%d",
         len(stage_07b.get("recommendations", [])),
         int(stage_07b.get("summary", {}).get("web_selected_candidate_count", 0)),
         int(stage_07b.get("summary", {}).get("web_call_count", 0)),
@@ -355,9 +334,9 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     )
     _run_stage(
         logger,
-        7,
+        6,
         total_stages,
-        "Stage 07C Theme Miner",
+        "Stage 06C Theme Miner",
         run_stage_07c,
         paths.entity_candidate_harvest,
         paths.entity_adjudication_recommendations,
@@ -369,7 +348,7 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     )
     stage_07c = read_json(paths.theme_profile_update_report)
     logger.info(
-        "Stage 07C summary: themes=%d evidence_packets=%d applied_updates=%d failures=%d",
+        "Stage 06C summary: themes=%d evidence_packets=%d applied_updates=%d failures=%d",
         int(stage_07c.get("summary", {}).get("theme_count", 0)),
         int(stage_07c.get("inputs", {}).get("evidence_packet_count", 0)),
         int(stage_07c.get("summary", {}).get("applied_update_count", 0)),
@@ -377,9 +356,9 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     )
     _run_stage(
         logger,
-        7,
+        6,
         total_stages,
-        "Stage 07D Theme-Aware Candidate Reclassification",
+        "Stage 06D Theme-Aware Candidate Reclassification",
         run_stage_07d,
         paths.entity_candidate_harvest,
         paths.entity_adjudication_recommendations,
@@ -389,9 +368,37 @@ def run(base_dir: Path, conversations_root: Path, docx_path: Path, sample_limit_
     )
     stage_07d = read_json(paths.theme_candidate_reclassification)
     logger.info(
-        "Stage 07D summary: reclassifications=%d theme_matched=%d",
+        "Stage 06D summary: reclassifications=%d theme_matched=%d",
         len(stage_07d.get("candidate_reclassifications", [])),
         int(stage_07d.get("summary", {}).get("theme_matched_candidate_count", 0)),
+    )
+
+    _run_stage(
+        logger,
+        7,
+        total_stages,
+        "Stage 07 Lore Development Ledger",
+        run_stage_05_ledger,
+        paths.relevant_messages,
+        paths.theme_rescue_messages,
+        paths.conversation_segments,
+        paths.theme_rescue_segments,
+        paths.resolved_entities,
+        paths.alias_map,
+        paths.snippets,
+        paths.lore_development_ledger_index,
+        paths.lore_development_ledger_jsonl,
+        paths.entity_development_history,
+        paths.lore_development_ledger_failures,
+        base_dir.parent / "config" / "pipeline_config.json",
+        paths.entity_seed,
+    )
+    stage_07_index = read_json(paths.lore_development_ledger_index)
+    logger.info(
+        "Stage 07 summary: entries=%d, segments=%d, failures=%d",
+        int(stage_07_index.get("entry_count", 0)),
+        int(stage_07_index.get("segment_count", 0)),
+        int(stage_07_index.get("failure_count", 0)),
     )
 
     _run_stage(

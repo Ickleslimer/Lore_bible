@@ -541,31 +541,58 @@ def _compact_patch_items(value: Any, limit: int) -> list[dict[str, Any]]:
     return out
 
 
-def _patch_note_context(root: Path, conversation_ids: set[str], limit: int = 12) -> list[dict[str, Any]]:
-    payload = _read_json_or_default(ArtifactPaths(root).conversation_patch_notes, {"notes": []})
-    notes = payload.get("notes", []) if isinstance(payload, dict) else []
+def _development_history_context(root: Path, entity_names: set[str], limit: int = 12) -> list[dict[str, Any]]:
+    payload = _read_json_or_default(ArtifactPaths(root).entity_development_history, {"by_entity": {}})
+    by_entity = payload.get("by_entity", {}) if isinstance(payload, dict) else {}
+    if not isinstance(by_entity, dict):
+        return []
+    normalized_targets = {_normalized_entity_name(name) for name in entity_names if str(name).strip()}
     out: list[dict[str, Any]] = []
-    for note in notes:
-        if not isinstance(note, dict):
+    for entries in by_entity.values():
+        if not isinstance(entries, list):
             continue
-        conversation_id = str(note.get("conversation_id", "")).strip()
-        if conversation_ids and conversation_id not in conversation_ids:
-            continue
-        out.append(
-            {
-                "patch_note_id": note.get("patch_note_id", ""),
-                "conversation_id": conversation_id,
-                "sequence_index": note.get("sequence_index"),
-                "topic_label": note.get("topic_label", ""),
-                "summary": _clip_text(note.get("summary") or note.get("conversation_summary") or "", 420),
-                "entity_updates": _compact_patch_items(note.get("entity_updates", []), MAX_PATCH_NOTE_ITEMS),
-                "relationship_updates": _compact_patch_items(note.get("relationship_updates", []), MAX_PATCH_NOTE_ITEMS),
-                "open_questions": _compact_patch_items(note.get("open_questions", []), 2),
-            }
-        )
-        if len(out) >= limit:
-            break
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            label = _normalized_entity_name(str(entry.get("subject_label", "")))
+            if normalized_targets and label and label not in normalized_targets:
+                continue
+            out.append(
+                {
+                    "entry_id": entry.get("entry_id", ""),
+                    "event_kind": entry.get("event_kind", ""),
+                    "change_type": entry.get("change_type", ""),
+                    "subject_label": entry.get("subject_label", ""),
+                    "headline": _clip_text(entry.get("headline", ""), 420),
+                    "timestamp_utc": entry.get("timestamp_utc", ""),
+                }
+            )
+            if len(out) >= limit:
+                return out
+    if not out and by_entity:
+        for entries in by_entity.values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                out.append(
+                    {
+                        "entry_id": entry.get("entry_id", ""),
+                        "event_kind": entry.get("event_kind", ""),
+                        "change_type": entry.get("change_type", ""),
+                        "subject_label": entry.get("subject_label", ""),
+                        "headline": _clip_text(entry.get("headline", ""), 420),
+                        "timestamp_utc": entry.get("timestamp_utc", ""),
+                    }
+                )
+                if len(out) >= limit:
+                    return out
     return out
+
+
+def _normalized_entity_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
 
 
 def _relationship_hint_summary(value: Any) -> list[dict[str, Any]]:
@@ -715,6 +742,15 @@ def _build_question_state(
             source_ids.extend(str(item) for item in claim.get("source_snippet_ids", []) or [])
     snippets = _snippet_context(root, source_ids, limit=MAX_EVIDENCE_SNIPPETS_FOR_QUESTION)
     conversation_ids = {str(item.get("conversation_id", "")) for item in snippets if str(item.get("conversation_id", "")).strip()}
+    entity_names: set[str] = set()
+    for cluster in clusters[:6]:
+        for claim in cluster.get("claims", []) if isinstance(cluster.get("claims", []), list) else []:
+            if not isinstance(claim, dict):
+                continue
+            for key in ("target_entity_name", "alias_text"):
+                name = str(claim.get(key, "")).strip()
+                if name:
+                    entity_names.add(name)
     memory = load_review_memory(Path("canon/review_memory.json"))
     return {
         "unresolved_claim_count": len(claims),
@@ -728,17 +764,17 @@ def _build_question_state(
         "max_linked_claims": cfg["max_linked_claims_per_question"],
         "clusters": clusters,
         "evidence_snippets": snippets,
-        "patch_notes": _patch_note_context(root, conversation_ids, limit=MAX_PATCH_NOTES_FOR_QUESTION),
+        "development_history": _development_history_context(root, entity_names, limit=MAX_PATCH_NOTES_FOR_QUESTION),
         "prior_story_questions": _prior_qas(session),
         "review_memory_story_answers": memory.get("story_question_answers", [])[-20:],
     }
 
 
 def _question_prompt(state: dict[str, Any]) -> str:
-    return f"""You are acting as a senior lore editor for THERIAC.
+    return f"""You are acting as a senior lore editor for Theriac.
 Generate exactly one high-value question for the author to answer during claim review.
 
-Use the current unresolved claim state, prior Q/A history, evidence snippets, patch notes, and review memory.
+Use the current unresolved claim state, prior Q/A history, evidence snippets, entity development history, and review memory.
 The question should resolve as many uncertain claims as possible while staying answerable in plain English.
 Question priority order:
 1. Completely unanswered claims with no claim-review decision.
@@ -966,7 +1002,7 @@ def generate_next_question(
     kwargs["trace"] = {
         **(kwargs.get("trace", {}) if isinstance(kwargs.get("trace"), dict) else {}),
         "trace_id": str(session.get("session_id") or kwargs.get("session_id") or ""),
-        "trace_name": "THERIAC Story Questions",
+        "trace_name": "Theriac Story Questions",
         "span_name": "stage_09_story_question_generation",
         "generation_name": "generate_story_question",
         "pipeline_task": STORY_TASK_NAME,
@@ -1190,7 +1226,7 @@ def _application_prompt(
         "reviewer_critique": reviewer_critique,
         "prior_application_proposal": _compact_application_proposal(prior_proposal),
     }
-    return f"""You are applying an authoritative author answer to THERIAC claim review.
+    return f"""You are applying an authoritative author answer to Theriac claim review.
 Use a moderate application policy:
 - Apply the answer to directly linked claims when the answer clearly resolves them.
 - Apply it to non-linked candidate claims only when they are close duplicates or clear entailments, with confidence >= 0.85.
@@ -1203,7 +1239,7 @@ Use a moderate application policy:
 - Only include left_pending entries for linked claims that the answer does not resolve.
 - Do not bulk approve broad categories from vague wording.
 - Create author claims only for direct canonical facts from the answer that are not already captured by accepted claim decisions.
-- Classify author claims by track carefully: use knowledge_track "lore" only for in-world facts that would be true inside THERIAC's fiction; use "meta" for game mechanics, player-facing design, production/design history, authorial clarification, naming history, working names, inspirations, references, or statements about how concepts were developed. Use "both" only when the same claim explicitly contains inseparable in-world and meta information.
+- Classify author claims by track carefully: use knowledge_track "lore" only for in-world facts that would be true inside Theriac's fiction; use "meta" for game mechanics, player-facing design, production/design history, authorial clarification, naming history, working names, inspirations, references, or statements about how concepts were developed. Use "both" only when the same claim explicitly contains inseparable in-world and meta information.
 - Do not mark naming/development-history claims as lore just because they concern a lore entity. Claims about working names becoming canonical names, characters originally being developed from a theme, or external inspirations should be "meta" and usually claim_type "meta_note" or "inspiration".
 - Leave ambiguous claims pending.
 - If reviewer_critique is present, revise the prior proposal in response to that critique rather than defending it.
@@ -1735,7 +1771,7 @@ def propose_story_answer_application(
         kwargs["trace"] = {
             **(kwargs.get("trace", {}) if isinstance(kwargs.get("trace"), dict) else {}),
             "trace_id": str(session.get("session_id") or kwargs.get("session_id") or ""),
-            "trace_name": "THERIAC Story Questions",
+            "trace_name": "Theriac Story Questions",
             "span_name": "stage_09_story_answer_application",
             "generation_name": "propose_story_answer_application",
             "pipeline_task": STORY_TASK_NAME,

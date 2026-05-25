@@ -400,7 +400,7 @@ class CardbaseAgentRuntime:
         self.canonical_cards_path = canonical_cards_path
         self.claim_review_decisions_path = claim_review_decisions_path or (review_dir.parent / "09_claim_drafting" / "claim_review_decisions.json")
         self.claim_drafts_path = self.claim_review_decisions_path.with_name("claim_drafts.json")
-        self.resolved_entities_path = review_dir.parent / "07_entity_resolution" / "resolved_entities.json"
+        self.resolved_entities_path = review_dir.parent / "06_entity_resolution" / "resolved_entities.json"
         self.identity_preview_path = review_dir.parent / "10_identity_merge" / "identity_merged_entities_preview.json"
         self.config = config
         self.tx = transaction
@@ -1791,12 +1791,12 @@ class CardbaseAgentRuntime:
             }
             for entity in self.entities[:240]
         ]
-        return f"""You are a true Cardbase Agent for the THERIAC lore cardbase.
+        return f"""You are a true Cardbase Agent for the Theriac lore cardbase.
 You may inspect and mutate the cardbase only by choosing one tool call at a time.
 The user request is authoritative, but you must explore first when needed. You make semantic decisions; deterministic code only validates and applies your tool calls.
 Do not use a deterministic parser. If a request means two cardbase entities are the same identity, call apply_identity_merge with explicit source and target IDs, then rewrite_references, then check_consistency, then finish.
 If a request asks to make a name the canonical name/title for an existing entity, inspect the entity and its card/claims, then call apply_canonical_rename with the entity ID and canonical_name, then check_consistency with renamed_entity_id and canonical_name, then finish. Use apply_identity_merge instead if the requested canonical name already belongs to a different entity.
-If a request says an entity is not part of THERIAC, is not a THERIAC character, should be removed, deleted, excluded, or no longer belongs in the cardbase, inspect the entity and its claims, then call remove_entity_from_cardbase, then check_consistency with removed_entity_id, then finish.
+If a request says an entity is not part of Theriac, is not a Theriac character, should be removed, deleted, excluded, or no longer belongs in the cardbase, inspect the entity and its claims, then call remove_entity_from_cardbase, then check_consistency with removed_entity_id, then finish.
 If entity references are unclear, inspect with search/get tools. If still impossible, finish with a clear final_response and no writes.
 
 Available tools:

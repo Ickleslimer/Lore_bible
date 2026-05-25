@@ -14,6 +14,7 @@ from pipeline.entity_resolution import (
     entity_id,
     is_blocked_seed_name,
     is_disallowed_entity_type,
+    is_protected_lore_entity_key,
     load_entity_records,
     normalize_entity_type as normalize_shared_entity_type,
     normalized_name_key,
@@ -60,6 +61,133 @@ GENERIC_CONVERSATION_ENTITY_KEYS = {
     "theriac narrative",
     "theriac plot",
 }
+# Single-token English function words that capitalized sentence starts falsely promote as entities.
+ENGLISH_FUNCTION_WORD_KEYS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "if",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "of",
+        "on",
+        "onto",
+        "to",
+        "with",
+        "without",
+        "about",
+        "above",
+        "across",
+        "after",
+        "against",
+        "along",
+        "among",
+        "around",
+        "before",
+        "behind",
+        "below",
+        "beneath",
+        "beside",
+        "between",
+        "beyond",
+        "down",
+        "during",
+        "inside",
+        "near",
+        "off",
+        "out",
+        "over",
+        "through",
+        "under",
+        "until",
+        "up",
+        "upon",
+        "within",
+        "while",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "can",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+        "this",
+        "that",
+        "these",
+        "those",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "there",
+        "here",
+        "not",
+        "no",
+        "yes",
+        "so",
+        "than",
+        "too",
+        "very",
+        "just",
+        "also",
+        "still",
+        "even",
+        "only",
+        "more",
+        "most",
+        "some",
+        "any",
+        "each",
+        "all",
+        "both",
+        "few",
+        "many",
+        "much",
+        "such",
+    }
+)
 LOW_VALUE_NAME_SUFFIXES = {
     "arc",
     "arcs",
@@ -658,8 +786,10 @@ def build_alias_review_groups(proposals: list[dict[str, Any]]) -> list[dict[str,
     for group in groups:
         aliases = sorted(group["alias_candidates"], key=lambda item: (-int(item.get("evidence_count", 0) or 0), str(item.get("candidate_name", "")).lower()))
         group["alias_candidates"] = aliases
-        group["candidate_name"] = f"{group['suggested_canonical_name']} aliases ({len(aliases)})"
-        group["triage_reason"] = f"{len(aliases)} alias candidates proposed for {group['suggested_canonical_name']}"
+        group["candidate_name"] = str(group["suggested_canonical_name"] or "").strip()
+        group["triage_reason"] = (
+            f"{len(aliases)} name variants proposed for {group['suggested_canonical_name']}"
+        )
     return sorted(groups, key=lambda item: str(item.get("suggested_canonical_name", "")).lower())
 
 
@@ -670,7 +800,7 @@ def promote_band_grouped_quest_candidates(
     """Detect groups of candidates that co-occur with the same band/artist
     in their evidence and inject quest-type votes for each member.
 
-    THERIAC quest-naming convention: quests for the same character share
+    Theriac quest-naming convention: quests for the same character share
     a band's (or group of bands') songs as namesakes.  When we find
     multiple un-typed candidates that share an artist
     reference in their evidence, we add strong quest votes so they reach
@@ -684,7 +814,7 @@ def promote_band_grouped_quest_candidates(
         if str(proposal.get("review_status", "pending")) != "pending":
             continue
         key = normalized_name_key(str(proposal.get("candidate_name", "")))
-        if not key:
+        if not key or is_generic_conversation_entity_name(key):
             continue
         artists: set[str] = set()
         for sid in proposal.get("source_snippet_ids", []) or []:
@@ -728,6 +858,8 @@ def promote_band_grouped_quest_candidates(
     # Inject quest votes into the promoted proposals.
     for proposal in proposals:
         key = normalized_name_key(str(proposal.get("candidate_name", "")))
+        if is_generic_conversation_entity_name(key):
+            continue
         artist = promoted_keys.get(key)
         if artist is None:
             continue
@@ -887,9 +1019,15 @@ def recency_triage_reason(base_reason: str, raw_count: int, adjusted_count: floa
 def is_generic_conversation_entity_name(key: str) -> bool:
     if not key:
         return True
+    if is_protected_lore_entity_key(key):
+        return False
     if key in GENERIC_CONVERSATION_ENTITY_KEYS:
         return True
     if key in CONVERSATION_ENTITY_NAME_STOPWORDS:
+        return True
+    if key in ENGLISH_FUNCTION_WORD_KEYS:
+        return True
+    if " " not in key and len(key) <= 3:
         return True
     return False
 
@@ -1156,14 +1294,14 @@ def build_alias_resolution_prompt(known_entities: list[dict[str, Any]], evidence
         }
         for snip in evidence_snippets
     ]
-    return f"""Resolve alias and rename evidence for THERIAC entity review.
+    return f"""Resolve alias and rename evidence for Theriac entity review.
 Return strict JSON only. Use the evidence rows; do not guess from general knowledge.
 
 Goal:
 - Propose mappings where an evidence row says one name is the same in-world entity, working name, prior name, later name, codename, official name, or abbreviation of another.
 - Prefer mapping old/working/variant names to the latest or most canonical name when the evidence states a rename.
 - Use known_entities when the canonical target is already listed. If the target is clear from evidence but absent from known_entities, still return canonical_name with an empty target_entity_id.
-- Do not map thematic parallels, inspirations, translations/etymology, relationship labels, quest titles, organizations, real people, or external media unless the evidence explicitly says they are names for the same THERIAC entity.
+- Do not map thematic parallels, inspirations, translations/etymology, relationship labels, quest titles, organizations, real people, or external media unless the evidence explicitly says they are names for the same Theriac entity.
 - Do not create mappings for weak phrasing like "considered", "proposed", "potential", "darker X", "favorite", or "inspired by" unless the evidence also confirms the name is used/adopted.
 
 Known entities:
@@ -1205,15 +1343,15 @@ def build_candidate_alias_resolution_prompt(known_entities: list[dict[str, Any]]
         }
         for proposal in candidate_proposals
     ]
-    return f"""Resolve possible aliases among unresolved THERIAC candidate anchors.
+    return f"""Resolve possible aliases among unresolved Theriac candidate anchors.
 Return strict JSON only. Use the candidate evidence; do not guess from general knowledge.
 
 Goal:
-- Propose mappings where a candidate anchor is clearly the same THERIAC in-world entity as a known entity.
+- Propose mappings where a candidate anchor is clearly the same Theriac in-world entity as a known entity.
 - Accept spelling variants, punctuation variants, title/name variants, short forms, long forms, working names, prior/later names, codenames, and acronyms when supported by the candidate evidence.
 - Prefer mapping a variant/working/older name to the latest or most canonical known entity.
 - Do not map a candidate merely because it contains a known entity's name.
-- Do not map subtopics, songs/themes, quests named after a character, project names, artifacts, body parts, relationships, inspirations, real people, external media, or phrase-like descriptions unless the evidence says that candidate is a name for the same THERIAC entity.
+- Do not map subtopics, songs/themes, quests named after a character, project names, artifacts, body parts, relationships, inspirations, real people, external media, or phrase-like descriptions unless the evidence says that candidate is a name for the same Theriac entity.
 - Omit uncertain cases. This is a review assistant, not an entity creator.
 
 Known entities:
@@ -1567,7 +1705,7 @@ def infer_type_evidence_for_candidate(candidate_name: str, snip: dict[str, Any])
 def music_context_quest_votes(candidate_name: str, snip: dict[str, Any]) -> list[dict[str, Any]]:
     """Detect song-title candidates in quest-related contexts and vote quest.
 
-    THERIAC quest titles are named after songs. When a candidate appears in
+    Theriac quest titles are named after songs. When a candidate appears in
     evidence alongside music markers (song, track, album, band) AND quest-
     context markers (quest, path, route, ending, mission), it gets a quest
     vote.  Artist/band names co-occurring with the candidate are recorded
@@ -1597,7 +1735,7 @@ def music_context_quest_votes(candidate_name: str, snip: dict[str, Any]) -> list
         votes.append(type_vote("quest", 2.5, "context:music_reference_in_quest_context", snip))
     elif has_music:
         # Music reference without explicit quest context - give a moderate
-        # quest signal since THERIAC names quests after songs.
+        # quest signal since Theriac names quests after songs.
         votes.append(type_vote("quest", 1.2, "context:music_reference_possible_quest_name", snip))
 
     return votes

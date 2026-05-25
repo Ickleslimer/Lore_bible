@@ -22,6 +22,20 @@ def to_lore_record(card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def to_work_record(card: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "database": "WorkCards",
+        "id": card.get("work_id"),
+        "properties": {
+            "Title": card.get("title"),
+            "Kind": card.get("kind"),
+            "Status": card.get("status"),
+            "Summary": card.get("summary", ""),
+            "Sections": card.get("sections", {}),
+        },
+    }
+
+
 def to_meta_record(card: dict[str, Any]) -> dict[str, Any]:
     return {
         "database": "MetaCards",
@@ -44,18 +58,23 @@ def run(
     in_profiles_json: Path,
     in_merge_log_jsonl: Path,
     out_ndjson: Path,
+    in_work_cards_json: Path | None = None,
 ) -> None:
     logger = get_logger(__name__)
     cards = [card for card in read_json(in_cards_json).get("cards", []) if card.get("status") == "canonical"]
     meta_cards = read_json(in_meta_cards_json).get("meta_cards", [])
+    work_cards = []
+    if in_work_cards_json and in_work_cards_json.exists():
+        work_cards = read_json(in_work_cards_json).get("works", [])
     aliases = read_json(in_alias_json).get("aliases", [])
     snippets = read_jsonl(in_snippets_jsonl)
     profiles = read_json(in_profiles_json).get("profiles", [])
     merge_log = read_jsonl(in_merge_log_jsonl)
     logger.info(
-        "Stage 11: exporting lore=%d meta=%d aliases=%d snippets=%d profiles=%d decisions=%d",
+        "Stage 12: exporting lore=%d meta=%d work=%d aliases=%d snippets=%d profiles=%d decisions=%d",
         len(cards),
         len(meta_cards),
+        len(work_cards),
         len(aliases),
         len(snippets),
         len(profiles),
@@ -68,6 +87,9 @@ def run(
             f.write(json.dumps(to_lore_record(card), ensure_ascii=False) + "\n")
         for card in meta_cards:
             f.write(json.dumps(to_meta_record(card), ensure_ascii=False) + "\n")
+        for card in work_cards:
+            if isinstance(card, dict):
+                f.write(json.dumps(to_work_record(card), ensure_ascii=False) + "\n")
         for alias in aliases:
             f.write(json.dumps({"database": "Aliases", "id": alias.get("alias_id"), "properties": alias}, ensure_ascii=False) + "\n")
         for snip in snippets:
@@ -93,7 +115,7 @@ def run(
             )
     logger.info(
         "Stage 11 complete: wrote %d total NDJSON records to %s",
-        len(cards) + len(meta_cards) + len(aliases) + len(snippets) + len(profiles) + len(merge_log),
+        len(cards) + len(meta_cards) + len(work_cards) + len(aliases) + len(snippets) + len(profiles) + len(merge_log),
         out_ndjson,
     )
 
@@ -107,6 +129,7 @@ def main() -> None:
     parser.add_argument("--in-profiles-json", type=Path, required=True)
     parser.add_argument("--in-merge-log-jsonl", type=Path, required=True)
     parser.add_argument("--out-ndjson", type=Path, required=True)
+    parser.add_argument("--in-work-cards-json", type=Path, default=None)
     args = parser.parse_args()
     run(
         args.in_cards_json,
@@ -116,6 +139,7 @@ def main() -> None:
         args.in_profiles_json,
         args.in_merge_log_jsonl,
         args.out_ndjson,
+        args.in_work_cards_json,
     )
 
 

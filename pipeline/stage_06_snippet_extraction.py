@@ -649,7 +649,7 @@ def classify_with_provider(
             "trace",
             {
                 "trace_id": "theriac-stage-06-snippet-extraction",
-                "trace_name": "THERIAC Stage 06 Snippet Extraction",
+                "trace_name": "Theriac Stage 06 Snippet Extraction",
                 "span_name": "stage_06_snippet_extraction",
                 "generation_name": "snippet_relevance_classification",
                 "pipeline_task": "stage_06_snippet_extraction",
@@ -760,7 +760,14 @@ def run(
     provider_config: dict[str, Any] = {"anchor_provider": "heuristic"}
     if in_pipeline_config_json and in_pipeline_config_json.exists():
         provider_config = read_json(in_pipeline_config_json)
-    patch_notes = load_patch_notes(in_patch_notes_json)
+    patch_notes = []
+    use_patch_notes = False
+    if in_pipeline_config_json and in_pipeline_config_json.exists():
+        provider_cfg = read_json(in_pipeline_config_json)
+        patch_cfg = provider_cfg.get("conversation_patch_notes", {}) if isinstance(provider_cfg.get("conversation_patch_notes"), dict) else {}
+        use_patch_notes = bool(patch_cfg.get("enabled", False))
+    if use_patch_notes and in_patch_notes_json is not None:
+        patch_notes = load_patch_notes(in_patch_notes_json)
     patch_notes_by_conversation = {
         str(note.get("conversation_id", "")): note
         for note in patch_notes

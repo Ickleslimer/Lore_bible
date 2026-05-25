@@ -1,1 +1,1 @@
-"""THERIAC canon extraction pipeline."""
+"""Theriac canon extraction pipeline."""

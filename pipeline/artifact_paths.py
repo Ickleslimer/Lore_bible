@@ -10,9 +10,9 @@ STAGE_DIRS: dict[int, str] = {
     2: "02_message_normalization",
     3: "03_timeline_merge",
     4: "04_conversation_segmentation",
-    5: "05_conversation_patch_notes",
-    6: "06_snippet_extraction",
-    7: "07_entity_resolution",
+    5: "05_snippet_extraction",
+    6: "06_entity_resolution",
+    7: "07_lore_development_ledger",
     8: "08_snippet_grouping",
     9: "09_claim_drafting",
     10: "10_identity_merge",
@@ -130,92 +130,123 @@ class ArtifactPaths:
         return self.stage04 / "theme_relevance_rerun_failures.json"
 
     @property
-    def conversation_patch_notes(self) -> Path:
-        return self.stage05 / "conversation_patch_notes.json"
+    def lore_development_ledger_index(self) -> Path:
+        return self.stage07 / "lore_development_ledger_index.json"
 
     @property
-    def conversation_patch_notes_jsonl(self) -> Path:
-        return self.stage05 / "conversation_patch_notes.jsonl"
+    def lore_development_ledger_jsonl(self) -> Path:
+        return self.stage07 / "lore_development_ledger.jsonl"
 
     @property
-    def conversation_patch_note_failures(self) -> Path:
-        return self.stage05 / "conversation_patch_note_failures.json"
+    def entity_development_history(self) -> Path:
+        return self.stage07 / "entity_development_history.json"
+
+    @property
+    def lore_development_ledger_failures(self) -> Path:
+        return self.stage07 / "lore_development_ledger_failures.json"
 
     @property
     def snippets(self) -> Path:
-        return self.stage06 / "snippets_candidates.jsonl"
+        return self.stage05 / "snippets_candidates.jsonl"
 
     @property
     def snippets_needs_review(self) -> Path:
-        return self.stage06 / "snippets_needs_review.jsonl"
+        return self.stage05 / "snippets_needs_review.jsonl"
 
     @property
     def theme_rescue_snippets(self) -> Path:
-        return self.stage06 / "snippets_theme_rescue.jsonl"
+        return self.stage05 / "snippets_theme_rescue.jsonl"
 
     @property
     def theme_rescue_snippets_needs_review(self) -> Path:
-        return self.stage06 / "snippets_theme_rescue_needs_review.jsonl"
+        return self.stage05 / "snippets_theme_rescue_needs_review.jsonl"
 
     @property
     def theme_rescue_source_profiles(self) -> Path:
-        return self.stage06 / "dm_source_profiles_theme_rescue.json"
+        return self.stage05 / "dm_source_profiles_theme_rescue.json"
 
     @property
     def snippets_with_theme_rescue(self) -> Path:
-        return self.stage06 / "snippets_candidates_with_theme_rescue.jsonl"
+        return self.stage05 / "snippets_candidates_with_theme_rescue.jsonl"
+
+    def effective_snippets(self) -> Path:
+        """Prefer theme-rescue merged snippets when Stage 06R output exists."""
+        if self.snippets_with_theme_rescue.exists():
+            return self.snippets_with_theme_rescue
+        return self.snippets
 
     @property
     def snippets_needs_review_with_theme_rescue(self) -> Path:
-        return self.stage06 / "snippets_needs_review_with_theme_rescue.jsonl"
+        return self.stage05 / "snippets_needs_review_with_theme_rescue.jsonl"
+
+    def effective_snippets_needs_review(self) -> Path:
+        if self.snippets_needs_review_with_theme_rescue.exists():
+            return self.snippets_needs_review_with_theme_rescue
+        return self.snippets_needs_review
 
     @property
     def theme_rescue_snippet_merge_report(self) -> Path:
-        return self.stage06 / "theme_rescue_snippet_merge_report.json"
+        return self.stage05 / "theme_rescue_snippet_merge_report.json"
 
     @property
     def source_profiles(self) -> Path:
-        return self.stage06 / "dm_source_profiles.json"
+        return self.stage05 / "dm_source_profiles.json"
 
     @property
     def alias_map(self) -> Path:
-        return self.stage07 / "alias_map.json"
+        return self.stage06 / "alias_map.json"
 
     @property
     def entity_timelines(self) -> Path:
-        return self.stage07 / "entity_timelines.json"
+        return self.stage06 / "entity_timelines.json"
 
     @property
     def resolved_entities(self) -> Path:
-        return self.stage07 / "resolved_entities.json"
+        return self.stage06 / "resolved_entities.json"
 
     @property
     def entity_candidate_harvest(self) -> Path:
-        return self.stage07 / "entity_candidate_harvest.json"
+        return self.stage06 / "entity_candidate_harvest.json"
+
+    @property
+    def entity_inventory_browser_cache(self) -> Path:
+        return self.stage06 / "entity_inventory_browser_cache.json"
 
     @property
     def entity_adjudication_recommendations(self) -> Path:
-        return self.stage07 / "entity_adjudication_recommendations.json"
+        return self.stage06 / "entity_adjudication_recommendations.json"
 
     @property
     def externality_cache(self) -> Path:
-        return self.stage07 / "externality_cache.json"
+        return self.stage06 / "externality_cache.json"
 
     @property
     def theme_profile_update_report(self) -> Path:
-        return self.stage07 / "theme_profile_update_report.json"
+        return self.stage06 / "theme_profile_update_report.json"
 
     @property
     def theme_candidate_reclassification(self) -> Path:
-        return self.stage07 / "theme_candidate_reclassification.json"
+        return self.stage06 / "theme_candidate_reclassification.json"
+
+    @property
+    def theme_lineage_web_report(self) -> Path:
+        return self.stage06 / "theme_lineage_web_report.json"
+
+    @property
+    def theme_lineage_cache(self) -> Path:
+        return self.stage06 / "theme_lineage_cache.json"
+
+    @property
+    def theme_rescue_approval(self) -> Path:
+        return self.stage06 / "theme_rescue_approval.json"
 
     @property
     def conversation_entity_proposals(self) -> Path:
-        return self.stage07 / "conversation_entity_proposals.json"
+        return self.stage06 / "conversation_entity_proposals.json"
 
     @property
     def conversation_entity_decisions(self) -> Path:
-        return self.stage07 / "conversation_entity_decisions.json"
+        return self.stage06 / "conversation_entity_decisions.json"
 
     @property
     def snippet_clusters_lore(self) -> Path:
@@ -224,6 +255,26 @@ class ArtifactPaths:
     @property
     def snippet_clusters_meta(self) -> Path:
         return self.stage08 / "snippet_clusters_meta.json"
+
+    @property
+    def stage08w(self) -> Path:
+        return self.root / "08_narrative_work_tagging"
+
+    @property
+    def narrative_work_tags(self) -> Path:
+        return self.stage08w / "snippet_narrative_work_tags.jsonl"
+
+    @property
+    def narrative_work_tagging_summary(self) -> Path:
+        return self.stage08w / "tagging_summary.json"
+
+    @property
+    def stage11w(self) -> Path:
+        return self.root / "11_work_synthesis"
+
+    @property
+    def work_cards(self) -> Path:
+        return self.stage11w / "work_cards.json"
 
     @property
     def claim_drafting_dir(self) -> Path:
@@ -313,6 +364,10 @@ class ArtifactPaths:
     def notion_draft_sync_report(self) -> Path:
         return self.stage12 / "notion_draft_sync_report.json"
 
+    @property
+    def notion_canonical_sync_report(self) -> Path:
+        return self.stage12 / "notion_canonical_sync_report.json"
+
 
 def first_existing(*paths: Path) -> Path:
     for path in paths:
@@ -360,8 +415,12 @@ def migrate_run_artifacts_to_numbered(root: Path, *, overwrite: bool = False) ->
     copied_by_stage: dict[str, int] = {str(stage): 0 for stage in range(1, 13)}
 
     copied_by_stage["1"] += _copy_tree(root / "01_bootstrap", p.stage01, overwrite=overwrite)
-    copied_by_stage["6"] += _copy_tree(root / "03_relevance", p.stage06, overwrite=overwrite)
-    copied_by_stage["7"] += _copy_tree(root / "05_alias", p.stage07, overwrite=overwrite)
+    copied_by_stage["5"] += _copy_tree(root / "03_relevance", p.stage05, overwrite=overwrite)
+    copied_by_stage["5"] += _copy_tree(root / "06_snippet_extraction", p.stage05, overwrite=overwrite)
+    copied_by_stage["6"] += _copy_tree(root / "05_alias", p.stage06, overwrite=overwrite)
+    copied_by_stage["6"] += _copy_tree(root / "07_entity_resolution", p.stage06, overwrite=overwrite)
+    copied_by_stage["7"] += _copy_tree(root / "05_conversation_patch_notes", p.stage07, overwrite=overwrite)
+    copied_by_stage["7"] += _copy_tree(root / "05_lore_development_ledger", p.stage07, overwrite=overwrite)
     copied_by_stage["8"] += _copy_tree(root / "04_grouping", p.stage08, overwrite=overwrite)
     copied_by_stage["9"] += _copy_tree(root / "06_drafts" / "card_drafts", p.stage09, overwrite=overwrite)
     copied_by_stage["12"] += _copy_tree(root / "08_notion", p.stage12, overwrite=overwrite)
@@ -376,9 +435,10 @@ def migrate_run_artifacts_to_numbered(root: Path, *, overwrite: bool = False) ->
         "conversation_segments.json": p.conversation_segments,
         "conversation_index.json": p.conversation_index,
         "conversation_segmentation_failures.json": p.conversation_segmentation_failures,
-        "conversation_patch_notes.json": p.conversation_patch_notes,
-        "conversation_patch_notes.jsonl": p.conversation_patch_notes_jsonl,
-        "conversation_patch_note_failures.json": p.conversation_patch_note_failures,
+        "lore_development_ledger_index.json": p.lore_development_ledger_index,
+        "lore_development_ledger.jsonl": p.lore_development_ledger_jsonl,
+        "entity_development_history.json": p.entity_development_history,
+        "lore_development_ledger_failures.json": p.lore_development_ledger_failures,
     }
     for name, dst in timeline_map.items():
         stage_key = str(int(dst.relative_to(root).parts[0].split("_", 1)[0]))

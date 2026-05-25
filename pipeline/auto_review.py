@@ -1,4 +1,4 @@
-﻿"""AI-powered auto-review for pending THERIAC lore pipeline items.
+﻿"""AI-powered auto-review for pending Theriac lore pipeline items.
 
 Sends each pending review item to OpenRouter with a structured prompt,
 parses the model's accept/reject/defer decision, and writes it to the
@@ -26,8 +26,7 @@ OPENROUTER_TRACE_FIELD_LIMIT = 128
 
 # ---------------------------------------------------------------------------
 # OpenRouter helpers (self-contained so auto_review has no coupling to the
-# rate-limit / pacing state inside model_provider). The
-# _gemini_generate function name is retained for older tests/call sites.
+# rate-limit / pacing state inside model_provider).
 # ---------------------------------------------------------------------------
 
 def _resolve_api_key() -> str | None:
@@ -70,7 +69,7 @@ def _clean_openrouter_trace_text(value: Any, limit: int = OPENROUTER_TRACE_FIELD
     return text[: max(1, int(limit))]
 
 
-def _gemini_generate(
+def _openrouter_generate(
     api_key: str,
     prompt: str,
     model: str = DEFAULT_AUTO_REVIEW_MODEL,
@@ -84,7 +83,7 @@ def _gemini_generate(
     clean_session_id = _clean_openrouter_trace_text(session_id) or stable_id("or_session", "auto_review", clean_model)
     trace_payload: dict[str, Any] = dict(trace) if isinstance(trace, dict) else {}
     trace_payload.setdefault("trace_id", clean_session_id)
-    trace_payload.setdefault("trace_name", "THERIAC Auto Review")
+    trace_payload.setdefault("trace_name", "Theriac Auto Review")
     trace_payload.setdefault("span_name", "auto_review")
     trace_payload.setdefault("generation_name", clean_model)
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -106,7 +105,7 @@ def _gemini_generate(
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
             "HTTP-Referer": "https://github.com/theriac/lore-bible",
-            "X-Title": "THERIAC Lore Bible",
+            "X-Title": "Theriac Lore Bible",
             "X-Session-Id": clean_session_id,
         },
         method="POST",
@@ -173,9 +172,9 @@ def _gemini_generate(
 # ---------------------------------------------------------------------------
 
 _CONVERSATION_ENTITY_PROMPT = """\
-You are reviewing a proposed conversation entity for the THERIAC lore bible.
+You are reviewing a proposed conversation entity for the Theriac lore bible.
 Your job is to decide whether this entity should be APPROVED as a real entity
-in the THERIAC universe or REJECTED as noise / not a real entity.
+in the Theriac universe or REJECTED as noise / not a real entity.
 
 Always make a best-guess approve/reject decision. If the evidence is ambiguous,
 still choose the more likely decision, but set human_review_recommended=true.
@@ -203,9 +202,9 @@ Respond with a JSON object:
 
 Guidelines:
 - APPROVE only when the supplied evidence explicitly establishes a durable
-  THERIAC entity or an explicit alias/codename/title/working name for one.
+  Theriac entity or an explicit alias/codename/title/working name for one.
 - REJECT entities that are real-world references, generic English words with
-  no special THERIAC meaning, or names of real people who are team members
+  no special Theriac meaning, or names of real people who are team members
   rather than characters.
 - Recommend human review when the candidate is broad, abstract, low-evidence,
   mostly production/meta, type-ambiguous, or could be a thematic concept/mechanic/category
@@ -234,7 +233,7 @@ Guidelines:
 """
 
 _CLAIM_PROMPT = """\
-You are reviewing an atomic lore claim extracted from THERIAC Discord
+You are reviewing an atomic lore claim extracted from Theriac Discord
 conversations. Decide whether this claim should be ACCEPTED into the lore
 bible or REJECTED.
 
@@ -278,7 +277,7 @@ Guidelines:
 """
 
 _IDENTITY_MERGE_PROMPT = """\
-You are reviewing a proposed identity merge for the THERIAC lore bible.
+You are reviewing a proposed identity merge for the Theriac lore bible.
 This proposes that two entity names actually refer to the same entity.
 
 The proposal is:
@@ -300,7 +299,7 @@ Guidelines:
 """
 
 _CARD_PROMPT = """\
-You are reviewing a synthesized wiki-style lore card for the THERIAC lore
+You are reviewing a synthesized wiki-style lore card for the Theriac lore
 bible. Decide whether the card draft is good enough to APPROVE as canonical
 or should be REJECTED for revision.
 
@@ -708,7 +707,7 @@ def _claim_duplicate_key(claim: dict[str, Any]) -> tuple[str, str, str]:
 def _source_snippets_path_for_claims(patches_path: Path) -> Path | None:
     for parent in [patches_path.parent, *patches_path.parents]:
         for candidate in (
-            parent / "06_snippet_extraction" / "snippets_candidates.jsonl",
+            parent / "05_snippet_extraction" / "snippets_candidates.jsonl",
             parent / "snippets_candidates.jsonl",
         ):
             if candidate.exists():
@@ -986,7 +985,7 @@ def _auto_review_conversation_entities(
 
         item_json = _truncate_item(review_item)
         prompt = _CONVERSATION_ENTITY_PROMPT.format(context_json=context_json, item_json=item_json)
-        resp = _gemini_generate(api_key, prompt, model=model)
+        resp = _openrouter_generate(api_key, prompt, model=model)
 
         if resp is None:
             log(f"[auto-review]   FAILED: API returned no valid response for {group_name}")
@@ -1090,7 +1089,7 @@ def _auto_review_conversation_entities(
 
         item_json = _truncate_item(review_item)
         prompt = _CONVERSATION_ENTITY_PROMPT.format(context_json=context_json, item_json=item_json)
-        resp = _gemini_generate(api_key, prompt, model=model)
+        resp = _openrouter_generate(api_key, prompt, model=model)
 
         if resp is None:
             log(f"[auto-review]   FAILED: API returned no valid response for {name}")
@@ -1256,7 +1255,7 @@ def _auto_review_claims(
         review_item = _claim_review_item(claim, duplicate_claims, source_set_claims, source_snippets)
         item_json = _truncate_item(review_item, max_chars=12000)
         prompt = _CLAIM_PROMPT.format(item_json=item_json)
-        resp = _gemini_generate(api_key, prompt, model=model)
+        resp = _openrouter_generate(api_key, prompt, model=model)
 
         if resp is None:
             log(f"[auto-review]   FAILED: API returned no valid response")
@@ -1358,7 +1357,7 @@ def _auto_review_identity_merges(
 
         item_json = _truncate_item(proposal)
         prompt = _IDENTITY_MERGE_PROMPT.format(item_json=item_json)
-        resp = _gemini_generate(api_key, prompt, model=model)
+        resp = _openrouter_generate(api_key, prompt, model=model)
 
         if resp is None:
             log(f"[auto-review]   FAILED: API returned no valid response")
@@ -1432,7 +1431,7 @@ def _auto_review_cards(
 
         item_json = _truncate_item(card)
         prompt = _CARD_PROMPT.format(item_json=item_json)
-        resp = _gemini_generate(api_key, prompt, model=model)
+        resp = _openrouter_generate(api_key, prompt, model=model)
 
         if resp is None:
             log(f"[auto-review]   FAILED: API returned no valid response")

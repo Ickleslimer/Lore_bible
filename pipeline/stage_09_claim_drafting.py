@@ -10,11 +10,8 @@ from typing import Any
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json
 from pipeline.entity_resolution import load_entity_records, normalized_name_key
 from pipeline.model_provider import (
-    call_gemini_batch_json,
     call_model_chat,
     get_model_runtime_status,
-    model_batch_enabled,
-    model_batch_max_requests,
     model_call_kwargs,
 )
 from pipeline.review_memory import load_review_memory, rejected_claim_keys, relevant_memory_for_entity, normalize_claim_text
@@ -208,14 +205,11 @@ def run(
 
     claim_drafts = []
     extraction_failures: list[dict[str, Any]] = []
-    batch_enabled = model_batch_enabled(config, "stage_09_claim_drafting")
-    batch_tasks: list[dict[str, Any]] = []
     model_call_total = 0
-    if not batch_enabled:
-        for cluster in lore_clusters:
-            evidence = cluster_evidence(cluster, snippets)
-            if evidence and target_entity_for_cluster(cluster, evidence, entity_by_name) is not None:
-                model_call_total += 1
+    for cluster in lore_clusters:
+        evidence = cluster_evidence(cluster, snippets)
+        if evidence and target_entity_for_cluster(cluster, evidence, entity_by_name) is not None:
+            model_call_total += 1
     model_call_index = 0
     heartbeat_every = max(1, min(100, max(10, len(lore_clusters) // 20 or 1)))
     for cluster_index, cluster in enumerate(lore_clusters, start=1):
@@ -258,26 +252,6 @@ def run(
             str(target_entity.get("canonical_name", "")),
         )
         rejected_keys = rejected_claim_keys(review_memory, str(target_entity.get("entity_id", "")))
-        if batch_enabled:
-            batch_tasks.append(
-                {
-                    "key": str(cluster.get("cluster_id") or stable_id("claim_cluster", str(cluster.get("cluster_key", "")), *snippet_ids)),
-                    "prompt": build_claim_extraction_prompt(target_entity, cluster, evidence, memory_for_entity),
-                    "target_entity": target_entity,
-                    "cluster": cluster,
-                    "evidence": evidence,
-                    "rejected_keys": rejected_keys,
-                }
-            )
-            if cluster_index == len(lore_clusters) or cluster_index % heartbeat_every == 0:
-                logger.info(
-                    "Stage 09 progress: %d/%d preparing lore clusters batch_tasks=%d failures=%d",
-                    cluster_index,
-                    len(lore_clusters),
-                    len(batch_tasks),
-                    len(extraction_failures),
-                )
-            continue
         model_call_index += 1
         logger.info(
             "Stage 09 model call: %d/%d entity=%s cluster=%s snippets=%d",
@@ -324,79 +298,6 @@ def run(
                 "Stage 09 progress: %d/%d preparing lore clusters claim_drafts=%d failures=%d",
                 cluster_index,
                 len(lore_clusters),
-                len(claim_drafts),
-                len(extraction_failures),
-            )
-
-    if batch_tasks:
-        max_batch_requests = model_batch_max_requests(config, "stage_09_claim_drafting", default=100)
-        batch_total = (len(batch_tasks) + max_batch_requests - 1) // max_batch_requests
-        logger.info(
-            "Stage 09: batch mode enabled; submitting %d claim extraction task(s) in chunks of %d.",
-            len(batch_tasks),
-            max_batch_requests,
-        )
-        for batch_index, offset in enumerate(range(0, len(batch_tasks), max_batch_requests), start=1):
-            task_chunk = batch_tasks[offset : offset + max_batch_requests]
-            logger.info(
-                "Stage 09 model call: %d/%d batch claim extraction tasks=%d offset=%d",
-                batch_index,
-                batch_total,
-                len(task_chunk),
-                offset,
-            )
-            try:
-                batch_outputs = call_gemini_batch_json(config, "stage_09_claim_drafting", task_chunk)
-            except Exception as exc:
-                for task in task_chunk:
-                    extraction_failures.append(
-                        build_extraction_failure(
-                            task["cluster"],
-                            task["evidence"],
-                            "batch_model_claim_extraction_failed",
-                            str(exc),
-                            task["target_entity"],
-                        )
-                    )
-                logger.info(
-                    "Stage 09 progress: %d/%d batch claim extraction claim_drafts=%d failures=%d",
-                    min(offset + len(task_chunk), len(batch_tasks)),
-                    len(batch_tasks),
-                    len(claim_drafts),
-                    len(extraction_failures),
-                )
-                continue
-            for task in task_chunk:
-                result = batch_outputs.get(task["key"], {"payload": None, "error": "missing_batch_response"})
-                payload = result.get("payload")
-                if not isinstance(payload, dict) or not isinstance(payload.get("claims"), list):
-                    extraction_failures.append(
-                        build_extraction_failure(
-                            task["cluster"],
-                            task["evidence"],
-                            "batch_model_claim_extraction_failed",
-                            str(result.get("error") or "provider returned no valid `claims` JSON"),
-                            task["target_entity"],
-                        )
-                    )
-                    continue
-                model_claims = [claim for claim in payload["claims"] if isinstance(claim, dict)]
-                append_claim_drafts_from_model_claims(
-                    claim_drafts=claim_drafts,
-                    extraction_failures=extraction_failures,
-                    model_claims=model_claims,
-                    target_entity=task["target_entity"],
-                    cluster=task["cluster"],
-                    evidence=task["evidence"],
-                    snippets=snippets,
-                    entity_by_id=entity_by_id,
-                    thematic_memory=thematic_memory,
-                    rejected_keys=task["rejected_keys"],
-                )
-            logger.info(
-                "Stage 09 progress: %d/%d batch claim extraction claim_drafts=%d failures=%d",
-                min(offset + len(task_chunk), len(batch_tasks)),
-                len(batch_tasks),
                 len(claim_drafts),
                 len(extraction_failures),
             )
@@ -689,10 +590,10 @@ def build_claim_extraction_prompt(
         }
         for item in evidence[:8]
     ]
-    return f"""Extract atomic lore claims for one THERIAC entity.
+    return f"""Extract atomic lore claims for one Theriac entity.
 Return strict JSON only. Do not paste raw snippets as prose. Do not use bootstrap lore-bible text as evidence.
 Suppress claims that repeat rejected memory. Keep claims concise, factual, and individually reviewable.
-Domain rule: THERIAC quest titles may be named after songs. Do not treat song-title quest names as weak, merely thematic, or non-diegetic when evidence links them to a path, ending, mission, or quest progression.
+Domain rule: Theriac quest titles may be named after songs. Do not treat song-title quest names as weak, merely thematic, or non-diegetic when evidence links them to a path, ending, mission, or quest progression.
 External reference rule: reference-only names from other media, real people, or creators should not become card subjects or target entities. If the evidence says an external source inspires, resembles, contrasts with, or influences the target entity, extract that as a claim_type "inspiration" about the target entity.
 
 Target entity:

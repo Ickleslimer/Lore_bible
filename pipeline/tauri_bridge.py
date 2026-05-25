@@ -4,13 +4,22 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import now_utc_iso, read_json, write_json
+from pipeline.entity_inventory_browser import (
+    entity_inventory_fingerprints,
+    entity_inventory_source_paths,
+    load_entity_inventory_browser_cache,
+    slim_entity_browser_rows,
+    write_entity_inventory_browser_cache,
+)
 from pipeline.entity_resolution import load_entity_records, normalize_entity_type, normalized_name_key
+from pipeline.theme_rescue_status import theme_rescue_status_payload, write_theme_rescue_approval
 from pipeline.ui_review_app import (
     NEW_RUN_SELECTOR_VALUE,
     _display_path,
@@ -175,6 +184,130 @@ def _write_openrouter_key(repo_root: Path, api_key: str) -> None:
     env_path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
 
 
+MODEL_SLOT_PROFILES: dict[str, list[str]] = {
+    "volume_model": ["high_volume", "balanced_reasoning"],
+    "reasoning_model": ["deep_reasoning", "premium_reasoning"],
+    "card_writing_model": ["card_writing"],
+}
+
+
+def _model_choice_catalog() -> list[dict[str, str]]:
+    return [
+        {
+            "id": "qwen/qwen3.5-flash-02-23",
+            "label": "Qwen 3.5 Flash",
+            "description": "Fast, low-cost batch work",
+        },
+        {
+            "id": "qwen/qwen3-235b-a22b-2507",
+            "label": "Qwen 3 235B",
+            "description": "Higher-capacity annotation and harvest work",
+        },
+        {
+            "id": "deepseek/deepseek-v4-flash",
+            "label": "DeepSeek V4 Flash",
+            "description": "Deep reasoning, card writing, and theme mining",
+        },
+        {
+            "id": "openai/gpt-oss-120b",
+            "label": "GPT-OSS 120B",
+            "description": "Web-backed externality adjudication",
+        },
+    ]
+
+
+def _routing_profiles(config: dict[str, Any]) -> dict[str, Any]:
+    routing = config.get("model_routing", {}) if isinstance(config.get("model_routing", {}), dict) else {}
+    profiles = routing.get("profiles", {}) if isinstance(routing.get("profiles", {}), dict) else {}
+    return profiles if isinstance(profiles, dict) else {}
+
+
+def _profile_api_model(profiles: dict[str, Any], profile_name: str, default: str = "") -> str:
+    profile = profiles.get(profile_name, {})
+    if not isinstance(profile, dict):
+        return default
+    return str(profile.get("api_model") or default).strip()
+
+
+def _read_model_slot(profiles: dict[str, Any], slot: str, default: str) -> str:
+    for profile_name in MODEL_SLOT_PROFILES.get(slot, []):
+        value = _profile_api_model(profiles, profile_name)
+        if value:
+            return value
+    return default
+
+
+def _model_choices_for_payload(profiles: dict[str, Any]) -> list[dict[str, str]]:
+    catalog = _model_choice_catalog()
+    known = {entry["id"] for entry in catalog}
+    extras: list[dict[str, str]] = []
+    for slot in MODEL_SLOT_PROFILES:
+        current = _read_model_slot(profiles, slot, "")
+        if current and current not in known:
+            extras.append(
+                {
+                    "id": current,
+                    "label": current,
+                    "description": "Currently configured custom model",
+                }
+            )
+            known.add(current)
+    return catalog + extras
+
+
+def _model_selection_payload(config: dict[str, Any]) -> dict[str, Any]:
+    profiles = _routing_profiles(config)
+    model_provider = config.get("model_provider", {}) if isinstance(config.get("model_provider", {}), dict) else {}
+    story_questions = config.get("story_questions", {}) if isinstance(config.get("story_questions", {}), dict) else {}
+    volume_default = str(model_provider.get("api_model") or "qwen/qwen3.5-flash-02-23")
+    reasoning_default = str(story_questions.get("model") or "deepseek/deepseek-v4-flash")
+    card_default = "deepseek/deepseek-v4-flash"
+    return {
+        "volume_model": _read_model_slot(profiles, "volume_model", volume_default),
+        "reasoning_model": _read_model_slot(profiles, "reasoning_model", reasoning_default),
+        "card_writing_model": _read_model_slot(profiles, "card_writing_model", card_default),
+        "model_choices": _model_choices_for_payload(profiles),
+    }
+
+
+def _apply_model_selections(config: dict[str, Any], payload: dict[str, Any]) -> None:
+    selections = {
+        "volume_model": str(payload.get("volume_model") or "").strip(),
+        "reasoning_model": str(payload.get("reasoning_model") or "").strip(),
+        "card_writing_model": str(payload.get("card_writing_model") or "").strip(),
+    }
+    if not any(selections.values()):
+        return
+
+    routing = config.get("model_routing", {}) if isinstance(config.get("model_routing", {}), dict) else {}
+    profiles = routing.get("profiles", {}) if isinstance(routing.get("profiles", {}), dict) else {}
+    if not isinstance(profiles, dict):
+        profiles = {}
+
+    for slot, model_id in selections.items():
+        if not model_id:
+            continue
+        for profile_name in MODEL_SLOT_PROFILES.get(slot, []):
+            profile = profiles.get(profile_name, {})
+            if not isinstance(profile, dict):
+                profile = {}
+            profile["api_model"] = model_id
+            profiles[profile_name] = profile
+
+    routing["profiles"] = profiles
+    config["model_routing"] = routing
+
+    if selections["volume_model"]:
+        model_provider = config.get("model_provider", {}) if isinstance(config.get("model_provider", {}), dict) else {}
+        model_provider["api_model"] = selections["volume_model"]
+        config["model_provider"] = model_provider
+
+    if selections["reasoning_model"]:
+        story_questions = config.get("story_questions", {}) if isinstance(config.get("story_questions", {}), dict) else {}
+        story_questions["model"] = selections["reasoning_model"]
+        config["story_questions"] = story_questions
+
+
 def app_config_payload(repo_root: Path) -> dict[str, Any]:
     config_path = repo_root / "config" / "pipeline_config.json"
     config = read_json(config_path) if config_path.exists() else {}
@@ -194,6 +327,7 @@ def app_config_payload(repo_root: Path) -> dict[str, Any]:
         "openrouter_key_present": bool(openrouter_key),
         "openrouter_key_source": openrouter_source,
         "openrouter_key_preview": _key_preview(openrouter_key),
+        **_model_selection_payload(config),
     }
 
 
@@ -217,6 +351,7 @@ def handle_save_app_config(repo_root: Path, payload: dict[str, Any]) -> dict[str
             raise ValueError("Bootstrap document must be a .docx file.")
         paths["docx_lore_bible"] = _path_for_config(repo_root, bootstrap_path)
     config["paths"] = paths
+    _apply_model_selections(config, payload)
     config["desktop_config_updated_at_utc"] = now_utc_iso()
     write_json(config_path, config)
 
@@ -263,6 +398,7 @@ def _run_state(repo_root: Path, active_root: Path) -> dict[str, Any]:
         str(snapshot.get("status", "idle")) if isinstance(snapshot, dict) else "idle",
         str(snapshot.get("message", "")) if isinstance(snapshot, dict) else "",
     )
+    theme_rescue = theme_rescue_status_payload(active_root, repo_root) if active_root.exists() else None
     return {
         "repo_root": str(repo_root),
         "active_root": str(active_root),
@@ -271,6 +407,7 @@ def _run_state(repo_root: Path, active_root: Path) -> dict[str, Any]:
         "pending_total": pending_review_total(counts) if counts else 0,
         "pending_summary": pending_review_summary(counts) if counts else "no review artifacts yet",
         "progress": progress,
+        "theme_rescue": theme_rescue,
         "runs": [
             {
                 **run,
@@ -722,14 +859,9 @@ def _word_count(value: Any) -> int:
 def _card_sections(card: dict[str, Any]) -> list[dict[str, Any]]:
     details = card.get("details") if isinstance(card.get("details"), dict) else {}
     sections = details.get("sections") if isinstance(details.get("sections"), dict) else {}
-    preferred = [
-        ("background", "Background"),
-        ("role_in_story", "Role In Story"),
-        ("relationships", "Relationships"),
-        ("timeline", "Timeline"),
-        ("inspirations", "Inspirations"),
-        ("open_questions", "Open Questions"),
-    ]
+    from pipeline.card_sections import card_review_section_order
+
+    preferred = card_review_section_order()
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for key, title in preferred:
@@ -1064,38 +1196,36 @@ def _relationship_graph(root: Path, repo_root: Path | None = None) -> dict[str, 
                 source_ref=card.get("card_id"),
             )
 
-    notes_payload = _load_json_payload(paths.conversation_patch_notes, {"notes": []})
-    notes = notes_payload.get("notes", []) if isinstance(notes_payload.get("notes"), list) else []
-    if not notes and paths.conversation_patch_notes_jsonl.exists():
-        try:
-            with paths.conversation_patch_notes_jsonl.open("r", encoding="utf-8") as handle:
-                notes = [json.loads(line) for line in handle if line.strip()]
-        except Exception:
-            notes = []
-    for note in notes:
-        if not isinstance(note, dict):
+    notes_payload = _load_json_payload(paths.entity_development_history, {"by_entity": {}})
+    by_entity = notes_payload.get("by_entity", {}) if isinstance(notes_payload.get("by_entity"), dict) else {}
+    for entity_id, entries in by_entity.items():
+        if not isinstance(entries, list):
             continue
-        track = note.get("track") or "unknown"
-        patch_note_id = note.get("patch_note_id") or note.get("conversation_id") or ""
-        for rel in note.get("relationship_updates", []) or []:
-            if not isinstance(rel, dict):
+        for entry in entries:
+            if not isinstance(entry, dict):
                 continue
-            source_name = str(rel.get("source_entity") or "").strip()
-            target_name = str(rel.get("target_entity") or "").strip()
-            if not source_name or not target_name:
+            if str(entry.get("change_type", "")).strip().lower() != "relationship":
+                continue
+            source_name = str(entry.get("subject_label") or "").strip()
+            headline = str(entry.get("headline") or "").strip()
+            if not source_name or not headline:
+                continue
+            target_match = re.search(r"(?:with|to|and)\s+([A-Z][A-Za-z0-9' -]+)", headline)
+            target_name = target_match.group(1).strip() if target_match else ""
+            if not target_name:
                 continue
             source_id = resolve_ref(name=source_name)
             target_id = resolve_ref(name=target_name)
             add_edge(
                 source_id=source_id,
                 target_id=target_id,
-                relation_type=rel.get("relationship_type"),
-                note=rel.get("description"),
-                track=track,
-                confidence=rel.get("confidence"),
-                support_ids=rel.get("supporting_message_ids", []) or [],
-                source_kind="patch_note_relationship",
-                source_ref=patch_note_id,
+                relation_type=entry.get("change_type"),
+                note=headline,
+                track="lore",
+                confidence=entry.get("confidence"),
+                support_ids=entry.get("supporting_message_ids", []) or [],
+                source_kind="ledger_relationship",
+                source_ref=str(entry.get("entry_id") or entity_id),
             )
 
     claims, accepted_ids = _all_claims_for_evidence(root)
@@ -1214,17 +1344,20 @@ def handle_claim_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[str
     return {"active_root": str(active), "rows": rows, "total": len(rows)}
 
 
-def handle_entity_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
-    active = _active_root(repo_root, payload)
+def _build_entity_inventory_payload(active: Path, repo_root: Path) -> dict[str, Any]:
     rows = _entity_rows(active) if active.exists() else []
     merged = _merged_entity_rows(active, repo_root) if active.exists() else {"rows": [], "metadata": {"available": False}}
     merged_rows = merged.get("rows", []) if isinstance(merged, dict) else []
     metadata = merged.get("metadata", {}) if isinstance(merged, dict) else {}
     theme_associations_by_entity = _theme_associations_by_entity(active, repo_root) if active.exists() else {}
-    rows = _annotate_entity_rows_with_theme_associations(rows, theme_associations_by_entity)
-    merged_rows = _annotate_entity_rows_with_theme_associations(
-        merged_rows if isinstance(merged_rows, list) else [],
-        theme_associations_by_entity,
+    rows = slim_entity_browser_rows(
+        _annotate_entity_rows_with_theme_associations(rows, theme_associations_by_entity),
+    )
+    merged_rows = slim_entity_browser_rows(
+        _annotate_entity_rows_with_theme_associations(
+            merged_rows if isinstance(merged_rows, list) else [],
+            theme_associations_by_entity,
+        ),
     )
     return {
         "active_root": str(active),
@@ -1234,6 +1367,45 @@ def handle_entity_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[st
         "merged_total": len(merged_rows) if isinstance(merged_rows, list) else 0,
         "merged_metadata": metadata,
     }
+
+
+def handle_entity_inventory(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    active = _active_root(repo_root, payload)
+    if not active.exists():
+        return {
+            "active_root": str(active),
+            "rows": [],
+            "total": 0,
+            "merged_rows": [],
+            "merged_total": 0,
+            "merged_metadata": {"available": False},
+        }
+    review_memory_path = _review_memory_path_for_root(active, repo_root)
+    source_paths = entity_inventory_source_paths(active, repo_root, review_memory_path)
+    fingerprints = entity_inventory_fingerprints(source_paths)
+    cache_path = ArtifactPaths(active).entity_inventory_browser_cache
+    cached = load_entity_inventory_browser_cache(cache_path, fingerprints)
+    if cached is not None:
+        return {
+            "active_root": str(active),
+            "rows": cached.get("rows", []) if isinstance(cached.get("rows"), list) else [],
+            "total": int(cached.get("total", 0) or 0),
+            "merged_rows": cached.get("merged_rows", []) if isinstance(cached.get("merged_rows"), list) else [],
+            "merged_total": int(cached.get("merged_total", 0) or 0),
+            "merged_metadata": cached.get("merged_metadata", {}) if isinstance(cached.get("merged_metadata"), dict) else {},
+            "cache_hit": True,
+        }
+    payload_out = _build_entity_inventory_payload(active, repo_root)
+    write_entity_inventory_browser_cache(
+        cache_path,
+        fingerprints=fingerprints,
+        active_root=str(active),
+        rows=payload_out["rows"],
+        merged_rows=payload_out["merged_rows"],
+        merged_metadata=payload_out["merged_metadata"],
+    )
+    payload_out["cache_hit"] = False
+    return payload_out
 
 
 def _theme_profile_path(repo_root: Path) -> Path:
@@ -1468,10 +1640,21 @@ def _theme_associations_by_entity(root: Path, repo_root: Path) -> dict[str, list
     return by_key
 
 
+def _pick_better_theme_association(
+    current: dict[str, Any] | None,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    if current is None:
+        return candidate
+    return candidate if _theme_association_sort_key(candidate) < _theme_association_sort_key(current) else current
+
+
 def _entity_row_theme_keys(row: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for field in ("candidate_name", "raw_candidate_name", "canonical_name"):
         values.append(str(row.get(field) or ""))
+    for alias in row.get("aliases", []) or []:
+        values.append(str(alias))
     item = row.get("item", {}) if isinstance(row.get("item"), dict) else {}
     for field in (
         "candidate_name",
@@ -1509,14 +1692,14 @@ def _theme_associations_for_entity_row(
     row: dict[str, Any],
     associations_by_entity: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    seen: dict[str, dict[str, Any]] = {}
+    by_theme: dict[str, dict[str, Any]] = {}
     for key in _entity_row_theme_keys(row):
         for association in associations_by_entity.get(key, []):
-            association_id = str(association.get("association_id") or "")
-            if not association_id:
-                association_id = f"{association.get('theme_id')}:{association.get('normalized_key')}:{association.get('candidate_name')}"
-            seen[association_id] = association
-    out = list(seen.values())
+            theme_id = str(association.get("theme_id") or "").strip()
+            if not theme_id:
+                continue
+            by_theme[theme_id] = _pick_better_theme_association(by_theme.get(theme_id), association)
+    out = list(by_theme.values())
     out.sort(key=_theme_association_sort_key)
     return _json_safe(out)
 
@@ -1692,6 +1875,21 @@ def handle_undo_card_agent_transaction(repo_root: Path, payload: dict[str, Any])
     return handle_card_agent_activity(repo_root, {"artifacts_root": str(active)})
 
 
+def handle_theme_rescue(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    active = _active_root(repo_root, payload)
+    return theme_rescue_status_payload(active, repo_root)
+
+
+def handle_approve_theme_rescue(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    active = _active_root(repo_root, payload)
+    write_theme_rescue_approval(
+        active,
+        approved_by=str(payload.get("approved_by") or "desktop_user"),
+        note=str(payload.get("note") or ""),
+    )
+    return theme_rescue_status_payload(active, repo_root)
+
+
 def handle_identity_cluster_decision(repo_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     active = _active_root(repo_root, payload)
     proposal_id = str(payload.get("proposal_id") or "").strip()
@@ -1837,6 +2035,8 @@ COMMANDS = {
     "claim_decision": handle_claim_decision,
     "entity_inventory": handle_entity_inventory,
     "theme_learning": handle_theme_learning,
+    "theme_rescue": handle_theme_rescue,
+    "approve_theme_rescue": handle_approve_theme_rescue,
     "entity_evidence": handle_entity_evidence,
     "entity_decision": handle_entity_decision,
     "draft_cards": handle_draft_cards,

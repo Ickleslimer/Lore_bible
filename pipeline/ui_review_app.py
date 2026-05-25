@@ -23,9 +23,9 @@ PIPELINE_STAGES = [
     {"index": 2, "short_label": "02", "name": "Message Normalization"},
     {"index": 3, "short_label": "03", "name": "Timeline Merge"},
     {"index": 4, "short_label": "04", "name": "Conversation Segmentation"},
-    {"index": 5, "short_label": "05", "name": "Conversation Patch Notes"},
-    {"index": 6, "short_label": "06", "name": "Snippet Extraction"},
-    {"index": 7, "short_label": "07", "name": "Entity Resolution"},
+    {"index": 5, "short_label": "05", "name": "Snippet Extraction"},
+    {"index": 6, "short_label": "06", "name": "Entity Resolution"},
+    {"index": 7, "short_label": "07", "name": "Lore Development Ledger"},
     {"index": 8, "short_label": "08", "name": "Snippet Grouping"},
     {"index": 9, "short_label": "09", "name": "Claim Drafting"},
     {"index": 10, "short_label": "10", "name": "Identity Merge"},
@@ -118,12 +118,14 @@ PIPELINE_PROGRESS_JS = """
 """
 
 STAGE_LOG_RE = re.compile(r"\[(\d+)/(\d+)\]\s+(START|DONE|REVIEW)\s+(.+?)(?:\s+\(|$)")
-STAGE_HEARTBEAT_RE = re.compile(r"Stage\s+(\d+)\s+(model call|progress):?\s+(\d+)/(\d+)\b(?:\s+([^.\n]+))?", re.IGNORECASE)
+STAGE_HEARTBEAT_RE = re.compile(r"Stage\s+(\d+)\s+(?:ledger\s+)?(model call|progress):?\s+(\d+)/(\d+)\b(?:\s+([^.\n]+))?", re.IGNORECASE)
 REVIEW_GATE_LOG_MARKERS = (
     "requiring review",
     "conversation entity proposal",
     "identity merge proposal",
     "card architecture proposal",
+    "theme rescue approval",
+    "theme rescue gate",
 )
 WORKER_FAILURE_RE = re.compile(r"desktop:\s+Pipeline stopped with exit code\s+(-?\d+)", re.IGNORECASE)
 
@@ -326,38 +328,38 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
     if paths.conversation_segments.exists():
         mark_done(4, "Conversation Segmentation")
 
-    patch_notes_path = paths.conversation_patch_notes
-    if patch_notes_path.exists():
-        mark_start(5, "Conversation Patch Notes")
-        try:
-            patch_payload = read_json(patch_notes_path)
-        except Exception:
-            patch_payload = {}
-        if isinstance(patch_payload, dict):
-            conversation_total = int(patch_payload.get("conversation_count", 0) or 0)
-            processed = int(patch_payload.get("notes_count", 0) or 0) + int(patch_payload.get("failure_count", 0) or 0)
-            if conversation_total:
-                logs.append(f"Stage 05 progress: {min(processed, conversation_total)}/{conversation_total} conversations")
-            if str(patch_payload.get("status", "")).strip().lower() == "complete":
-                logs.append(f"[5/{stage_total}] DONE  Stage 05 Conversation Patch Notes")
-
     if paths.snippets.exists():
-        mark_done(6, "Snippet Extraction")
+        mark_done(5, "Snippet Extraction")
 
     counts = pending_review_counts_for_root(root)
     if paths.resolved_entities.exists() or paths.conversation_entity_proposals.exists():
-        mark_start(7, "Entity Resolution")
+        mark_start(6, "Entity Resolution")
         if counts.get("conversation_entities", 0) > 0:
             worker_failure = worker_failure_snapshot_if_any()
             if worker_failure is not None:
                 return worker_failure
-            logs.append(f"[7/{stage_total}] REVIEW Stage 07 Entity Resolution")
+            logs.append(f"[6/{stage_total}] REVIEW Stage 06 Entity Resolution")
             return {
                 "status": "review_required",
-                "message": f"Paused at Stage 07 Entity Resolution: {counts['conversation_entities']} conversation entity proposal(s) need review.",
+                "message": f"Paused at Stage 06 Entity Resolution: {counts['conversation_entities']} conversation entity proposal(s) need review.",
                 "logs": logs,
             }
-        logs.append(f"[7/{stage_total}] DONE  Stage 07 Entity Resolution")
+        logs.append(f"[6/{stage_total}] DONE  Stage 06 Entity Resolution")
+
+    ledger_index_path = paths.lore_development_ledger_index
+    if ledger_index_path.exists():
+        mark_start(7, "Lore Development Ledger")
+        try:
+            ledger_payload = read_json(ledger_index_path)
+        except Exception:
+            ledger_payload = {}
+        if isinstance(ledger_payload, dict):
+            segment_total = int(ledger_payload.get("segment_count", 0) or 0)
+            processed = int(ledger_payload.get("completed_segment_count", 0) or 0)
+            if segment_total:
+                logs.append(f"Stage 07 progress: {min(processed, segment_total)}/{segment_total} segments")
+            if str(ledger_payload.get("status", "")).strip().lower() == "complete":
+                logs.append(f"[7/{stage_total}] DONE  Stage 07 Lore Development Ledger")
 
     if paths.snippet_clusters_lore.exists() or paths.snippet_clusters_meta.exists():
         mark_done(8, "Snippet Grouping")
@@ -486,7 +488,7 @@ HTML = """
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>THERIAC Claim Review</title>
+  <title>Theriac Claim Review</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 16px; }
     .row { display: flex; gap: 16px; }
@@ -511,7 +513,7 @@ HTML = """
 <body>
   <div class="page">
   <div class="page-header">
-    <h2>THERIAC Claim Review</h2>
+    <h2>Theriac Claim Review</h2>
     <p class="subtitle">Review one atomic claim at a time, with source snippets visible before the raw data.</p>
   </div>
   {{ run_selector_html | safe }}
@@ -652,7 +654,7 @@ HTML_CARD = """
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>THERIAC Card Review</title>
+  <title>Theriac Card Review</title>
   <style>
     {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
@@ -661,7 +663,7 @@ HTML_CARD = """
 <body>
   <div class="page">
   <div class="page-header">
-    <h2>THERIAC Card Review</h2>
+    <h2>Theriac Card Review</h2>
     <p class="subtitle">Review the synthesized wiki-style card before promotion to canonical output.</p>
   </div>
   {{ run_selector_html | safe }}
@@ -738,7 +740,7 @@ HTML_IDENTITY_MERGE = """
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>THERIAC Entity Merge Review</title>
+  <title>Theriac Entity Merge Review</title>
   <style>
     {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
@@ -747,7 +749,7 @@ HTML_IDENTITY_MERGE = """
 <body>
   <div class="page">
   <div class="page-header">
-    <h2>THERIAC Entity Merge Review</h2>
+    <h2>Theriac Entity Merge Review</h2>
     <p class="subtitle">Approve identity clusters, choosing one canonical wiki-page title before card synthesis.</p>
   </div>
   {{ run_selector_html | safe }}
@@ -841,7 +843,7 @@ HTML_CONVERSATION_ENTITY = """
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>THERIAC Conversation Entity Review</title>
+  <title>Theriac Conversation Entity Review</title>
   <style>
     input, select { min-width: 260px; }
     {{ review_ui_css | safe }}
@@ -851,7 +853,7 @@ HTML_CONVERSATION_ENTITY = """
 <body>
   <div class="page">
   <div class="page-header">
-    <h2>THERIAC Conversation Entity Review</h2>
+    <h2>Theriac Conversation Entity Review</h2>
     <p class="subtitle">Decide whether this observed term deserves a canonical entity, a corrected type, or rejection.</p>
   </div>
   {{ run_selector_html | safe }}
@@ -950,7 +952,7 @@ HTML_BOOTSTRAP = """
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>THERIAC Claim Review</title>
+  <title>Theriac Claim Review</title>
   <style>
     .panel { border: 1px solid #ddd; padding: 12px; border-radius: 6px; max-width: 860px; }
     code { background: #f6f8fa; padding: 2px 4px; border-radius: 4px; }
@@ -961,7 +963,7 @@ HTML_BOOTSTRAP = """
 <body>
   <div class="page">
   <div class="page-header">
-    <h2>THERIAC Review</h2>
+    <h2>Theriac Review</h2>
     <p class="subtitle">No pending review item is ready yet for this run.</p>
   </div>
   {{ run_selector_html | safe }}
@@ -1013,7 +1015,7 @@ HTML_MESSAGE = """
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>THERIAC Review</title>
+  <title>Theriac Review</title>
   <style>
     {{ review_ui_css | safe }}
     {{ pipeline_progress_css | safe }}
@@ -1022,7 +1024,7 @@ HTML_MESSAGE = """
 <body>
   <div class="page">
   <div class="page-header">
-    <h2>THERIAC Review</h2>
+    <h2>Theriac Review</h2>
   </div>
   {{ run_selector_html | safe }}
   <div class="status">{{ message }}</div>
@@ -1063,13 +1065,13 @@ DEFAULT_IDENTITY_MERGE_DECISIONS_CANDIDATES = [
 ]
 
 DEFAULT_CONVERSATION_ENTITY_PROPOSALS_CANDIDATES = [
-    Path("artifacts/07_entity_resolution/conversation_entity_proposals.json"),
-    Path("artifacts/small_batch/07_entity_resolution/conversation_entity_proposals.json"),
+    Path("artifacts/06_entity_resolution/conversation_entity_proposals.json"),
+    Path("artifacts/small_batch/06_entity_resolution/conversation_entity_proposals.json"),
 ]
 
 DEFAULT_CONVERSATION_ENTITY_DECISIONS_CANDIDATES = [
-    Path("artifacts/07_entity_resolution/conversation_entity_decisions.json"),
-    Path("artifacts/small_batch/07_entity_resolution/conversation_entity_decisions.json"),
+    Path("artifacts/06_entity_resolution/conversation_entity_decisions.json"),
+    Path("artifacts/small_batch/06_entity_resolution/conversation_entity_decisions.json"),
 ]
 
 DEFAULT_DIRECTIVES_CANDIDATES = [
@@ -1276,16 +1278,11 @@ def source_snippet_previews_for_claim(root: Path, claim: dict[str, Any], limit: 
 
 
 def card_review_sections(card: dict[str, Any]) -> list[dict[str, str]]:
+    from pipeline.card_sections import card_review_section_order
+
     details = card.get("details") if isinstance(card.get("details"), dict) else {}
     sections = details.get("sections") if isinstance(details.get("sections"), dict) else {}
-    order = [
-        ("background", "Background"),
-        ("role_in_story", "Role In Story"),
-        ("relationships", "Relationships"),
-        ("timeline", "Timeline"),
-        ("inspirations", "Inspirations"),
-        ("open_questions", "Open Questions"),
-    ]
+    order = card_review_section_order()
     blocks: list[dict[str, str]] = []
     for key, title in order:
         text = str(sections.get(key, "")).strip()
@@ -2242,7 +2239,7 @@ def build_app(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run the THERIAC patch review UI."
+        description="Run the Theriac patch review UI."
     )
     parser.add_argument("--patches", type=Path, required=False)
     parser.add_argument("--decisions", type=Path, required=False)

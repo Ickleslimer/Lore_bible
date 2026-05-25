@@ -19,7 +19,39 @@ from pipeline.card_architecture_agent import (
 )
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, safe_uuid, stable_id, write_json, write_jsonl
 from pipeline.entity_resolution import card_id_for_entity, load_entity_records, normalize_entity_type, normalized_name_key
+from pipeline.stage_05_lore_development_ledger import render_entity_history_lines
 from pipeline.model_provider import call_model_chat, get_model_runtime_status, model_call_kwargs
+from pipeline.card_first_review import (
+    build_entity_evidence_bundle,
+    card_first_synthesis_config,
+    entities_for_card_synthesis,
+    load_snippet_clusters,
+    merge_synthesis_evidence_rows,
+    normalize_synthesis_support_ids,
+    section_word_targets_for_entity,
+    should_use_section_chained_synthesis,
+    supplement_claim_decisions,
+    valid_support_id_sets,
+)
+from pipeline.card_sections import (
+    CARD_SECTION_KEYS,
+    LEGACY_CARD_SECTION_KEYS,
+    PATH_BRANCH_CONTEXT,
+    PEACEFUL_LEDE_RULE,
+    normalize_card_sections,
+    should_use_path_split_sections,
+    support_map_section_keys,
+    synthesis_section_keys,
+    validate_path_section_isolation,
+    validate_work_history_isolation,
+)
+from pipeline.narrative_works import (
+    load_narrative_works,
+    load_snippet_narrative_work_tags,
+    snippet_tag_path,
+    work_cards_path,
+    work_isolation_markers,
+)
 from pipeline.review_memory import (
     load_review_memory,
     remember_approved_cards,
@@ -33,7 +65,6 @@ from pipeline.review_memory import (
 VALID_CLAIM_DECISIONS = {"accept", "reject", "defer", "needs_more_context"}
 VALID_CARD_DECISIONS = {"approve", "accept", "reject", "defer", "needs_more_context"}
 VALID_IDENTITY_MERGE_DECISIONS = {"approve", "accept", "reject", "defer", "needs_more_context"}
-CARD_SECTION_KEYS = ["background", "role_in_story", "relationships", "timeline", "inspirations", "open_questions"]
 MAX_SYNTHESIS_SOURCE_SNIPPETS = 24
 MAX_SYNTHESIS_SOURCE_TEXT_CHARS = 900
 WIKI_LINK_CONTEXT_LIMIT = 80
@@ -155,6 +186,33 @@ IDENTITY_CLUSTER_CANONICAL_SCHEMA = {
     "required": ["clusters"],
     "additionalProperties": False,
 }
+
+
+def load_entity_development_history_by_entity(path: Path | None) -> dict[str, list[dict[str, Any]]]:
+    if path is None or not path.exists():
+        return {}
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        return {}
+    by_entity = payload.get("by_entity", {})
+    if not isinstance(by_entity, dict):
+        return {}
+    return {
+        str(entity_key): [entry for entry in entries if isinstance(entry, dict)]
+        for entity_key, entries in by_entity.items()
+        if isinstance(entries, list)
+    }
+
+
+def entity_development_entries_for_entity(
+    history_by_entity: dict[str, list[dict[str, Any]]],
+    entity_id: str,
+    entity: dict[str, Any],
+) -> list[dict[str, Any]]:
+    if entity_id and entity_id in history_by_entity:
+        return history_by_entity[entity_id]
+    label_key = "label:" + normalized_name_key(str(entity.get("canonical_name", "")))
+    return history_by_entity.get(label_key, [])
 
 
 def provider_wait_seconds(reason: str, status: dict[str, Any], fallback_seconds: float) -> float:
@@ -1915,6 +1973,28 @@ def relevant_memory_for_merged_entity(
     return _merge_memory_payloads(payloads)
 
 
+def default_snippet_clusters_lore_path(claim_drafts_path: Path) -> Path:
+    return claim_drafts_path.parent.parent / "08_snippet_grouping" / "snippet_clusters_lore.json"
+
+
+def theriac_coda_narrative_frame(work_cards_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(work_cards_payload, dict):
+        return None
+    for card in work_cards_payload.get("works", []) or []:
+        if isinstance(card, dict) and str(card.get("work_id", "")).strip() == "theriac_coda":
+            return card
+    return None
+
+
+def load_narrative_synthesis_context(run_root: Path | None) -> tuple[dict[str, str], dict[str, Any] | None]:
+    if not run_root:
+        return {}, None
+    tags = load_snippet_narrative_work_tags(snippet_tag_path(run_root))
+    work_path = work_cards_path(run_root)
+    work_payload = read_json(work_path) if work_path.exists() else {}
+    return tags, theriac_coda_narrative_frame(work_payload)
+
+
 def synthesize_card_with_model(
     entity: dict[str, Any],
     claims: list[dict[str, Any]],
@@ -1922,6 +2002,12 @@ def synthesize_card_with_model(
     config: dict[str, Any],
     source_snippets_by_id: dict[str, dict[str, Any]] | None = None,
     entities_by_name: dict[str, dict[str, Any]] | None = None,
+    entity_development_history_lines: list[str] | None = None,
+    lore_clusters: list[dict[str, Any]] | None = None,
+    global_alias_pairs: list[tuple[str, str]] | None = None,
+    *,
+    narrative_work_tags: dict[str, str] | None = None,
+    narrative_frame: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     logger = get_logger(__name__)
     model_provider_cfg = config.get("model_provider", {}) if isinstance(config, dict) else {}
@@ -1939,6 +2025,32 @@ def synthesize_card_with_model(
     last_error: RuntimeError | None = None
     provider_failures = 0
     validation_failures = 0
+    evidence_bundle = build_entity_evidence_bundle(
+        entity,
+        claims,
+        lore_clusters or [],
+        config,
+        source_snippets_by_id=source_snippets_by_id or {},
+    )
+    card_first_cfg = card_first_synthesis_config(config)
+    snippet_count = len(evidence_bundle.get("approved_snippet_ids", []) or [])
+    if should_use_section_chained_synthesis(entity, snippet_count, card_first_cfg):
+        from pipeline.section_chained_synthesis import synthesize_card_section_chained
+
+        return synthesize_card_section_chained(
+            entity,
+            claims,
+            memory_for_entity,
+            config,
+            source_snippets_by_id,
+            entities_by_name,
+            entity_development_history_lines,
+            lore_clusters,
+            global_alias_pairs,
+            narrative_work_tags=narrative_work_tags,
+            narrative_frame=narrative_frame,
+        )
+    valid_claim_ids, valid_snippet_ids = valid_support_id_sets(claims, evidence_bundle)
     while True:
         prompt = build_card_synthesis_prompt(
             entity,
@@ -1947,6 +2059,10 @@ def synthesize_card_with_model(
             validation_feedback,
             source_snippets_by_id,
             entities_by_name,
+            entity_development_history_lines,
+            evidence_bundle=evidence_bundle,
+            config=config,
+            global_alias_pairs=global_alias_pairs,
         )
         call_kwargs = model_call_kwargs(config, "stage_11_card_synthesis")
         response = call_model_chat(
@@ -1984,10 +2100,26 @@ def synthesize_card_with_model(
         try:
             if not isinstance(response, dict) or not isinstance(response.get("summary"), str):
                 raise RuntimeError("Stage 11 requires model card synthesis; provider returned no valid card JSON.")
-            sanitize_optional_synthesis_fields(response, claims, memory_for_entity)
-            validate_synthesis_support(entity, claims, memory_for_entity, response)
+            sanitize_optional_synthesis_fields(
+                response,
+                claims,
+                memory_for_entity,
+                valid_snippet_ids=valid_snippet_ids,
+            )
+            normalize_synthesis_support_ids(response, valid_claim_ids, valid_snippet_ids)
+            validate_synthesis_support(
+                entity,
+                claims,
+                memory_for_entity,
+                response,
+                evidence_bundle=evidence_bundle,
+                config=config,
+            )
             if provider_failures or validation_failures:
                 response["_validation_retry_count"] = provider_failures + validation_failures
+            from pipeline.prose_alias_registry import apply_prose_normalization_to_synthesis
+
+            apply_prose_normalization_to_synthesis(response, entity, global_alias_pairs)
             return response
         except RuntimeError as exc:
             last_error = exc
@@ -2012,10 +2144,156 @@ def _truncate_source_text(value: Any, max_chars: int = MAX_SYNTHESIS_SOURCE_TEXT
     return text[: max_chars - 18].rstrip() + " ... (truncated)"
 
 
+def entity_alias_terms_for_normalization(entity: dict[str, Any]) -> list[str]:
+    """Harvest aliases used only to rewrite prose to the canonical name before card synthesis."""
+    canonical = str(entity.get("canonical_name", "")).strip()
+    canonical_key = normalized_name_key(canonical)
+    seen: set[str] = set()
+    terms: list[str] = []
+    for raw in entity.get("aliases", []) or []:
+        alias = str(raw).strip()
+        if not alias:
+            continue
+        alias_key = normalized_name_key(alias)
+        if alias_key == canonical_key or alias_key in seen:
+            continue
+        seen.add(alias_key)
+        terms.append(alias)
+    return sorted(terms, key=len, reverse=True)
+
+
+def should_normalize_entity_aliases_in_text(text: str, canonical_name: str, alias_terms: list[str]) -> bool:
+    """Keep rename/chronology lines that name both the former label and the canonical name."""
+    if not text or not canonical_name or not alias_terms:
+        return bool(alias_terms)
+    lower = str(text).lower()
+    canonical_lower = canonical_name.lower()
+    if canonical_lower not in lower:
+        return True
+    for alias in alias_terms:
+        alias_lower = alias.lower()
+        if alias_lower and alias_lower != canonical_lower and alias_lower in lower:
+            return False
+    return True
+
+
+def normalize_prose_to_canonical_name(text: str, canonical_name: str, alias_terms: list[str]) -> str:
+    if not text or not canonical_name or not alias_terms:
+        return text
+    if not should_normalize_entity_aliases_in_text(text, canonical_name, alias_terms):
+        return str(text)
+    result = str(text)
+    for alias in alias_terms:
+        pattern = re.compile(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", re.IGNORECASE)
+        result = pattern.sub(canonical_name, result)
+    return result
+
+
+def should_normalize_entity_aliases_in_claim(claim: dict[str, Any], entity: dict[str, Any]) -> bool:
+    if str(claim.get("claim_type", "")).strip().lower() == "alias":
+        return False
+    canonical_name = str(entity.get("canonical_name", "")).strip()
+    alias_terms = entity_alias_terms_for_normalization(entity)
+    return should_normalize_entity_aliases_in_text(str(claim.get("claim_text", "")), canonical_name, alias_terms)
+
+
+def entity_payload_for_card_synthesis(entity: dict[str, Any]) -> dict[str, Any]:
+    """Entity context for the card writer: canonical identity only (no alias harvest list)."""
+    return {key: value for key, value in entity.items() if key != "aliases"}
+
+
+def claim_payload_for_card_synthesis(
+    claim: dict[str, Any],
+    entity: dict[str, Any],
+    global_alias_pairs: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    from pipeline.prose_alias_registry import normalize_prose_for_entity
+
+    canonical_name = str(entity.get("canonical_name", "")).strip()
+    raw_claim_text = str(claim.get("claim_text", ""))
+    if should_normalize_entity_aliases_in_claim(claim, entity):
+        claim_text = normalize_prose_for_entity(raw_claim_text, entity, global_alias_pairs)
+    else:
+        claim_text = normalize_prose_with_global_aliases(raw_claim_text, entity, global_alias_pairs)
+    return {
+        "claim_id": claim.get("claim_id"),
+        "claim_text": claim_text,
+        "claim_type": claim.get("claim_type"),
+        "target_entity_name": canonical_name or str(claim.get("target_entity_name", "")).strip(),
+        "knowledge_track": claim.get("knowledge_track", ""),
+        "manual_claim": bool(claim.get("manual_claim") or claim.get("author_claim")),
+        "source_priority": claim.get("source_priority", ""),
+        "source_snippet_ids": claim.get("source_snippet_ids", []),
+    }
+
+
+def normalize_prose_with_global_aliases(
+    text: str,
+    entity: dict[str, Any],
+    global_alias_pairs: list[tuple[str, str]] | None = None,
+) -> str:
+    from pipeline.prose_alias_registry import normalize_prose_for_entity
+
+    return normalize_prose_for_entity(text, entity, global_alias_pairs)
+
+
+def memory_payload_for_card_synthesis(
+    memory_for_entity: dict[str, Any],
+    entity: dict[str, Any],
+    global_alias_pairs: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    canonical_name = str(entity.get("canonical_name", "")).strip()
+    payload = {key: value for key, value in memory_for_entity.items() if key != "approved_aliases"}
+    for collection_key in ("accepted_claims", "rejected_claims"):
+        rows = memory_for_entity.get(collection_key, [])
+        if not isinstance(rows, list):
+            continue
+        normalized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            normalized_rows.append(
+                {
+                    **{k: v for k, v in row.items() if k != "alias_text"},
+                    "claim_text": normalize_prose_with_global_aliases(
+                        str(row.get("claim_text", "")),
+                        entity,
+                        global_alias_pairs,
+                    ),
+                    "target_entity_name": canonical_name or str(row.get("target_entity_name", "")).strip(),
+                }
+            )
+        payload[collection_key] = normalized_rows
+    return payload
+
+
+def _normalize_synthesis_snippet_text(
+    text: str,
+    entity: dict[str, Any] | None,
+    canonical_name: str,
+    alias_terms: list[str] | None,
+    global_alias_pairs: list[tuple[str, str]] | None,
+) -> str:
+    if entity is not None:
+        return normalize_prose_with_global_aliases(text, entity, global_alias_pairs)
+    if alias_terms:
+        return normalize_prose_to_canonical_name(text, canonical_name, alias_terms)
+    if global_alias_pairs:
+        from pipeline.prose_alias_registry import normalize_prose_with_alias_pairs
+
+        return normalize_prose_with_alias_pairs(text, global_alias_pairs)
+    return text
+
+
 def build_synthesis_source_evidence_rows(
     claims: list[dict[str, Any]],
     source_snippets_by_id: dict[str, dict[str, Any]],
     max_rows: int = MAX_SYNTHESIS_SOURCE_SNIPPETS,
+    *,
+    entity: dict[str, Any] | None = None,
+    canonical_name: str = "",
+    alias_terms: list[str] | None = None,
+    global_alias_pairs: list[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     claim_ids_by_snippet: dict[str, list[str]] = {}
     ordered_snippet_ids: list[str] = []
@@ -2053,7 +2331,22 @@ def build_synthesis_source_evidence_rows(
                 "conversation_patch_lore_developments": snippet.get("conversation_patch_lore_developments", []),
                 "conversation_patch_meta_developments": snippet.get("conversation_patch_meta_developments", []),
                 "conversation_patch_possible_contradictions": snippet.get("conversation_patch_possible_contradictions", []),
-                "text": _truncate_source_text(snippet.get("display_text_normalized", "")),
+                "text": _truncate_source_text(
+                    _normalize_synthesis_snippet_text(
+                        str(snippet.get("display_text_normalized", "")),
+                        entity,
+                        canonical_name,
+                        alias_terms,
+                        global_alias_pairs,
+                    )
+                ),
+                "conversation_patch_summary": _normalize_synthesis_snippet_text(
+                    str(snippet.get("conversation_patch_summary", "")),
+                    entity,
+                    canonical_name,
+                    alias_terms,
+                    global_alias_pairs,
+                ),
             }
         )
 
@@ -2107,6 +2400,17 @@ def section_word_targets_for_claims(claims: list[dict[str, Any]]) -> dict[str, A
             "timeline": "40-100 words if supported",
             "inspirations": "30-90 words if supported",
             "open_questions": "25-70 words only for explicit uncertainties",
+        }
+    elif claim_count <= 9:
+        total_min, total_max = 300, 650
+        section_targets = {
+            "summary": "60-110 words",
+            "background": "80-160 words if supported",
+            "role_in_story": "70-150 words if supported",
+            "relationships": "60-140 words if supported",
+            "timeline": "50-120 words if supported",
+            "inspirations": "35-100 words if supported",
+            "open_questions": "25-80 words only for explicit uncertainties",
         }
     elif claim_count <= 14:
         total_min, total_max = 400, 800
@@ -2177,7 +2481,6 @@ def build_available_wiki_link_rows(entity: dict[str, Any], entities_by_name: dic
                 "target_entity_id": entity_id_value,
                 "canonical_name": canonical_name,
                 "entity_type": normalize_entity_type(other.get("entity_type", "term")),
-                "aliases": other.get("aliases", [])[:8] if isinstance(other.get("aliases", []), list) else [],
             }
         )
     return sorted(rows, key=lambda row: str(row.get("canonical_name", "")).lower())[:WIKI_LINK_CONTEXT_LIMIT]
@@ -2190,44 +2493,103 @@ def build_card_synthesis_prompt(
     validation_feedback: str = "",
     source_snippets_by_id: dict[str, dict[str, Any]] | None = None,
     entities_by_name: dict[str, dict[str, Any]] | None = None,
+    entity_development_history_lines: list[str] | None = None,
+    evidence_bundle: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+    global_alias_pairs: list[tuple[str, str]] | None = None,
 ) -> str:
-    prompt_claims = [
-        {
-            "claim_id": claim.get("claim_id"),
-            "claim_text": claim.get("claim_text"),
-            "claim_type": claim.get("claim_type"),
-            "alias_text": claim.get("alias_text", ""),
-            "target_entity_name": claim.get("target_entity_name", ""),
-            "knowledge_track": claim.get("knowledge_track", ""),
-            "manual_claim": bool(claim.get("manual_claim") or claim.get("author_claim")),
-            "source_priority": claim.get("source_priority", ""),
-            "source_snippet_ids": claim.get("source_snippet_ids", []),
-        }
-        for claim in claims
-    ]
-    source_evidence_rows = build_synthesis_source_evidence_rows(claims, source_snippets_by_id or {})
-    word_targets = section_word_targets_for_claims(claims)
+    canonical_name = str(entity.get("canonical_name", "")).strip()
+    alias_terms = entity_alias_terms_for_normalization(entity)
+    synthesis_entity = entity_payload_for_card_synthesis(entity)
+    prompt_claims = [claim_payload_for_card_synthesis(claim, entity, global_alias_pairs) for claim in claims]
+    bundle = evidence_bundle or build_entity_evidence_bundle(
+        entity,
+        claims,
+        [],
+        config,
+        source_snippets_by_id=source_snippets_by_id or {},
+    )
+    card_first_cfg = card_first_synthesis_config(config)
+    source_evidence_rows = build_synthesis_source_evidence_rows(
+        claims,
+        source_snippets_by_id or {},
+        entity=entity,
+        canonical_name=canonical_name,
+        alias_terms=alias_terms,
+        global_alias_pairs=global_alias_pairs,
+    )
+    if card_first_cfg["enabled"]:
+        source_evidence_rows = merge_synthesis_evidence_rows(
+            source_evidence_rows,
+            source_snippets_by_id or {},
+            list(bundle.get("approved_snippet_ids", []) or []),
+            entity=entity,
+            canonical_name=canonical_name,
+            alias_terms=alias_terms,
+            global_alias_pairs=global_alias_pairs,
+        )
+    word_targets = (
+        section_word_targets_for_entity(
+            claims,
+            len(bundle.get("approved_snippet_ids", []) or []),
+            config,
+            entity=entity,
+        )
+        if card_first_cfg["enabled"]
+        else section_word_targets_for_claims(claims)
+    )
     wiki_link_rows = build_available_wiki_link_rows(entity, entities_by_name)
-    return f"""Write a full THERIAC wiki-style entry from all reviewed claims for this entity, comparable in shape and density to a strong fandom wiki page.
+    synthesis_memory = memory_payload_for_card_synthesis(memory_for_entity, entity, global_alias_pairs)
+    development_history_block = "\n".join(entity_development_history_lines or []) or "none"
+    snippet_n = len(bundle.get("approved_snippet_ids", []) or [])
+    section_keys = synthesis_section_keys(entity, approved_snippet_count=snippet_n, config=config)
+    sections_shell = json.dumps({key: "" for key in section_keys}, indent=4)
+    support_keys = support_map_section_keys(entity, approved_snippet_count=snippet_n, config=config)
+    support_map_shell = json.dumps({key: [] for key in ["summary", *support_keys, "resolved_conflicts", "unresolved_conflicts"]}, indent=4)
+    wiki_sections = "|".join(["summary", *section_keys])
+    timeline_block = (
+        ""
+        if should_use_path_split_sections(entity, approved_snippet_count=snippet_n, config=config)
+        else """
+  "timeline": [
+    {{"timestamp_utc": "", "description": "", "source_snippet_ids": [""], "support_claim_ids": ["claim_id"]}}
+  ],"""
+    )
+    return f"""Write a full Theriac wiki-style entry from all reviewed claims for this entity, comparable in shape and density to a strong fandom wiki page.
 Return strict JSON only. Scale the entry using the word target plan below rather than forcing every entity to the same length.
 Write polished article prose, not a bullet list, glossary stub, changelog, or terse database note. The summary should be a compact lead paragraph that identifies what the entity is and why it matters. The sections should then expand the entity's background, story function, relationships, chronology, inspirations, and open questions with concrete connective context from the accepted claims.
-Use the accepted claims as the authority for what may be stated. Use the source snippet evidence below as texture and disambiguating context for those accepted claims, especially when expanding the card into a proper wiki entry. Do not introduce a fact from a snippet unless it is tied to an accepted claim and cited through that claim's support_map entry.
-Author-supplied manual claims are authoritative accepted claims even when they have no source_snippet_ids. Treat them as reviewer corrections/additions and cite their claim IDs in support_map like any other accepted claim.
-Respect each claim's knowledge_track. Lore claims describe in-world THERIAC facts; meta claims describe authorial/design/gameplay/naming/inspiration context. Meta claims may belong in inspirations or careful out-of-world notes, but do not restate them as diegetic facts.
+Story emphasis rule: for major characters, the summary and role_in_story foreground personality, suffering, relationships, and path outcomes—not administrative side beats (project approvals, funding paperwork). Mention each incidental fact at most once in the whole card (usually background). Do not repeat the same fact in summary, background, and relationships with similar wording.
+{PATH_BRANCH_CONTEXT}
+Path section rule: when history_theriac_coda and history_path_a_side_route sections apply, put Path B (main/peaceful lab route) events only in history_theriac_coda and Path A (destructive side route) events only in history_path_a_side_route. The summary is a peaceful-path (Path B) lede only—no Path A plot in the summary. role_in_story is pre-branch framing and the ~1-hour branch choice only—not full path walkthroughs.
+{PEACEFUL_LEDE_RULE}
+Card-first evidence rule: The approved entity evidence bundle lists lore snippets grouped for this entity plus any accepted claims. Draft the article primarily from those snippets and entity development history. Accepted claims are guardrails for conflicts, author corrections, and high-risk facts—not a requirement to approve every sentence before it may appear in prose.
+Author-supplied manual claims are authoritative even when they have no source_snippet_ids. Cite their claim IDs in support_map.
+Snippet support rule: Facts grounded in approved lore snippets must cite the snippet_id in support_map (for example `snippet_abc123`). Facts grounded in accepted claims cite claim_id. A section may cite claims, snippets, or both. Do not invent facts outside the bundle; do not use bootstrap lore-bible text or raw chat outside the provided snippet rows.
+Respect each claim's knowledge_track. Lore claims describe in-world Theriac facts; meta claims describe authorial/design/gameplay/naming/inspiration context. Meta claims may belong in inspirations or careful out-of-world notes, but do not restate them as diegetic facts.
 Do not merely summarize summaries. Prefer concrete names, relationships, story functions, chronology, and wording grounded in the accepted claims and their source snippets. Do not use bootstrap lore-bible text as evidence. Do not paste raw chat.
-Do not paste accepted claim_text verbatim into the summary or sections. Treat claims as evidence notes to synthesize from. Paraphrase, combine, and organize them into fresh article prose while preserving their meaning. Proper nouns, quest titles, aliases, and short fixed terms may be reused exactly.
+Do not paste accepted claim_text verbatim into the summary or sections. Treat claims as evidence notes to synthesize from. Paraphrase, combine, and organize them into fresh article prose while preserving their meaning. Proper nouns, quest titles, and short fixed terms may be reused exactly when they appear in accepted claims.
+Do not list entity-resolution alias harvests, working titles, or former names in the article body. Claims and source snippets are normalized to the canonical name; treat renames as historical context via entity development history only, not as a name glossary in the lead or sections.
 Do not invent acronym expansions, technical mechanisms, creators, dates, motives, or background facts unless an accepted claim explicitly states them.
-Every non-empty summary/section must list the accepted claim IDs that support it in support_map. If a detail has no accepted claim support, omit it.
-Domain rule: THERIAC quest titles may be named after songs. Do not treat song-title quest names as weak, merely thematic, or non-diegetic when accepted claims link them to a path, ending, mission, or quest progression.
-External reference rule: inspiration/reference sources from other media, real people, or creators should not become card subjects unless accepted claims explicitly make them in-world THERIAC entities. If accepted claims say they inspire, resemble, contrast with, or influence this entity, put that information in the inspirations section.
+Every non-empty summary/section must list supporting claim IDs and/or snippet IDs from the evidence bundle in support_map. If a detail has no support in the bundle, omit it.
+Domain rule: Theriac quest titles may be named after songs. Do not treat song-title quest names as weak, merely thematic, or non-diegetic when accepted claims link them to a path, ending, mission, or quest progression.
+External reference rule: inspiration/reference sources from other media, real people, or creators should not become card subjects unless accepted claims explicitly make them in-world Theriac entities. If accepted claims say they inspire, resemble, contrast with, or influence this entity, put that information in the inspirations section.
+Inspirations tone rule: the inspirations section is neutral behind-the-scenes reporting only—state naming parallels and references the evidence names (e.g. biblical Enoch) without praising or evaluating the author's creative decisions. Do not call choices resonant, fitting, apt, clever, intentional, or explain why a reference "works" unless accepted claims quote that judgment verbatim.
 Per-section word target rule: follow the word target plan. Sparse entities may have only the lead and one supported section. Heavily developed characters, factions, quests, and systems should use several supported sections and read like a full page. Do not count relationship/timeline/link arrays toward prose length.
-Wiki link rule: Use available wiki link targets for cross-card references. In prose, refer to other cards by canonical name when supported by an accepted claim. Also return those links in wiki_links. Do not create links to external-media inspirations unless they are THERIAC cards in the available link targets.
+Wiki link rule: Use available wiki link targets for cross-card references. In prose, refer to other cards by canonical name when supported by an accepted claim. Also return those links in wiki_links. Do not create links to external-media inspirations unless they are Theriac cards in the available link targets.
 Leave open_questions empty unless an accepted claim is itself an open_question or explicitly states uncertainty.
 Avoid inference words such as may, might, possibly, potentially, suggests, implies, indicates, reflects, underscores, reveals, classified, undisclosed, unknown, not specified, governance, strategic approach, portfolio, vulnerabilities, limitations, and technical mechanisms unless those exact ideas appear in accepted claims.
-Reconcile information across conversations before surfacing conflicts. Resolve apparent conflicts using chronology, aliases, specificity, and point-of-view when the accepted claims allow it. Only use unresolved_conflicts for contradictions that cannot be reconciled from accepted claims.
+In inspirations specifically, also avoid editorial praise of creative choices (resonant, fitting, apt, clever, masterstroke, evocative, lends, enriches) unless those exact words appear in accepted claims or snippets.
+Reconcile information across conversations before surfacing conflicts. Resolve apparent conflicts using chronology, specificity, and point-of-view when the accepted claims allow it. Only use unresolved_conflicts for contradictions that cannot be reconciled from accepted claims.
+Entity development history (chronological, machine context only):
+Use this section to understand how lore for this entity evolved over time (introductions, renames, quest beats, role shifts). Accepted claims remain the only factual authority for card prose. Do not copy history lines verbatim into the card or write changelog-style prose. If history and accepted claims disagree, follow accepted claims and treat history as a diagnostic hint only.
+
+{development_history_block}
 
 Entity:
-{json.dumps(entity, ensure_ascii=False, indent=2)}
+{json.dumps(synthesis_entity, ensure_ascii=False, indent=2)}
+
+Approved entity evidence bundle:
+{json.dumps(bundle, ensure_ascii=False, indent=2)}
 
 All accepted claims for this entity:
 {json.dumps(prompt_claims, ensure_ascii=False, indent=2)}
@@ -2242,7 +2604,7 @@ Available wiki link targets:
 {json.dumps(wiki_link_rows, ensure_ascii=False, indent=2)}
 
 Relevant review memory:
-{json.dumps(memory_for_entity, ensure_ascii=False, indent=2)}
+{json.dumps(synthesis_memory, ensure_ascii=False, indent=2)}
 
 Previous synthesis rejection to fix:
 {validation_feedback or "none"}
@@ -2250,22 +2612,12 @@ Previous synthesis rejection to fix:
 Return JSON object:
 {{
   "summary": "concise lead paragraph",
-  "sections": {{
-    "background": "",
-    "role_in_story": "",
-    "relationships": "",
-    "timeline": "",
-    "inspirations": "",
-    "open_questions": ""
-  }},
+  "sections": {sections_shell},
   "relationships": [
     {{"target_entity_name": "", "relation_type": "", "note": "", "support_claim_ids": ["claim_id"]}}
-  ],
-  "timeline": [
-    {{"timestamp_utc": "", "description": "", "source_snippet_ids": [""], "support_claim_ids": ["claim_id"]}}
-  ],
+  ],{timeline_block}
   "wiki_links": [
-    {{"target_card_id": "", "target_entity_name": "", "relation_type": "", "section": "summary|background|role_in_story|relationships|timeline|inspirations|open_questions", "support_claim_ids": ["claim_id"]}}
+    {{"target_card_id": "", "target_entity_name": "", "relation_type": "", "section": "{wiki_sections}", "support_claim_ids": ["claim_id"]}}
   ],
   "resolved_conflicts": [
     {{"description": "", "claim_ids": ["claim_id"], "resolution": ""}}
@@ -2273,19 +2625,84 @@ Return JSON object:
   "unresolved_conflicts": [
     {{"description": "", "claim_ids": ["claim_id"], "why_unresolved": ""}}
   ],
-  "support_map": {{
-    "summary": ["claim_id"],
-    "background": ["claim_id"],
-    "role_in_story": ["claim_id"],
-    "relationships": ["claim_id"],
-    "timeline": ["claim_id"],
-    "inspirations": ["claim_id"],
-    "open_questions": ["claim_id"],
-    "resolved_conflicts": ["claim_id"],
-    "unresolved_conflicts": ["claim_id"]
-  }}
+  "support_map": {support_map_shell}
 }}
 """
+
+
+def resolve_support_claim_id(raw_id: Any, valid_claim_ids: set[str]) -> str | None:
+    token = str(raw_id or "").strip()
+    if not token:
+        return None
+    if token in valid_claim_ids:
+        return token
+    prefix_matches = sorted({claim_id for claim_id in valid_claim_ids if claim_id.startswith(token)})
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    compact = token.replace("-", "")
+    if compact:
+        compact_matches = sorted(
+            {claim_id for claim_id in valid_claim_ids if claim_id.replace("-", "").startswith(compact)}
+        )
+        if len(compact_matches) == 1:
+            return compact_matches[0]
+    return None
+
+
+def _resolve_support_claim_id_list(support_ids: list[Any], valid_claim_ids: set[str]) -> tuple[list[str], list[str]]:
+    resolved: list[str] = []
+    invalid: list[str] = []
+    for item in support_ids:
+        match = resolve_support_claim_id(item, valid_claim_ids)
+        if match:
+            if match not in resolved:
+                resolved.append(match)
+        else:
+            invalid.append(str(item))
+    return resolved, invalid
+
+
+def normalize_synthesis_claim_ids(synthesis: dict[str, Any], valid_claim_ids: set[str]) -> None:
+    support_map = synthesis.get("support_map")
+    if isinstance(support_map, dict):
+        for field_name, support_ids in support_map.items():
+            if not isinstance(support_ids, list):
+                continue
+            resolved, _invalid = _resolve_support_claim_id_list(support_ids, valid_claim_ids)
+            support_map[field_name] = resolved
+
+    for rel in synthesis.get("relationships", []) or []:
+        if not isinstance(rel, dict):
+            continue
+        support_ids = rel.get("support_claim_ids")
+        if isinstance(support_ids, list):
+            resolved, _invalid = _resolve_support_claim_id_list(support_ids, valid_claim_ids)
+            rel["support_claim_ids"] = resolved
+
+    for item in synthesis.get("timeline", []) or []:
+        if not isinstance(item, dict):
+            continue
+        support_ids = item.get("support_claim_ids")
+        if isinstance(support_ids, list):
+            resolved, _invalid = _resolve_support_claim_id_list(support_ids, valid_claim_ids)
+            item["support_claim_ids"] = resolved
+
+    for item in synthesis.get("wiki_links", []) or []:
+        if not isinstance(item, dict):
+            continue
+        support_ids = item.get("support_claim_ids")
+        if isinstance(support_ids, list):
+            resolved, _invalid = _resolve_support_claim_id_list(support_ids, valid_claim_ids)
+            item["support_claim_ids"] = resolved
+
+    for field_name in ("resolved_conflicts", "unresolved_conflicts"):
+        for item in synthesis.get(field_name, []) or []:
+            if not isinstance(item, dict):
+                continue
+            claim_ids = item.get("claim_ids")
+            if isinstance(claim_ids, list):
+                resolved, _invalid = _resolve_support_claim_id_list(claim_ids, valid_claim_ids)
+                item["claim_ids"] = resolved
 
 
 def validate_synthesis_support(
@@ -2293,8 +2710,16 @@ def validate_synthesis_support(
     claims: list[dict[str, Any]],
     memory_for_entity: dict[str, Any],
     synthesis: dict[str, Any],
+    *,
+    evidence_bundle: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
 ) -> None:
-    valid_claim_ids = {str(claim.get("claim_id")) for claim in claims if str(claim.get("claim_id", "")).strip()}
+    bundle = evidence_bundle or {}
+    card_first_cfg = card_first_synthesis_config(config)
+    valid_claim_ids, valid_snippet_ids = valid_support_id_sets(claims, bundle)
+    valid_support_ids = valid_claim_ids | valid_snippet_ids
+    from pipeline.card_first_review import resolve_support_id_list
+
     support_map = synthesis.get("support_map")
     if not isinstance(support_map, dict):
         raise RuntimeError("Stage 11 synthesis rejected: missing support_map for generated card prose.")
@@ -2302,51 +2727,75 @@ def validate_synthesis_support(
     sections = synthesis.get("sections", {})
     if not isinstance(sections, dict):
         sections = {}
+    snippet_count = len(bundle.get("approved_snippet_ids", []) or [])
+    section_keys = synthesis_section_keys(entity, approved_snippet_count=snippet_count, config=config)
     text_fields = {"summary": synthesis.get("summary", "")}
-    for section_name in CARD_SECTION_KEYS:
+    for section_name in section_keys:
         text_fields[section_name] = sections.get(section_name, "")
+    for legacy_key in LEGACY_CARD_SECTION_KEYS:
+        if legacy_key not in text_fields and str(sections.get(legacy_key, "")).strip():
+            text_fields[legacy_key] = sections.get(legacy_key, "")
 
     for field_name, text in text_fields.items():
         if not str(text).strip():
             continue
         support_ids = support_map.get(field_name)
         if not isinstance(support_ids, list):
-            raise RuntimeError(f"Stage 11 synthesis rejected: `{field_name}` lacks support_map claim IDs.")
-        invalid_ids = [str(item) for item in support_ids if str(item) not in valid_claim_ids]
-        valid_ids = [str(item) for item in support_ids if str(item) in valid_claim_ids]
+            support_map[field_name] = sorted(valid_support_ids)[:12]
+            support_ids = support_map[field_name]
+        valid_ids, invalid_ids = resolve_support_id_list(support_ids, valid_claim_ids, valid_snippet_ids)
+        support_map[field_name] = valid_ids
         if invalid_ids:
-            raise RuntimeError(f"Stage 11 synthesis rejected: `{field_name}` cites unknown claim IDs: {invalid_ids}.")
+            raise RuntimeError(f"Stage 11 synthesis rejected: `{field_name}` cites unknown support IDs: {invalid_ids}.")
         if not valid_ids:
-            raise RuntimeError(f"Stage 11 synthesis rejected: `{field_name}` has no accepted claim support.")
+            raise RuntimeError(f"Stage 11 synthesis rejected: `{field_name}` has no evidence-bundle support.")
+
+    from pipeline.card_first_review import resolve_support_id_list
 
     for idx, rel in enumerate(synthesis.get("relationships", []) or []):
         if not isinstance(rel, dict) or not str(rel.get("target_entity_name", "")).strip():
             continue
         support_ids = rel.get("support_claim_ids")
-        if not isinstance(support_ids, list) or not any(str(item) in valid_claim_ids for item in support_ids):
+        if not isinstance(support_ids, list):
             raise RuntimeError(f"Stage 11 synthesis rejected: relationship #{idx + 1} has no accepted claim support.")
+        resolved, _invalid = resolve_support_id_list(support_ids, valid_claim_ids, valid_snippet_ids)
+        rel["support_claim_ids"] = resolved
+        if not resolved:
+            raise RuntimeError(f"Stage 11 synthesis rejected: relationship #{idx + 1} has no evidence-bundle support.")
 
     for idx, item in enumerate(synthesis.get("timeline", []) or []):
         if not isinstance(item, dict) or not str(item.get("description", "")).strip():
             continue
         support_ids = item.get("support_claim_ids")
-        if not isinstance(support_ids, list) or not any(str(claim_id) in valid_claim_ids for claim_id in support_ids):
+        if not isinstance(support_ids, list):
             raise RuntimeError(f"Stage 11 synthesis rejected: timeline item #{idx + 1} has no accepted claim support.")
+        resolved, _invalid = resolve_support_id_list(support_ids, valid_claim_ids, valid_snippet_ids)
+        item["support_claim_ids"] = resolved
+        if not resolved:
+            raise RuntimeError(f"Stage 11 synthesis rejected: timeline item #{idx + 1} has no evidence-bundle support.")
 
     for idx, item in enumerate(synthesis.get("wiki_links", []) or []):
         if not isinstance(item, dict) or not str(item.get("target_card_id") or item.get("target_entity_name") or "").strip():
             continue
         support_ids = item.get("support_claim_ids")
-        if not isinstance(support_ids, list) or not any(str(claim_id) in valid_claim_ids for claim_id in support_ids):
+        if not isinstance(support_ids, list):
             raise RuntimeError(f"Stage 11 synthesis rejected: wiki_links item #{idx + 1} has no accepted claim support.")
+        resolved, _invalid = resolve_support_id_list(support_ids, valid_claim_ids, valid_snippet_ids)
+        item["support_claim_ids"] = resolved
+        if not resolved:
+            raise RuntimeError(f"Stage 11 synthesis rejected: wiki_links item #{idx + 1} has no evidence-bundle support.")
 
     for field_name in ["resolved_conflicts", "unresolved_conflicts"]:
         for idx, item in enumerate(synthesis.get(field_name, []) or []):
             if not isinstance(item, dict) or not str(item.get("description", "")).strip():
                 continue
             claim_ids = item.get("claim_ids")
-            if not isinstance(claim_ids, list) or not any(str(claim_id) in valid_claim_ids for claim_id in claim_ids):
+            if not isinstance(claim_ids, list):
                 raise RuntimeError(f"Stage 11 synthesis rejected: {field_name} item #{idx + 1} has no accepted claim support.")
+            resolved, _invalid = resolve_support_id_list(claim_ids, valid_claim_ids, valid_snippet_ids)
+            item["claim_ids"] = resolved
+            if not resolved:
+                raise RuntimeError(f"Stage 11 synthesis rejected: {field_name} item #{idx + 1} has no evidence-bundle support.")
 
     unsupported_expansions = find_unsupported_acronym_expansions(entity, claims, memory_for_entity, synthesis)
     if unsupported_expansions:
@@ -2354,7 +2803,12 @@ def validate_synthesis_support(
             "Stage 11 synthesis rejected: unsupported acronym expansion(s): "
             + ", ".join(f"{name} ({expansion})" for name, expansion in unsupported_expansions)
         )
-    unsupported_speculation = find_unsupported_speculation(claims, memory_for_entity, synthesis)
+    skip_speculation_guard = bool(bundle.get("section_chained_synthesis"))
+    unsupported_speculation = (
+        set()
+        if skip_speculation_guard
+        else find_unsupported_speculation(claims, memory_for_entity, synthesis)
+    )
     if unsupported_speculation:
         raise RuntimeError(
             "Stage 11 synthesis rejected: unsupported speculative phrase(s): "
@@ -2367,16 +2821,38 @@ def validate_synthesis_support(
             + ", ".join(verbatim_claim_ids)
             + ". Synthesize and paraphrase accepted claims instead."
         )
+    sections = synthesis.get("sections")
+    if isinstance(sections, dict):
+        synthesis["sections"] = normalize_card_sections(sections)
+    if should_use_path_split_sections(entity, approved_snippet_count=snippet_count, config=config):
+        validate_path_section_isolation(synthesis)
+        validate_work_history_isolation(synthesis, work_isolation_markers(load_narrative_works()))
     generated_word_count = synthesis_word_count(synthesis)
-    word_targets = section_word_targets_for_claims(claims)
+    word_targets = (
+        section_word_targets_for_entity(claims, snippet_count, config, entity=entity)
+        if card_first_cfg["enabled"]
+        else section_word_targets_for_claims(claims)
+    )
     target_min = int(word_targets.get("total_word_target", {}).get("min", 0) or 0)
     target_max = int(word_targets.get("total_word_target", {}).get("max", 650) or 650)
-    if len(claims) >= 5 and generated_word_count < target_min:
+    if word_targets.get("synthesis_tier") == "protagonist":
+        if bundle.get("section_chained_synthesis"):
+            word_floor = max(650, int(target_min * 0.58))
+        else:
+            word_floor = max(750, int(target_min * 0.72))
+    elif len(claims) <= 9:
+        word_floor = min(target_min, max(200, int(target_min * 0.75)))
+    else:
+        word_floor = target_min
+    has_evidence = len(claims) >= 5 or (card_first_cfg["enabled"] and snippet_count >= 4)
+    if has_evidence and generated_word_count < word_floor:
         raise RuntimeError(
             f"Stage 11 synthesis rejected: draft is too short for wiki-card target "
-            f"({generated_word_count} words from {len(claims)} accepted claims; target {target_min}-{target_max})."
+            f"({generated_word_count} words from {len(claims)} accepted claims and {snippet_count} approved snippets; "
+            f"target {target_min}-{target_max})."
         )
-    if generated_word_count > target_max + 80:
+    length_slack = 120 if word_targets.get("synthesis_tier") == "protagonist" else 80
+    if generated_word_count > target_max + length_slack:
         raise RuntimeError(
             f"Stage 11 synthesis rejected: draft is too long for wiki-card target "
             f"({generated_word_count} words; target {target_min}-{target_max})."
@@ -2394,8 +2870,11 @@ def sanitize_optional_synthesis_fields(
     synthesis: dict[str, Any],
     claims: list[dict[str, Any]],
     memory_for_entity: dict[str, Any],
+    *,
+    valid_snippet_ids: set[str] | None = None,
 ) -> None:
     valid_claim_ids = {str(claim.get("claim_id")) for claim in claims if str(claim.get("claim_id", "")).strip()}
+    valid_support_ids = valid_claim_ids | (valid_snippet_ids or set())
     support_map = synthesis.get("support_map")
     if not isinstance(support_map, dict):
         return
@@ -2411,7 +2890,7 @@ def sanitize_optional_synthesis_fields(
     uncertainty_claimed = any(word in claim_text for word in ["unknown", "unclear", "unresolved", "question", "uncertain"])
     open_question_support = support_map.get("open_questions")
     open_question_has_current_claim_support = isinstance(open_question_support, list) and any(
-        str(item) in valid_claim_ids for item in open_question_support
+        str(item) in valid_support_ids for item in open_question_support
     )
     if sections.get("open_questions") and (
         not open_question_has_current_claim_support or not (has_open_question_claim or uncertainty_claimed)
@@ -2450,7 +2929,7 @@ def sanitize_optional_synthesis_fields(
         if not isinstance(rel, dict):
             continue
         support_ids = rel.get("support_claim_ids")
-        if isinstance(support_ids, list) and any(str(item) in valid_claim_ids for item in support_ids):
+        if isinstance(support_ids, list) and any(str(item) in valid_support_ids for item in support_ids):
             filtered_relationships.append(rel)
     synthesis["relationships"] = filtered_relationships
 
@@ -2459,7 +2938,7 @@ def sanitize_optional_synthesis_fields(
         if not isinstance(item, dict):
             continue
         support_ids = item.get("support_claim_ids")
-        if isinstance(support_ids, list) and any(str(claim_id) in valid_claim_ids for claim_id in support_ids):
+        if isinstance(support_ids, list) and any(str(claim_id) in valid_support_ids for claim_id in support_ids):
             filtered_timeline.append(item)
     synthesis["timeline"] = filtered_timeline
 
@@ -2468,7 +2947,7 @@ def sanitize_optional_synthesis_fields(
         if not isinstance(item, dict):
             continue
         support_ids = item.get("support_claim_ids")
-        if isinstance(support_ids, list) and any(str(claim_id) in valid_claim_ids for claim_id in support_ids):
+        if isinstance(support_ids, list) and any(str(claim_id) in valid_support_ids for claim_id in support_ids):
             filtered_wiki_links.append(item)
     synthesis["wiki_links"] = filtered_wiki_links
 
@@ -2478,7 +2957,7 @@ def sanitize_optional_synthesis_fields(
             if not isinstance(item, dict):
                 continue
             claim_ids = item.get("claim_ids")
-            if isinstance(claim_ids, list) and any(str(claim_id) in valid_claim_ids for claim_id in claim_ids):
+            if isinstance(claim_ids, list) and any(str(claim_id) in valid_support_ids for claim_id in claim_ids):
                 filtered.append(item)
         synthesis[field_name] = filtered
 
@@ -2698,13 +3177,28 @@ def _build_card_from_synthesis(
     claims: list[dict[str, Any]],
     synthesis: dict[str, Any],
     entities_by_name: dict[str, dict[str, Any]],
+    *,
+    evidence_bundle: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     canonical_name = str(entity.get("canonical_name", "Unnamed Entity"))
     card_id = str(entity.get("card_id") or card_id_for_entity(canonical_name))
     sections = synthesis.get("sections", {})
     if not isinstance(sections, dict):
         sections = {}
-    sections = {key: str(sections.get(key, "")).strip() for key in CARD_SECTION_KEYS}
+    section_keys = synthesis_section_keys(
+        entity,
+        approved_snippet_count=len((evidence_bundle or {}).get("approved_snippet_ids", []) or []),
+        config=config,
+    )
+    raw_sections = synthesis.get("sections", {})
+    if not isinstance(raw_sections, dict):
+        raw_sections = {}
+    sections = {key: str(raw_sections.get(key, "")).strip() for key in section_keys}
+    for legacy_key in LEGACY_CARD_SECTION_KEYS:
+        legacy_text = str(raw_sections.get(legacy_key, "")).strip()
+        if legacy_text:
+            sections[legacy_key] = legacy_text
     source_evidence = sorted({sid for claim in claims for sid in claim.get("source_snippet_ids", [])})
     relationships = []
     for rel in synthesis.get("relationships", []) or []:
@@ -2737,11 +3231,29 @@ def _build_card_from_synthesis(
             )
     avg_confidence = round(sum(float(c.get("confidence", 0.5)) for c in claims) / len(claims), 3) if claims else 0.0
     section_word_counts = synthesis_section_word_counts(synthesis)
+    bundle = evidence_bundle or build_entity_evidence_bundle(entity, claims, [], config)
+    snippet_count = len(bundle.get("approved_snippet_ids", []) or [])
+    word_target_plan = (
+        section_word_targets_for_entity(claims, snippet_count, config, entity=entity)
+        if card_first_synthesis_config(config).get("enabled")
+        else section_word_targets_for_claims(claims)
+    )
+    if synthesis.get("_section_chained_synthesis") or bundle.get("section_chained_synthesis"):
+        synthesis_origin = "card_first_section_chained_synthesis"
+    elif bundle.get("card_first_synthesis"):
+        synthesis_origin = "card_first_model_synthesis"
+    else:
+        synthesis_origin = "accepted_claims_model_synthesis"
+    details_extra: dict[str, Any] = {}
+    if isinstance(synthesis.get("_lore_digest"), dict):
+        details_extra["lore_digest"] = synthesis["_lore_digest"]
+    if synthesis.get("_section_chained_synthesis"):
+        details_extra["section_chained_synthesis"] = True
     return {
         "card_id": card_id,
         "entity_type": normalize_entity_type(entity.get("entity_type", "term")),
         "canonical_name": canonical_name,
-        "aliases": entity.get("aliases", []),
+        "aliases": [],
         "status": "draft",
         "summary": str(synthesis.get("summary", "")).strip(),
         "details": {
@@ -2752,10 +3264,12 @@ def _build_card_from_synthesis(
             "unresolved_conflicts": synthesis.get("unresolved_conflicts", []),
             "wiki_links": build_wiki_links_from_synthesis(synthesis, entities_by_name),
             "section_word_counts": section_word_counts,
-            "word_target_plan": section_word_targets_for_claims(claims),
+            "word_target_plan": word_target_plan,
+            "evidence_bundle": bundle,
             "validation_retry_count": synthesis.get("_validation_retry_count", 0),
             "accepted_claim_ids": [claim.get("claim_id") for claim in claims],
-            "synthesis_origin": "accepted_claims_model_synthesis",
+            "synthesis_origin": synthesis_origin,
+            **details_extra,
         },
         "timeline": timeline,
         "relationships": relationships,
@@ -2843,6 +3357,35 @@ def merge_canonical_cards(existing: list[dict[str, Any]], approved_revisions: li
     return sorted(merged.values(), key=lambda card: str(card.get("canonical_name", "")))
 
 
+def entity_matches_target_names(entity: dict[str, Any], target_keys: set[str]) -> bool:
+    names = [str(entity.get("canonical_name", ""))]
+    names.extend(str(alias) for alias in entity.get("aliases", []) or [])
+    return any(normalized_name_key(name) in target_keys for name in names if str(name).strip())
+
+
+def filter_accepted_claims_by_entity_ids(
+    accepted_by_entity: dict[str, list[dict[str, Any]]],
+    entity_ids: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    return {entity_id: claims for entity_id, claims in accepted_by_entity.items() if entity_id in entity_ids}
+
+
+def finalize_approved_card_drafts(
+    card_drafts_path: Path,
+    card_review_decisions_path: Path,
+    canonical_cards_path: Path,
+) -> list[dict[str, Any]]:
+    payload = read_json(card_drafts_path) if card_drafts_path.exists() else {"cards": []}
+    draft_cards = [card for card in payload.get("cards", []) if isinstance(card, dict)]
+    card_decisions = _load_decisions(card_review_decisions_path)
+    existing_canonical_cards = _load_existing_canonical_cards(canonical_cards_path)
+    approved_revisions = _promote_approved_cards(draft_cards, card_decisions)
+    canonical_cards = merge_canonical_cards(existing_canonical_cards, approved_revisions)
+    canonical_cards_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(canonical_cards_path, {"cards": canonical_cards})
+    return canonical_cards
+
+
 def default_source_snippets_path(in_claim_drafts_json: Path) -> Path | None:
     try:
         if in_claim_drafts_json.parent.name == "card_drafts":
@@ -2851,7 +3394,7 @@ def default_source_snippets_path(in_claim_drafts_json: Path) -> Path | None:
             run_root = in_claim_drafts_json.parent.parent
     except IndexError:
         return None
-    candidate = run_root / "06_snippet_extraction" / "snippets_candidates.jsonl"
+    candidate = run_root / "05_snippet_extraction" / "snippets_candidates.jsonl"
     legacy_candidate = run_root / "03_relevance" / "snippets_candidates.jsonl"
     if candidate.exists():
         return candidate
@@ -2973,6 +3516,8 @@ def run(
     out_merge_log_jsonl: Path,
     in_pipeline_config_json: Path | None = None,
     in_source_snippets_jsonl: Path | None = None,
+    in_entity_development_history_json: Path | None = None,
+    target_entity_names: list[str] | None = None,
 ) -> None:
     logger = get_logger(__name__)
     identity_merge_proposals_path, identity_merge_decisions_path = default_identity_merge_paths(out_card_drafts_json)
@@ -3007,9 +3552,12 @@ def run(
         config = read_json(in_pipeline_config_json)
     source_snippets_path = in_source_snippets_jsonl or default_source_snippets_path(in_claim_drafts_json)
     source_snippets_by_id = load_source_snippets_by_id(source_snippets_path)
+    history_by_entity = load_entity_development_history_by_entity(in_entity_development_history_json)
+    run_root = out_card_drafts_json.parent.parent
+    narrative_work_tags, narrative_frame = load_narrative_synthesis_context(run_root)
 
     logger.info(
-        "Stage 11: claims=%d author_claims=%d claim_decisions=%d synthetic_author_decisions=%d card_decisions=%d directives=%d source_snippets=%d",
+        "Stage 11: claims=%d author_claims=%d claim_decisions=%d synthetic_author_decisions=%d card_decisions=%d directives=%d source_snippets=%d development_history_entities=%d",
         len(claims),
         len(author_claims),
         len(all_claim_decisions),
@@ -3017,6 +3565,17 @@ def run(
         len(card_decisions),
         len(directives),
         len(source_snippets_by_id),
+        len(history_by_entity),
+    )
+    all_claim_decisions, claim_auto_accept_report = supplement_claim_decisions(
+        all_claims,
+        all_claim_decisions,
+        memory,
+        config,
+    )
+    write_json(
+        out_card_drafts_json.with_name("claim_auto_accept_report.json"),
+        claim_auto_accept_report,
     )
     accepted_claims, merge_log = apply_claim_decisions(all_claims, all_claim_decisions)
     remember_claim_decisions(memory, all_claims, all_claim_decisions)
@@ -3081,6 +3640,16 @@ def run(
         author_claim_decisions = default_author_claim_decisions(author_claims, claim_decisions)
         all_claims = claims + author_claims
         all_claim_decisions = claim_decisions + author_claim_decisions
+        all_claim_decisions, claim_auto_accept_report = supplement_claim_decisions(
+            all_claims,
+            all_claim_decisions,
+            memory,
+            config,
+        )
+        write_json(
+            out_card_drafts_json.with_name("claim_auto_accept_report.json"),
+            claim_auto_accept_report,
+        )
         accepted_claims, merge_log = apply_claim_decisions(all_claims, all_claim_decisions)
         remember_claim_decisions(memory, all_claims, all_claim_decisions)
         remember_author_directives(memory, directives)
@@ -3141,9 +3710,35 @@ def run(
         for alias in entity.get("aliases", []) or []:
             entities_by_name[normalized_name_key(str(alias))] = entity
 
+    lore_clusters = load_snippet_clusters(default_snippet_clusters_lore_path(in_claim_drafts_json))
+    from pipeline.prose_alias_registry import build_global_prose_alias_pairs
+
+    global_prose_alias_pairs = build_global_prose_alias_pairs(merged_entities, memory, config)
     accepted_by_entity: dict[str, list[dict[str, Any]]] = {}
     for claim in accepted_claims:
         accepted_by_entity.setdefault(str(claim.get("target_entity_id")), []).append(claim)
+    accepted_by_entity = entities_for_card_synthesis(merged_entities, accepted_by_entity, lore_clusters, config)
+
+    if target_entity_names:
+        target_keys = {normalized_name_key(name) for name in target_entity_names if str(name).strip()}
+        target_entity_ids = {
+            str(entity.get("entity_id", "")).strip()
+            for entity in merged_entities
+            if entity_matches_target_names(entity, target_keys)
+        }
+        target_entity_ids.discard("")
+        accepted_by_entity = filter_accepted_claims_by_entity_ids(accepted_by_entity, target_entity_ids)
+        logger.info(
+            "Stage 11 targeted synthesis: entities=%s matched_ids=%d claim_buckets=%d",
+            ", ".join(target_entity_names),
+            len(target_entity_ids),
+            len(accepted_by_entity),
+        )
+        if not accepted_by_entity:
+            raise RuntimeError(
+                f"Stage 11 targeted synthesis found no accepted claims or approved lore snippet bundles for: "
+                f"{', '.join(target_entity_names)}."
+            )
 
     draft_cards: list[dict[str, Any]] = []
     synthesis_failures: list[dict[str, Any]] = []
@@ -3200,6 +3795,8 @@ def run(
             len(full_entity_claims),
         )
         try:
+            development_entries = entity_development_entries_for_entity(history_by_entity, entity_id, entity)
+            development_history_lines = render_entity_history_lines(development_entries)
             synthesis = synthesize_card_with_model(
                 entity,
                 full_entity_claims,
@@ -3207,6 +3804,11 @@ def run(
                 config,
                 source_snippets_by_id,
                 entities_by_name,
+                development_history_lines,
+                lore_clusters,
+                global_prose_alias_pairs,
+                narrative_work_tags=narrative_work_tags,
+                narrative_frame=narrative_frame,
             )
         except RuntimeError as exc:
             synthesis_failures.append(
@@ -3246,7 +3848,17 @@ def run(
                 directives=directives,
             )
             continue
-        draft_cards.append(_build_card_from_synthesis(entity, full_entity_claims, synthesis, entities_by_name))
+        evidence_bundle = build_entity_evidence_bundle(entity, full_entity_claims, lore_clusters, config)
+        draft_cards.append(
+            _build_card_from_synthesis(
+                entity,
+                full_entity_claims,
+                synthesis,
+                entities_by_name,
+                evidence_bundle=evidence_bundle,
+                config=config,
+            )
+        )
         logger.info(
             "Stage 11 progress: %d/%d synthesizing cards draft_cards=%d failures=%d",
             synthesis_index,

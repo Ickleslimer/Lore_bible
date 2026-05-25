@@ -37,6 +37,16 @@ CANONICAL_OVERRIDES = {
     "joy roberts": "Joy Roberts",
 }
 
+# Lore entities that resemble generic English but are author-confirmed Theriac entities.
+PROTECTED_LORE_ENTITY_KEYS = frozenset(
+    {
+        "the lab",
+        "lab",
+        "player",
+        "the player",
+    }
+)
+
 ENTITY_TYPE_ALIASES = {"ai_system": "character", "ai system": "character", "ai systems": "character"}
 DISALLOWED_ENTITY_TYPES = {"theme"}
 ENTITY_TYPES = {"character", "faction", "organization", "location", "quest", "event", "timeline_node", "term"}
@@ -85,6 +95,10 @@ def normalized_name_key(value: str) -> str:
     text = re.sub(r"[^a-z0-9]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def is_protected_lore_entity_key(name_or_key: str) -> bool:
+    return normalized_name_key(name_or_key) in PROTECTED_LORE_ENTITY_KEYS
 
 
 def is_blocked_seed_name(value: str) -> bool:
