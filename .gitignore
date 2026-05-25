@@ -20,8 +20,9 @@ theriac-lore-tauri.exe
 .cursor/
 artifacts/
 canon/*
-!canon/review_memory.json
-!canon/narrative_works.json
+!canon/README.md
+config/pipeline_config.json
+config/quest_song_seed.json
 discord_conversations/
 *.docx
 

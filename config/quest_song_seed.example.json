@@ -1,0 +1,34 @@
+{
+  "quest_song_seeds": [
+    {
+      "quest_title": "Quest 1",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 1.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 2",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 2.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 3",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 3.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    }
+  ]
+}

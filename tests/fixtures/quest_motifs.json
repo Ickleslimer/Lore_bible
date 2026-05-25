@@ -1,0 +1,19 @@
+{
+  "motifs": [
+    {
+      "motif_id": "audioslave",
+      "primary_character": "Oyuun",
+      "artist_aliases": ["Audioslave"]
+    },
+    {
+      "motif_id": "guns_n_roses",
+      "primary_character": "Izanami",
+      "artist_aliases": ["Guns N' Roses", "Guns N Roses"]
+    },
+    {
+      "motif_id": "nine_inch_nails",
+      "primary_character": "Enoch",
+      "artist_aliases": ["Nine Inch Nails", "NIN"]
+    }
+  ]
+}

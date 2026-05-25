@@ -1,18 +1,21 @@
 # Pipeline preflight (Cursor agents)
 
-Run before recommending **Run / Resume Full Pipeline** or **Antigravity Flash watch**.
+Antigravity **Gemini quota** preflight runs from **theriac-pipeline-ops**, not Lore_bible. It does **not** check OpenRouter credit.
 
-## Commands
+See [ops-repo.md](../antigravity/ops-repo.md).
+
+## Commands (ops repo)
 
 ```bash
+cd "D:/Workplaces/Enkidu Project/Theriac/theriac-pipeline-ops"
 python scripts/check_quota.py
 ```
 
-On Windows this is **hands-free by default**: the script focuses Antigravity, opens **Settings → Models** (quota bars), and captures the window. That steals focus briefly. Use `--no-auto-navigate` if the Models panel is already open, or set `THERIAC_QUOTA_AUTO_NAVIGATE=0`.
+On Windows this is **hands-free by default**: the script focuses Antigravity, opens **Settings → Models** (quota bars), and captures the window. Use `--no-auto-navigate` if the Models panel is already open, or set `THERIAC_QUOTA_AUTO_NAVIGATE=0`.
 
 **Separate session (VM or RDP):** run the worker where Antigravity is visible; from Cursor use `THERIAC_QUOTA_WORKER=1` or `python scripts/check_quota.py --worker`. **VM (Home OK):** [docs/antigravity/quota-vm-session.md](../antigravity/quota-vm-session.md). **RDP (Pro+):** [docs/antigravity/quota-rdp-session.md](../antigravity/quota-rdp-session.md).
 
-Then read:
+Snapshots land under the **Lore_bible** tree when `THERIAC_REPO_ROOT` points there:
 
 - `artifacts/quota_snapshots/latest.png`
 - `artifacts/quota_snapshots/latest.meta.json`
@@ -29,12 +32,12 @@ Then read:
 |--------------------------|------|
 | 2+ when Gemini low | Failover watch target (`failover_to_gpt_pool_watch`) |
 
-## OpenRouter
+## OpenRouter (Lore_bible pipeline runs)
 
 - Auto-topup is enabled for this project.
 - Low `limit_remaining` is **informational only** — do not recommend waiting for billing reset.
 - `missing_key` / `auth_failed` are separate configuration blockers.
 
-## MCP
+## MCP (ops repo only)
 
-`theriac_quota_preflight(run_capture=true, antigravity_assessment_json='{...}')` combines capture, assessment, and auth check.
+Configure `theriac-watch` / `theriac_quota_preflight` in **theriac-pipeline-ops** MCP config, not Lore_bible.

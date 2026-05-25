@@ -4,25 +4,28 @@ Canonical repo: `D:\Workplaces\Enkidu Project\Theriac\Lore_bible` (see [../canon
 
 ## Before recommending a full pipeline run
 
-Quota preflight is optional. Skip it when the user wants to run now.
+**OpenRouter runs:** log + artifact supervision only — [watch-run-stage-07-through-08.md](../antigravity/watch-run-stage-07-through-08.md). Do not use quota/watch MCP from Lore_bible.
 
-If using quota: run `python scripts/check_quota.py`, read `latest.png`, call `theriac_quota_preflight`.
+**Antigravity Gemini quota (optional):** run from **theriac-pipeline-ops** — `python scripts/check_quota.py`, then MCP `theriac_quota_preflight`. See [ops-repo.md](../antigravity/ops-repo.md).
 
-## Autonomous start (Cursor / MCP)
-
-Without Tauri UI:
+## Start pipeline from Lore_bible (no watch)
 
 ```bash
-python scripts/pipeline_handoff.py
+python scripts/pipeline_start_headless.py --resume --run-root artifacts/runs/<run_id>
 ```
 
-Or MCP `theriac_pipeline_handoff()` — starts pipeline worker, background sentinel, and watch job in one call.
+Or MCP-free full handoff with watch/sentinel from **ops repo**:
+
+```bash
+cd ../theriac-pipeline-ops
+python scripts/pipeline_handoff.py --resume --run-root ../Lore_bible/artifacts/runs/<run_id>
+```
 
 ## After the user starts a run (manual path)
 
-1. `theriac_watch_start` once **or** use `theriac_pipeline_handoff` above.
-2. Tell the user to run the Antigravity workflow in `docs/antigravity/pipeline-watch-workflow.md` (sentinel auto-starts with handoff).
-3. Do **not** poll in Cursor.
+1. **OpenRouter:** poll worker log + stage artifacts per [watch-run-stage-07-through-08.md](../antigravity/watch-run-stage-07-through-08.md).
+2. **Antigravity Flash watch (optional):** use ops-repo `theriac_watch_start` or `pipeline_handoff.py`; follow [pipeline-watch-workflow.md](../antigravity/pipeline-watch-workflow.md).
+3. Do **not** poll quota/watch MCP from Lore_bible.
 
 ## When the user returns
 

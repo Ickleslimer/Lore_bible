@@ -225,7 +225,7 @@ def wait_for_capture_response(
         "ok": False,
         "error": (
             f"Quota worker did not respond within {timeout_seconds:.0f}s. "
-            "Start session B: python scripts/quota_worker.py --loop"
+            "Start session B: theriac-pipeline-ops/scripts/quota_worker.py --loop (see docs/antigravity/ops-repo.md)."
         ),
         "capture": None,
     }

@@ -1,0 +1,31 @@
+{
+  "works": [
+    {
+      "work_id": "theriac_coda",
+      "title": "Theriac Coda",
+      "kind": "main",
+      "status": "active",
+      "character_history_section": "history_theriac_coda",
+      "keyword_hints": ["theriac coda", "main game", "path b", "peaceful path", "main route"],
+      "synopsis_seed": "Primary game main route."
+    },
+    {
+      "work_id": "theriac_coda_path_a",
+      "title": "Theriac Coda — Path A (Side Route)",
+      "kind": "side_route",
+      "status": "stub",
+      "character_history_section": "history_path_a_side_route",
+      "keyword_hints": ["path a", "destructive path", "against the lab", "side route"],
+      "synopsis_seed": "Short destructive branch."
+    },
+    {
+      "work_id": "wedding_ramasinta",
+      "title": "The Wedding of Ramasinta",
+      "kind": "spinoff",
+      "status": "stub",
+      "character_history_section": "history_wedding_ramasinta",
+      "keyword_hints": ["wedding of ramasinta", "spinoff"],
+      "synopsis_seed": "Spin-off focused on Ramasinta."
+    }
+  ]
+}

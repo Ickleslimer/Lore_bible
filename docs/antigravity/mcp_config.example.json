@@ -1,11 +1,12 @@
 {
+  "_comment": "Configure in theriac-pipeline-ops, not Lore_bible. Copy to %USERPROFILE%\\.gemini\\config\\mcp_config.json",
   "mcpServers": {
     "theriac-watch": {
       "command": "D:\\AppData\\Python\\Python312\\python.exe",
       "args": ["-m", "mcp_servers.theriac_watch.server"],
-      "cwd": "D:\\Workplaces\\Enkidu Project\\Theriac\\Lore_bible",
+      "cwd": "D:\\Workplaces\\Enkidu Project\\Theriac\\theriac-pipeline-ops",
       "env": {
-        "PYTHONPATH": "D:\\Workplaces\\Enkidu Project\\Theriac\\Lore_bible",
+        "PYTHONPATH": "D:\\Workplaces\\Enkidu Project\\Theriac\\theriac-pipeline-ops;D:\\Workplaces\\Enkidu Project\\Theriac\\Lore_bible",
         "THERIAC_REPO_ROOT": "D:\\Workplaces\\Enkidu Project\\Theriac\\Lore_bible",
         "THERIAC_OPENROUTER_AUTO_TOPUP": "1"
       }

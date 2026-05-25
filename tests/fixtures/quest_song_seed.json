@@ -1,0 +1,444 @@
+{
+  "quest_song_seeds": [
+    {
+      "quest_title": "Quest 1",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 1.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 2",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 2.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 3",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 3.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 4",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 4.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Cochise",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Oyuun quest fixture.",
+      "band_hint": "audioslave",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 6",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 6.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 7",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 7.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 8",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 8.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 9",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 9.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 10",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 10.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 11",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 11.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 12",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 12.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 13",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 13.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 14",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 14.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 15",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 15.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 16",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 16.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 17",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 17.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 18",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 18.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 19",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 19.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 20",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 20.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 21",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 21.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 22",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 22.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 23",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 23.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 24",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 24.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 25",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 25.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 26",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 26.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 27",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 27.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 28",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 28.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 29",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 29.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 30",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 30.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 31",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 31.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 32",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 32.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 33",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 33.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 34",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 34.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 35",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 35.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 36",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 36.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 37",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 37.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 38",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 38.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 39",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 39.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 40",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 40.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 41",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 41.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 42",
+      "main_character": "Oyuun",
+      "characters": [
+        "Oyuun"
+      ],
+      "synopsis": "Fixture quest 42.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 43",
+      "main_character": "Enoch",
+      "characters": [
+        "Enoch"
+      ],
+      "synopsis": "Fixture quest 43.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    },
+    {
+      "quest_title": "Quest 44",
+      "main_character": "Izanami",
+      "characters": [
+        "Izanami"
+      ],
+      "synopsis": "Fixture quest 44.",
+      "band_hint": "other",
+      "narrative_work_id": "theriac_coda"
+    }
+  ]
+}

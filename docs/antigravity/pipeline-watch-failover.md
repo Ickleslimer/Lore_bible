@@ -7,8 +7,9 @@ Antigravity has two shared model quota pools (Gemini vs Claude/GPT-OSS). MCP can
 When `watch_alert.json` appears with `reason: watcher_stale`:
 
 1. Read `artifacts/pipeline_watches/{job_id}.json` for `run_root` and `poll_interval_seconds`.
-2. Re-run quota capture if needed:
+2. Re-run quota capture from **theriac-pipeline-ops** if needed:
    ```bash
+   cd ../theriac-pipeline-ops
    python scripts/check_quota.py
    ```
 3. Decide:
@@ -21,7 +22,7 @@ When `watch_alert.json` appears with `reason: watcher_stale`:
 ## Cancel pipeline
 
 - **Desktop:** Pipeline tab → Cancel.
-- **MCP:** `theriac_pipeline_cancel` (uses `pipeline_worker.pid` written by Tauri when the worker starts).
+- **MCP (ops repo):** `theriac_pipeline_cancel` (uses `pipeline_worker.pid` written by Tauri when the worker starts).
 - **Aggressive watch policy:** set `on_watcher_lost: cancel_run` at `theriac_watch_start` (only if you want stale watcher to kill the worker).
 
 ## Wait for Gemini reset

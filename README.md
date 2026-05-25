@@ -38,6 +38,7 @@ V2 contract:
 7. Stage 07 Lore Development Ledger: after entity resolution, emit chronological `New`/`Change` development entries per resolved entity from strict Stage 04 segments plus optional 04R rescue segments. Outputs under `07_lore_development_ledger/` (`lore_development_ledger.jsonl`, `entity_development_history.json`) for Stage 11 card synthesis context (claims remain the human review surface).
 8. Stage 08 Snippet Grouping: group snippets (including theme-rescue merge output when present) against resolved and approved conversation-born entities.
 8W. Stage 08W Narrative Work Tagging: batch-classify snippets with `narrative_work_id` (meta snippets first) to `08_narrative_work_tagging/snippet_narrative_work_tags.jsonl`.
+8Q. Stage 08Q Quest Tagging: infer quest-song design tags (character, title, optional year/pool **guesses**) via motif heuristics, DeepSeek batch, and gated MusicBrainz lookup. Outputs `08_quest_tagging/snippet_quest_tags.jsonl`, `discovered_quests.json`, and `artist_character_review_queue.jsonl`. Does not require a complete quest seed list; chronology fields are optional. Config: `quest_tagging` in [`config/pipeline_config.json`](config/pipeline_config.json). Rerun: `python scripts/run_stage_08q.py --artifacts-root <run>`.
 9. Stage 09 Claim Drafting: run model-required claim extraction to `09_claim_drafting/claim_drafts.json`.
 10. Review pass 1: accept/reject/edit conversation entity proposals and atomic claims in the UI. Optionally use Story Questions in the desktop app to ask one high-value author question at a time, ask the configured story model to propose claim decisions and author claims from the answer, approve/discard/critique that proposal, then generate the next question from the reduced unresolved claim list.
 11. Stage 10 Identity Cluster Preflight: detect pairwise identity evidence from accepted claims, collapse it into connected entity clusters, and ask the configured model to suggest one canonical wiki-page title per cluster in `10_identity_merge/identity_merge_proposals.json`.
@@ -59,6 +60,19 @@ Each run stores artifacts under numbered folders (`01_entity_bootstrap/` … `12
 python -m pip install -r requirements.txt
 ```
 
+### Local config (gitignored)
+
+Theriac-specific state is not committed. Before the first run, copy examples and create empty canon files as needed:
+
+```bash
+cp config/pipeline_config.example.json config/pipeline_config.json
+cp config/quest_song_seed.example.json config/quest_song_seed.json
+mkdir -p canon
+# Optional: import quests, bootstrap motifs, seed review memory via desktop app or pipeline stages
+```
+
+See [config/README.md](config/README.md) and [scripts/README.md](scripts/README.md).
+
 ## Canonical repo path
 
 The repo lives at **`D:\Workplaces\Enkidu Project\Theriac\Lore_bible`**. A junction at `C:\Users\mrdyl\Documents\Theriac\Lore_bible` points to the same tree for older IDE workspaces. See [docs/canonical-repo.md](docs/canonical-repo.md).
@@ -67,12 +81,11 @@ The repo lives at **`D:\Workplaces\Enkidu Project\Theriac\Lore_bible`**. A junct
 
 Cross-IDE tooling for long pipeline runs:
 
-- **Preflight (Cursor):** Before recommending a full run, capture Antigravity Model Quota (`python scripts/check_quota.py`), read `artifacts/quota_snapshots/latest.png`, and call MCP `theriac_quota_preflight`. OpenRouter balance is informational only (`THERIAC_OPENROUTER_AUTO_TOPUP=1`); Antigravity pool bars drive watch/run advice. See [docs/cursor/pipeline-preflight.md](docs/cursor/pipeline-preflight.md).
-- **Quota VM (Windows Home):** VirtualBox guest runs Antigravity + worker; host uses `python scripts/quota_vm_session.py`. See [docs/antigravity/quota-vm-session.md](docs/antigravity/quota-vm-session.md).
-- **Watch (Antigravity Flash):** MCP server `theriac-watch` — `theriac_pipeline_handoff` or `theriac_watch_start` / `theriac_watch_status`. See [docs/antigravity/pipeline-watch-workflow.md](docs/antigravity/pipeline-watch-workflow.md).
-- **Headless handoff:** `python scripts/pipeline_handoff.py` starts pipeline + sentinel without Tauri.
-- **Sentinel (no LLM):** `python scripts/pipeline_watch_sentinel.py --loop` detects stale Flash polls and writes `watch_alert.json`. See [docs/antigravity/pipeline-watch-failover.md](docs/antigravity/pipeline-watch-failover.md).
-- **Cursor MCP:** [`.cursor/mcp.json`](.cursor/mcp.json). **Antigravity IDE:** `%USERPROFILE%\.gemini\config\mcp_config.json` (see [docs/antigravity/mcp_config.example.json](docs/antigravity/mcp_config.example.json)).
+- **Preflight (Antigravity Gemini quota):** Run from **theriac-pipeline-ops** — not Lore_bible. See [docs/antigravity/ops-repo.md](docs/antigravity/ops-repo.md).
+- **Quota VM (Windows Home):** See ops repo `docs/antigravity/quota-vm-session.md`.
+- **Watch (OpenRouter pipeline runs):** Log + artifact polling — [docs/antigravity/watch-run-stage-07-through-08.md](docs/antigravity/watch-run-stage-07-through-08.md). Quota/watch MCP lives in ops repo only.
+- **Headless start (pipeline only):** `python scripts/pipeline_start_headless.py --resume --run-root …`
+- **Watch / quota MCP:** configure in **theriac-pipeline-ops** only — [docs/antigravity/ops-repo.md](docs/antigravity/ops-repo.md). Example MCP config: ops repo `docs/antigravity/mcp_config.example.json` (Lore_bible copy points at ops repo for reference).
 
 Handoff summary: [docs/cursor/pipeline-watch-handoff.md](docs/cursor/pipeline-watch-handoff.md).
 
@@ -168,6 +181,8 @@ python scripts/build_wiki_preview.py \
 ```
 
 Open `artifacts/wiki_preview_enoch_krypteia/index.html` in a browser (or use `--open`). Search uses `search-index.json` (title + excerpt). Omit `--entities` to include every card in the run. Use `--drafts` to prefer `card_drafts.json` over canonical cards.
+
+**Theriac Coda quest map:** Every wiki build also emits `quests/theriac-coda-quest-map.html` from `config/quest_song_seed.json` (character pools + year axis). The Coda work page infobox links to it. Author `earliest_year`, `year_gate`, and `unlock_note` on seed rows, then run `python scripts/sync_quest_seed_metadata.py` to refresh `quest_id` / pool order.
 
 Start the new Tauri/Svelte desktop app during development:
 

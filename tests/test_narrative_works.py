@@ -1,5 +1,7 @@
 from pathlib import Path
 
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
 from pipeline.narrative_works import (
     active_works,
     heuristic_narrative_work_tag,
@@ -10,7 +12,7 @@ from pipeline.narrative_works import (
 
 
 def test_registry_includes_theriac_coda_and_path_a_stub() -> None:
-    works = load_narrative_works(Path("canon/narrative_works.json"))
+    works = load_narrative_works(FIXTURES / "narrative_works.json")
     assert work_by_id(works, "theriac_coda") is not None
     path_a = work_by_id(works, "theriac_coda_path_a")
     assert path_a is not None
@@ -25,7 +27,7 @@ def test_history_section_maps_to_work_id() -> None:
 
 
 def test_heuristic_tags_path_a_snippet() -> None:
-    works = load_narrative_works(Path("canon/narrative_works.json"))
+    works = load_narrative_works(FIXTURES / "narrative_works.json")
     snippet = {
         "display_text_normalized": "On Path A the player follows orders against the lab and executes members.",
         "conversation_patch_summary": "",

@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         "--worker",
         action="store_true",
         default=None,
-        help="Drop capture.request.json and wait for scripts/quota_worker.py in session B.",
+        help="Drop capture.request.json and wait for theriac-pipeline-ops/scripts/quota_worker.py in session B.",
     )
     worker.add_argument(
         "--no-worker",
