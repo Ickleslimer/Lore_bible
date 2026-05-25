@@ -1,11 +1,14 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { RefreshCcw, Search } from "lucide-svelte";
+  import { createEventDispatcher, onMount } from "svelte";
+  import { Play, RefreshCcw, Search, Sparkles } from "lucide-svelte";
   import { loadThemeLearning } from "../lib/api";
-  import type { ThemeAssociationRow, ThemeLearningResponse, ThemeProfileItem } from "../lib/types";
+  import type { ThemeAssociationRow, ThemeLearningResponse, ThemeProfileItem, ThemeRescueResponse } from "../lib/types";
 
   export let artifactsRoot = "";
   export let disabled = false;
+  export let themeRescue: ThemeRescueResponse | null = null;
+
+  const dispatch = createEventDispatcher<{ openRescue: void }>();
 
   let response: ThemeLearningResponse | null = null;
   let loading = false;
@@ -184,6 +187,19 @@
     </button>
   </div>
 
+  {#if themeRescue?.prompt?.show}
+    <article class="theme-rescue-callout">
+      <Sparkles size={18} />
+      <div>
+        <strong>{themeRescue.prompt.title}</strong>
+        <p>{themeRescue.prompt.message}</p>
+        <button disabled={disabled} on:click={() => dispatch("openRescue")}>
+          <Play size={16} /> Open Theme Rescue
+        </button>
+      </div>
+    </article>
+  {/if}
+
   {#if localError}
     <div class="error-banner">{localError}</div>
   {/if}
@@ -280,6 +296,45 @@
             {/if}
             {#if selectedTheme.provenance_summary}
               <p class="inventory-reason">{selectedTheme.provenance_summary}</p>
+            {/if}
+            {#if selectedTheme.real_world_lineage && typeof selectedTheme.real_world_lineage === "object"}
+              {@const lineage = selectedTheme.real_world_lineage as Record<string, unknown>}
+              {#if lineage.status && lineage.status !== "none_found"}
+                <section class="theme-lineage-block">
+                  <span class="caption">Real-World Lineage</span>
+                  {#if lineage.primary_tradition}
+                    <p class="theme-description"><strong>{String(lineage.primary_tradition)}</strong></p>
+                  {/if}
+                  {#if Array.isArray(lineage.figures) && lineage.figures.length}
+                    <div class="inventory-meta">
+                      {#each lineage.figures.slice(0, 8) as figure}
+                        {#if figure && typeof figure === "object"}
+                          <span>{figure.name}{figure.role ? ` (${figure.role})` : ""}</span>
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if Array.isArray(lineage.works) && lineage.works.length}
+                    <div class="inventory-meta">
+                      {#each lineage.works.slice(0, 6) as work}
+                        {#if work && typeof work === "object"}
+                          <span>{work.title}{work.relation ? ` — ${work.relation}` : ""}</span>
+                        {/if}
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if Array.isArray(lineage.movements_or_fields) && lineage.movements_or_fields.length}
+                    <div class="inventory-meta">
+                      {#each lineage.movements_or_fields.slice(0, 8) as field}
+                        <span>{field}</span>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if lineage.reasoning_summary}
+                    <p class="inventory-reason">{lineage.reasoning_summary}</p>
+                  {/if}
+                </section>
+              {/if}
             {/if}
             <div class="theme-chip-groups">
               {#if textList(selectedTheme.evidence_entities).length}

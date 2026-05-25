@@ -139,11 +139,20 @@ textarea {
 .cluster-card,
 .metric-card,
 .loading-panel,
-.error-banner {
+.error-banner,
+.warning-banner {
   border: 1px solid #d7dee9;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
+}
+
+.warning-banner {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+  padding: 10px 14px;
+  margin-bottom: 10px;
 }
 
 .summary-panel {
@@ -172,6 +181,93 @@ textarea {
 .nav-tabs button.active {
   background: #e7eefb;
   color: #1d4ed8;
+}
+
+.nav-tabs button.attention {
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.rescue-branch {
+  grid-column: 1 / -1;
+  margin: 2px 0 8px;
+  padding: 10px 12px;
+  border: 1px dashed #93c5fd;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.rescue-branch-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rescue-branch-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.rescue-branch-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 48px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.rescue-branch-step.ready {
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.rescue-branch-step.done {
+  border-color: #86efac;
+  color: #166534;
+}
+
+.theme-rescue-callout {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.theme-rescue-callout p {
+  margin: 6px 0 10px;
+  line-height: 1.45;
 }
 
 .debug-strip {
@@ -1099,6 +1195,12 @@ button.compact {
 
 .entity-card-stats strong {
   color: #172033;
+}
+
+.entity-card-stats .referent-kind-pill {
+  border-color: #c7d2e5;
+  background: #eef2ff;
+  color: #334155;
 }
 
 .entity-theme-summary {
@@ -2418,6 +2520,40 @@ button.compact {
 
 .config-field small.bad {
   color: #b45309;
+}
+
+.config-section {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.config-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #334155;
+  font-weight: 800;
+}
+
+.config-section-copy {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.config-field select {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  padding: 9px 10px;
+  font: inherit;
 }
 
 .path-picker-row {

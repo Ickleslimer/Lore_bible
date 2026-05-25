@@ -338,7 +338,14 @@
     {#if loading}
       <div class="graph-empty">Loading relationships...</div>
     {:else if !flowNodes.length}
-      <div class="graph-empty">No relationships match the current filters.</div>
+      <div class="graph-empty">
+        {#if !(response?.edges?.length)}
+          Relationship links come from Stage 11 card drafts and the Stage 07 lore ledger. This run has no graph edges yet
+          (Stage 11 failed; Stage 07 ledger not built).
+        {:else}
+          No relationships match the current filters.
+        {/if}
+      </div>
     {/if}
     <SvelteFlow
       bind:nodes={flowNodes}

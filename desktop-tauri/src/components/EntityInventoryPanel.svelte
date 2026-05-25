@@ -128,7 +128,16 @@
   }
 
   function themeAssociations(row: InventoryRow): ThemeAssociationRow[] {
-    return row.theme_associations ?? [];
+    const seen = new Map<string, ThemeAssociationRow>();
+    for (const association of row.theme_associations ?? []) {
+      const themeId = String(association.theme_id || association.theme_label || "").trim();
+      if (!themeId) continue;
+      const existing = seen.get(themeId);
+      if (!existing || Number(association.entity_theme_rank ?? 999) < Number(existing.entity_theme_rank ?? 999)) {
+        seen.set(themeId, association);
+      }
+    }
+    return Array.from(seen.values());
   }
 
   function visibleThemeAssociations(row: InventoryRow): ThemeAssociationRow[] {
@@ -168,6 +177,10 @@
   }
 
   function rowAliases(row: InventoryRow): string[] {
+    const topLevel = row.aliases;
+    if (Array.isArray(topLevel)) {
+      return topLevel.map((alias) => String(alias)).filter(Boolean);
+    }
     const aliases = row.item?.aliases;
     if (!Array.isArray(aliases)) return [];
     return aliases.map((alias) => String(alias)).filter(Boolean);
@@ -314,6 +327,9 @@
         <div class="entity-card-stats">
           <span><strong>{row.evidence_count ?? 0}</strong> evidence</span>
           <span>{row.proposed_entity_type || "type unknown"}</span>
+          {#if row.referent_kind_label}
+            <span class="referent-kind-pill" title={row.referent_kind || ""}>{row.referent_kind_label}</span>
+          {/if}
           <span>{reviewLabel(row)}</span>
         </div>
 
@@ -338,12 +354,13 @@
 
         {#if rowAliases(row).length}
           <div class="inventory-meta compact-meta alias-chip-list">
+            <span class="caption">Also known as</span>
             {#each visibleAliases(row) as alias}
               <span>{alias}</span>
             {/each}
             {#if hiddenAliasCount(row)}
               <button type="button" class="chip-toggle" on:click={() => toggleAliases(row)}>
-                +{hiddenAliasCount(row)} aliases
+                +{hiddenAliasCount(row)} more names
               </button>
             {:else if aliasExpanded[row.row_id] && rowAliases(row).length > 8}
               <button type="button" class="chip-toggle" on:click={() => toggleAliases(row)}>

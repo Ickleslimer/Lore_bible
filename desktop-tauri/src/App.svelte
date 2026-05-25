@@ -12,6 +12,7 @@
   import RelationshipGraphPanel from "./components/RelationshipGraphPanel.svelte";
   import RunSelector from "./components/RunSelector.svelte";
   import ThemeLearningPanel from "./components/ThemeLearningPanel.svelte";
+  import ThemeRescuePanel from "./components/ThemeRescuePanel.svelte";
   import { loadClaimInventory, loadEntityInventory, loadIdentityClusters, loadState, selectRun, startPipeline } from "./lib/api";
   import type { AppState, IdentityClusterRow, InventoryRow } from "./lib/types";
 
@@ -26,8 +27,11 @@
   let clusterLoading = false;
   let inventoryLoading = false;
   let error = "";
+  let clusterWarning = "";
+  let inventoryWarning = "";
+  let entityInventoryLoaded = false;
   let configOpen = false;
-  type ActiveTab = "pipeline" | "claims" | "entities" | "themes" | "identity" | "relationships" | "drafts" | "agent" | "overview";
+  type ActiveTab = "pipeline" | "claims" | "entities" | "themes" | "rescue" | "identity" | "relationships" | "drafts" | "agent" | "overview";
   let activeTab: ActiveTab = "pipeline";
 
   function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
@@ -41,36 +45,62 @@
 
   async function refreshClusters(artifactsRoot: string) {
     clusterLoading = true;
+    clusterWarning = "";
     try {
-      clusters = (await withTimeout(loadIdentityClusters(artifactsRoot), 3500, "Identity cluster load")).clusters;
+      clusters = (await withTimeout(loadIdentityClusters(artifactsRoot), 12000, "Identity cluster load")).clusters;
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+      clusterWarning = err instanceof Error ? err.message : String(err);
       clusters = [];
     } finally {
       clusterLoading = false;
     }
   }
 
-  async function refreshInventory(artifactsRoot: string) {
-    inventoryLoading = true;
+  async function refreshClaims(artifactsRoot: string) {
     try {
-      const [claims, entities] = await Promise.all([
-        withTimeout(loadClaimInventory(artifactsRoot), 5000, "Claim inventory load"),
-        withTimeout(loadEntityInventory(artifactsRoot), 5000, "Entity inventory load"),
-      ]);
+      const claims = await withTimeout(loadClaimInventory(artifactsRoot), 8000, "Claim inventory load");
       claimRows = claims.rows;
+    } catch (err) {
+      claimRows = [];
+      inventoryWarning = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function refreshEntities(artifactsRoot: string) {
+    if (inventoryLoading) return;
+    inventoryLoading = true;
+    const priorWarning = inventoryWarning;
+    inventoryWarning = "";
+    try {
+      const entities = await withTimeout(loadEntityInventory(artifactsRoot), 45000, "Entity inventory load");
       entityRows = entities.rows;
       mergedEntityRows = entities.merged_rows ?? [];
       mergedEntityMetadata = entities.merged_metadata ?? {};
+      entityInventoryLoaded = true;
+      inventoryWarning = priorWarning;
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      claimRows = [];
       entityRows = [];
       mergedEntityRows = [];
       mergedEntityMetadata = {};
+      entityInventoryLoaded = false;
+      const entityMessage = err instanceof Error ? err.message : String(err);
+      inventoryWarning = priorWarning ? `${priorWarning} ${entityMessage}` : entityMessage;
     } finally {
       inventoryLoading = false;
     }
+  }
+
+  async function refreshInventory(artifactsRoot: string) {
+    inventoryWarning = "";
+    await refreshClaims(artifactsRoot);
+    if (activeTab === "entities" || activeTab === "identity") {
+      entityInventoryLoaded = false;
+      await refreshEntities(artifactsRoot);
+    }
+  }
+
+  function inventoryTabActive(tab: ActiveTab): boolean {
+    return tab === "entities" || tab === "identity";
   }
 
   async function refresh() {
@@ -81,6 +111,7 @@
       state = nextState;
       loading = false;
       busy = false;
+      entityInventoryLoaded = false;
       if (nextState.active_root) {
         void refreshClusters(nextState.active_root);
         void refreshInventory(nextState.active_root);
@@ -103,6 +134,7 @@
       entityRows = [];
       mergedEntityRows = [];
       mergedEntityMetadata = {};
+      entityInventoryLoaded = false;
       busy = false;
       if (nextState.active_root) {
         void refreshClusters(nextState.active_root);
@@ -172,6 +204,13 @@
     activeTab = tab;
   }
 
+  $: if (state?.active_root && inventoryTabActive(activeTab) && !entityInventoryLoaded && !inventoryLoading) {
+    void refreshEntities(state.active_root);
+  }
+
+  $: rescuePromptVisible = Boolean(state?.theme_rescue?.prompt?.show);
+  $: rescueAttention = Boolean(state?.theme_rescue?.enabled && state?.theme_rescue?.rescue_pending);
+
   function openConfig() {
     configOpen = true;
   }
@@ -214,6 +253,9 @@
       <button class:active={activeTab === "claims"} on:click={() => setTab("claims")}>Claims</button>
       <button class:active={activeTab === "entities"} on:click={() => setTab("entities")}>Entities</button>
       <button class:active={activeTab === "themes"} on:click={() => setTab("themes")}>Themes</button>
+      <button class:active={activeTab === "rescue"} class:attention={rescuePromptVisible || rescueAttention} on:click={() => setTab("rescue")}>
+        Theme Rescue{#if rescuePromptVisible}<span class="nav-badge">!</span>{/if}
+      </button>
       <button class:active={activeTab === "identity"} on:click={() => setTab("identity")}>Identity</button>
       <button class:active={activeTab === "relationships"} on:click={() => setTab("relationships")}>Relationships</button>
       <button class:active={activeTab === "drafts"} on:click={() => setTab("drafts")}>Draft Cards</button>
@@ -244,11 +286,17 @@
     {#if error}
       <div class="error-banner">{error}</div>
     {/if}
+    {#if clusterWarning}
+      <div class="warning-banner">{clusterWarning} Identity merge clusters may be unavailable until you retry Refresh.</div>
+    {/if}
+    {#if inventoryWarning}
+      <div class="warning-banner">{inventoryWarning} Use Refresh or open Entities to retry.</div>
+    {/if}
 
     {#if loading}
       <div class="loading-panel">Loading review workspace...</div>
     {:else if state}
-      <ProgressRail progress={state.progress} disabled={busy} on:runFromStage={handleRunFromStage} />
+      <ProgressRail progress={state.progress} themeRescue={state.theme_rescue} disabled={busy} on:runFromStage={handleRunFromStage} />
 
       {#if activeTab === "pipeline"}
         <PipelineControlPanel
@@ -275,7 +323,19 @@
           on:changed={handleInventoryChanged}
         />
       {:else if activeTab === "themes"}
-        <ThemeLearningPanel artifactsRoot={state.active_root} disabled={busy} />
+        <ThemeLearningPanel
+          artifactsRoot={state.active_root}
+          disabled={busy}
+          themeRescue={state.theme_rescue}
+          on:openRescue={() => setTab("rescue")}
+        />
+      {:else if activeTab === "rescue"}
+        <ThemeRescuePanel
+          artifactsRoot={state.active_root}
+          disabled={busy}
+          initialStatus={state.theme_rescue}
+          on:changed={refresh}
+        />
       {:else if activeTab === "identity"}
         <IdentityMergePanel
           artifactsRoot={state.active_root}

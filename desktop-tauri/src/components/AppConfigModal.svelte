@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from "svelte";
-  import { AlertTriangle, CheckCircle2, FileText, FolderOpen, KeyRound, Save, Settings, X } from "lucide-svelte";
+  import { AlertTriangle, CheckCircle2, Cpu, FileText, FolderOpen, KeyRound, Save, Settings, X } from "lucide-svelte";
   import { loadAppConfig, saveAppConfig, selectBootstrapDoc } from "../lib/api";
   import type { AppConfigResponse } from "../lib/types";
 
@@ -9,6 +9,9 @@
   let config: AppConfigResponse | null = null;
   let bootstrapDocPath = "";
   let openrouterApiKey = "";
+  let volumeModel = "";
+  let reasoningModel = "";
+  let cardWritingModel = "";
   let loading = true;
   let saving = false;
   let browsing = false;
@@ -19,6 +22,12 @@
     ? `Stored ${config.openrouter_key_preview || ""}`.trim()
     : "No key stored";
   $: bootstrapStatus = config?.bootstrap_doc_exists ? "Found" : "Missing";
+  $: modelChoices = config?.model_choices ?? [];
+
+  function choiceLabel(modelId: string): string {
+    const match = modelChoices.find((choice) => choice.id === modelId);
+    return match?.label || modelId;
+  }
 
   async function load() {
     loading = true;
@@ -26,6 +35,9 @@
     try {
       config = await loadAppConfig();
       bootstrapDocPath = config.bootstrap_doc_path || "";
+      volumeModel = config.volume_model || "";
+      reasoningModel = config.reasoning_model || "";
+      cardWritingModel = config.card_writing_model || "";
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -60,9 +72,15 @@
       const response = await saveAppConfig({
         bootstrap_doc_path: bootstrapDocPath.trim(),
         openrouter_api_key: openrouterApiKey.trim(),
+        volume_model: volumeModel,
+        reasoning_model: reasoningModel,
+        card_writing_model: cardWritingModel,
       });
       config = response;
       bootstrapDocPath = response.bootstrap_doc_path || bootstrapDocPath;
+      volumeModel = response.volume_model || volumeModel;
+      reasoningModel = response.reasoning_model || reasoningModel;
+      cardWritingModel = response.card_writing_model || cardWritingModel;
       openrouterApiKey = "";
       savedMessage = "Configuration saved.";
       dispatch("saved", response);
@@ -147,6 +165,43 @@
             {/if}
           </small>
         </label>
+
+        <div class="config-section">
+          <span class="config-section-title"><Cpu size={16} /> Model Routing</span>
+          <p class="config-section-copy">
+            These models are written to <code>config/pipeline_config.json</code> and used on the next pipeline run.
+          </p>
+
+          <label class="config-field">
+            <span>Volume model</span>
+            <select bind:value={volumeModel} disabled={saving || !modelChoices.length}>
+              {#each modelChoices as choice (choice.id)}
+                <option value={choice.id}>{choice.label}</option>
+              {/each}
+            </select>
+            <small>Stages 04, 05, 09 and other high-volume batch work. Current: {choiceLabel(volumeModel)}</small>
+          </label>
+
+          <label class="config-field">
+            <span>Reasoning model</span>
+            <select bind:value={reasoningModel} disabled={saving || !modelChoices.length}>
+              {#each modelChoices as choice (choice.id)}
+                <option value={choice.id}>{choice.label}</option>
+              {/each}
+            </select>
+            <small>Identity merge, card architecture agent, and Story Questions. Current: {choiceLabel(reasoningModel)}</small>
+          </label>
+
+          <label class="config-field">
+            <span>Card writing model</span>
+            <select bind:value={cardWritingModel} disabled={saving || !modelChoices.length}>
+              {#each modelChoices as choice (choice.id)}
+                <option value={choice.id}>{choice.label}</option>
+              {/each}
+            </select>
+            <small>Stage 11 card synthesis prose. Current: {choiceLabel(cardWritingModel)}</small>
+          </label>
+        </div>
 
         {#if config}
           <div class="config-paths">

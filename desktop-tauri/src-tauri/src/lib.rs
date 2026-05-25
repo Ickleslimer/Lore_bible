@@ -119,6 +119,19 @@ fn worker_log_path(artifacts: &Path) -> PathBuf {
     artifacts.join("tauri_pipeline_worker.log")
 }
 
+fn worker_pid_path(artifacts: &Path) -> PathBuf {
+    artifacts.join("pipeline_worker.pid")
+}
+
+fn write_worker_pid(artifacts: &Path, pid: u32) {
+    let path = worker_pid_path(artifacts);
+    let _ = std::fs::write(path, pid.to_string());
+}
+
+fn clear_worker_pid(artifacts: &Path) {
+    let _ = std::fs::remove_file(worker_pid_path(artifacts));
+}
+
 fn append_worker_log(artifacts: &Path, line: &str) {
     let path = worker_log_path(artifacts);
     if let Some(parent) = path.parent() {
@@ -559,7 +572,13 @@ fn run_pipeline_worker(
         guard.last_exit_code = None;
     }
     write_diagnostic(Some(&root), &format!("pipeline worker spawned pid={pid}"));
+    write_worker_pid(&artifacts, pid);
+    append_worker_log(
+        &artifacts,
+        &format!("{} | desktop: Started pipeline process {}.", now_string(), pid),
+    );
     let result = child.wait();
+    clear_worker_pid(&artifacts);
     let mut guard = state.lock().expect("pipeline state poisoned");
     guard.child_pid = None;
     guard.finished_at = Some(now_string());
@@ -732,18 +751,18 @@ mod tests {
     fn progress_preview_filters_to_pipeline_and_model_heartbeats() {
         let lines = vec![
             "ordinary debug noise".to_string(),
-            "08:12:00 | INFO | pipeline.run_pipeline | [7/12] START Stage 07 Entity Resolution".to_string(),
+            "08:12:00 | INFO | pipeline.run_pipeline | [6/12] START Stage 06 Entity Resolution".to_string(),
             "08:12:01 | INFO | pipeline.stage_10_identity_merge | Sending identity merge prompt 1/3".to_string(),
             "another ordinary line".to_string(),
-            "08:12:03 | INFO | pipeline.run_pipeline | [7/12] DONE  Stage 07 Entity Resolution (2.0s)".to_string(),
+            "08:12:03 | INFO | pipeline.run_pipeline | [6/12] DONE  Stage 06 Entity Resolution (2.0s)".to_string(),
         ];
 
         let preview = progress_log_preview(&lines, 8, 260);
 
         assert_eq!(preview.len(), 3);
-        assert!(preview[0].contains("START Stage 07 Entity Resolution"));
+        assert!(preview[0].contains("START Stage 06 Entity Resolution"));
         assert!(preview[1].contains("Sending identity merge prompt"));
-        assert!(preview[2].contains("DONE  Stage 07 Entity Resolution"));
+        assert!(preview[2].contains("DONE  Stage 06 Entity Resolution"));
     }
 
     #[test]

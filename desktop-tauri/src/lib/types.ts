@@ -47,7 +47,45 @@ export interface AppState {
   pending_total: number;
   pending_summary: string;
   progress: PipelineProgress | null;
+  theme_rescue: ThemeRescueResponse | null;
   runs: ReviewRun[];
+}
+
+export interface ThemeRescueProcess {
+  id: string;
+  short_label: string;
+  name: string;
+  description: string;
+  state: "done" | "ready" | "waiting" | "skipped" | string;
+  artifact_path: string;
+  summary: Record<string, unknown>;
+}
+
+export interface ThemeRescuePrompt {
+  show: boolean;
+  title: string;
+  message: string;
+  action_label: string;
+  confirm_message?: string;
+}
+
+export interface ThemeRescueResponse {
+  active_root: string;
+  enabled: boolean;
+  approval_required: boolean;
+  approved: boolean;
+  theme_learning_complete: boolean;
+  rescue_stale?: boolean;
+  rescue_pending: boolean;
+  prompt: ThemeRescuePrompt;
+  processes: ThemeRescueProcess[];
+  policy: Record<string, unknown>;
+}
+
+export interface ModelChoice {
+  id: string;
+  label: string;
+  description?: string;
 }
 
 export interface AppConfigResponse {
@@ -60,6 +98,10 @@ export interface AppConfigResponse {
   openrouter_key_present: boolean;
   openrouter_key_source?: string;
   openrouter_key_preview?: string;
+  volume_model: string;
+  reasoning_model: string;
+  card_writing_model: string;
+  model_choices: ModelChoice[];
 }
 
 export interface PipelineRuntimeStatus {
@@ -165,7 +207,12 @@ export interface InventoryRow {
   latest_decision?: Record<string, unknown>;
   theme_associations?: ThemeAssociationRow[];
   theme_association_count?: number;
-  item: Record<string, unknown>;
+  aliases?: string[];
+  entity_id?: string;
+  card_id?: string;
+  referent_kind?: string;
+  referent_kind_label?: string;
+  item?: Record<string, unknown>;
 }
 
 export interface InventoryResponse {

@@ -14,6 +14,7 @@ import type {
   PipelineRuntimeStatus,
   RelationshipGraphResponse,
   ThemeLearningResponse,
+  ThemeRescueResponse,
 } from "./types";
 
 let repoRoot = "";
@@ -90,6 +91,14 @@ export async function loadEntityInventory(artifactsRoot: string): Promise<Invent
 
 export async function loadThemeLearning(artifactsRoot: string): Promise<ThemeLearningResponse> {
   return bridge<ThemeLearningResponse>("theme_learning", { artifacts_root: artifactsRoot });
+}
+
+export async function loadThemeRescue(artifactsRoot: string): Promise<ThemeRescueResponse> {
+  return bridge<ThemeRescueResponse>("theme_rescue", { artifacts_root: artifactsRoot });
+}
+
+export async function approveThemeRescue(artifactsRoot: string, note = ""): Promise<ThemeRescueResponse> {
+  return bridge<ThemeRescueResponse>("approve_theme_rescue", { artifacts_root: artifactsRoot, note });
 }
 
 export async function loadEntityEvidence(
