@@ -265,7 +265,7 @@ def pipeline_progress_from_logs(
     }
 
 
-def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
+def pipeline_progress_artifact_snapshot(root: Path, counts: dict[str, int] | None = None) -> dict[str, Any]:
     migrate_run_artifacts_to_numbered(root)
     paths = ArtifactPaths(root)
     logs: list[str] = []
@@ -331,7 +331,7 @@ def pipeline_progress_artifact_snapshot(root: Path) -> dict[str, Any]:
     if paths.snippets.exists():
         mark_done(5, "Snippet Extraction")
 
-    counts = pending_review_counts_for_root(root)
+    counts = counts if counts is not None else pending_review_counts_for_root(root)
     if paths.resolved_entities.exists() or paths.conversation_entity_proposals.exists():
         mark_start(6, "Entity Resolution")
         if counts.get("conversation_entities", 0) > 0:
@@ -1572,7 +1572,11 @@ def new_run_artifacts_root(repo_root: Path) -> Path:
     raise RuntimeError("Could not create a unique new run artifact folder.")
 
 
-def discover_review_runs(repo_root: Path, active_root: Path) -> list[dict[str, Any]]:
+def discover_review_runs(
+    repo_root: Path,
+    active_root: Path,
+    active_counts: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
     artifacts_dir = repo_root / "artifacts"
     candidates: list[Path] = [active_root]
     if artifacts_dir.exists():
@@ -1583,15 +1587,17 @@ def discover_review_runs(repo_root: Path, active_root: Path) -> list[dict[str, A
 
     seen: set[str] = set()
     runs: list[dict[str, Any]] = []
+    active_resolved = active_root.resolve()
+    active_key = str(active_resolved).lower()
     for candidate in candidates:
         root = candidate.resolve()
         key = str(root).lower()
         if key in seen:
             continue
         seen.add(key)
-        counts = pending_review_counts_for_root(root)
+        counts = active_counts if active_counts is not None and key == active_key else pending_review_counts_for_root(root)
         total = pending_review_total(counts)
-        is_active = root == active_root.resolve()
+        is_active = root == active_resolved
         latest_mtime = _latest_review_mtime(root)
         if total == 0 and not is_active and latest_mtime <= 0:
             continue

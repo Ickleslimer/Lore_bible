@@ -5,7 +5,7 @@
 | Repo | Path |
 |------|------|
 | Lore_bible (pipeline) | `D:\Workplaces\Enkidu Project\Theriac\Lore_bible` |
-| theriac-pipeline-ops | `D:\Workplaces\Enkidu Project\Theriac\theriac-pipeline-ops` |
+| theriac-pipeline-ops (**private**) | Local: `D:\Workplaces\Enkidu Project\Theriac\theriac-pipeline-ops` or `Documents\Theriac\theriac-pipeline-ops` — Git: https://github.com/Ickleslimer/theriac-pipeline-ops |
 
 ## In theriac-pipeline-ops
 

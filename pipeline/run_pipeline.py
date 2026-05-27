@@ -15,19 +15,21 @@ from pipeline.stage_05_lore_development_ledger import run as run_stage_05_ledger
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
 from pipeline.stage_08_snippet_grouping import run as run_stage_08
 from pipeline.stage_08w_narrative_work_tagging import run as run_stage_08w
+from pipeline.stage_08q_quest_tagging import run as run_stage_08q
 from pipeline.stage_07a_entity_candidate_harvest import run as run_stage_07
 from pipeline.stage_07b_entity_adjudication import run as run_stage_07b
 from pipeline.stage_07c_theme_miner import run as run_stage_07c
 from pipeline.stage_07d_theme_reclassification import run as run_stage_07d
 from pipeline.stage_07e_theme_lineage_web import run as run_stage_07e
 from pipeline.stage_04r_theme_relevance_rerun import run as run_stage_04r
+from pipeline.stage_04r_theme_relevance_rerun import load_failed_candidate_ids, run_retry_failed_adjudication
 from pipeline.stage_06r_theme_rescue_snippet_extraction import run as run_stage_06r
 from pipeline.stage_09_claim_drafting import run as run_stage_09
 from pipeline.stage_10_identity_merge import run as run_stage_10
 from pipeline.stage_11_card_synthesis import run as run_stage_11
 from pipeline.stage_11w_work_card_synthesis import run as run_stage_11w
 from pipeline.stage_12_notion_export import run as run_stage_12
-from pipeline.theme_rescue_status import require_rescue_approval, theme_rescue_approved
+from pipeline.theme_rescue_status import require_rescue_approval, rescue_artifacts_stale, theme_rescue_approved
 from pipeline.notion_draft_sync import sync_canonical_cards_to_notion, sync_draft_cards_to_notion, sync_work_cards_to_notion
 from pipeline.card_architecture_agent import load_card_edit_requests, load_card_architecture_proposals, pending_card_architecture_actions
 
@@ -46,6 +48,26 @@ REVIEW_GATE_MARKERS = (
 
 
 STAGE_TOTAL = 12
+
+
+def load_max_execution_stage(config_path: Path | None = None) -> int:
+    path = config_path or Path("config/pipeline_config.json")
+    if not path.exists():
+        return STAGE_TOTAL
+    try:
+        payload = read_json(path)
+    except Exception:
+        return STAGE_TOTAL
+    if not isinstance(payload, dict):
+        return STAGE_TOTAL
+    limits = payload.get("pipeline_limits")
+    if not isinstance(limits, dict):
+        return STAGE_TOTAL
+    try:
+        value = int(limits.get("max_execution_stage", STAGE_TOTAL) or STAGE_TOTAL)
+    except (TypeError, ValueError):
+        return STAGE_TOTAL
+    return max(1, min(STAGE_TOTAL, value))
 
 
 def _count_jsonl(path: Path) -> int:
@@ -210,6 +232,23 @@ def _json_field(path: Path, key: str, default: object = None) -> object:
     return payload.get(key, default) if isinstance(payload, dict) else default
 
 
+def _ledger_stage_needs_rerun(index_path: Path) -> bool:
+    if not index_path.exists():
+        return False
+    try:
+        payload = read_json(index_path)
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("status", "")).strip().lower() != "complete":
+        return False
+    entry_count = int(payload.get("entry_count", 0) or 0)
+    failure_count = int(payload.get("failure_count", 0) or 0)
+    segment_count = int(payload.get("segment_count", 0) or 0)
+    return segment_count > 0 and entry_count == 0 and failure_count > 0
+
+
 def _load_pipeline_config() -> dict[str, object]:
     path = Path("config/pipeline_config.json")
     if not path.exists():
@@ -231,7 +270,8 @@ def _effective_snippets_path(paths: ArtifactPaths) -> Path:
     return paths.effective_snippets()
 
 
-def _stage6_entity_outputs(p: ArtifactPaths) -> list[Path]:
+def _stage6_core_entity_outputs(p: ArtifactPaths) -> list[Path]:
+    """Entity harvest/adjudication artifacts (excludes theme-learning reports)."""
     return [
         p.resolved_entities,
         p.alias_map,
@@ -239,6 +279,12 @@ def _stage6_entity_outputs(p: ArtifactPaths) -> list[Path]:
         p.entity_candidate_harvest,
         p.entity_adjudication_recommendations,
         p.externality_cache,
+    ]
+
+
+def _stage6_entity_outputs(p: ArtifactPaths) -> list[Path]:
+    return [
+        *_stage6_core_entity_outputs(p),
         p.theme_profile_update_report,
         p.theme_candidate_reclassification,
     ]
@@ -248,7 +294,15 @@ def _stage6_rescue_outputs(p: ArtifactPaths) -> list[Path]:
     return [p.theme_relevance_rerun, p.snippets_with_theme_rescue]
 
 
-def _run_theme_rescue_phases(logger, total_stages: int, p: ArtifactPaths, thematic_runtime_path: Path, root: Path) -> None:
+def _run_theme_rescue_phases(
+    logger,
+    total_stages: int,
+    p: ArtifactPaths,
+    thematic_runtime_path: Path,
+    root: Path,
+    *,
+    retry_04r_failures: bool = False,
+) -> None:
     if not _theme_rerun_enabled():
         return
     if require_rescue_approval() and not theme_rescue_approved(root):
@@ -260,9 +314,35 @@ def _run_theme_rescue_phases(logger, total_stages: int, p: ArtifactPaths, themat
             "Theme learning complete. Approve theme rescue (04R/06R) in the Theme Rescue tab before continuing.",
         )
 
-    theme_learning_outputs = [p.theme_profile_update_report, p.theme_candidate_reclassification]
-    rerun_stale = _newer_than_outputs(theme_learning_outputs, [p.theme_relevance_rerun])
-    if not p.theme_relevance_rerun.exists() or rerun_stale:
+    rerun_stale = rescue_artifacts_stale(p, repo_root=Path.cwd())
+    failed_ids = load_failed_candidate_ids(p.theme_relevance_rerun_failures) if p.theme_relevance_rerun_failures.exists() else set()
+    should_retry_failed = retry_04r_failures and p.theme_relevance_rerun.exists() and bool(failed_ids)
+    if should_retry_failed:
+        _run_stage(
+            logger,
+            6,
+            total_stages,
+            "Stage 04R Theme-Aware Relevance Rerun (failed adjudication retry)",
+            run_retry_failed_adjudication,
+            p.global_timeline,
+            p.theme_relevance_rerun,
+            p.theme_relevance_rerun_failures,
+            p.theme_relevance_rerun,
+            p.theme_rescue_messages,
+            p.theme_rescue_segments,
+            p.theme_relevance_rerun_failures,
+            Path("config/pipeline_config.json"),
+        )
+        stage_04r = read_json(p.theme_relevance_rerun)
+        retry_summary = stage_04r.get("summary", {}).get("retry_failed_adjudication", {})
+        logger.info(
+            "Stage 04R retry summary: attempted=%s resolved=%s remaining_failed=%s rescued=%d",
+            retry_summary.get("attempted_candidate_count"),
+            retry_summary.get("resolved_candidate_count"),
+            retry_summary.get("remaining_failed_candidate_count"),
+            int(stage_04r.get("summary", {}).get("rescued_conversation_count", 0)),
+        )
+    elif not p.theme_relevance_rerun.exists() or rerun_stale:
         _run_stage(
             logger,
             6,
@@ -322,13 +402,19 @@ def _effective_snippets_review_path(paths: ArtifactPaths) -> Path:
     return paths.effective_snippets_needs_review()
 
 
-def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tuple[int, str]:
+def determine_resume_start_stage(
+    root: Path,
+    ignore_pending: bool = False,
+    *,
+    max_stage: int = STAGE_TOTAL,
+) -> tuple[int, str]:
     """Return the earliest stage that must run for an existing artifact root.
 
     A return value of 0 means the current artifacts are up to date through
-    Stage 12, or the run is paused for human review and no pipeline stage
-    should be started yet.
+    max_stage (or Stage 12), or the run is paused for human review and no
+    pipeline stage should be started yet.
     """
+    max_stage = max(1, min(STAGE_TOTAL, int(max_stage or STAGE_TOTAL)))
     migrate_run_artifacts_to_numbered(root)
     p = ArtifactPaths(root)
     stage1 = [p.entity_seed]
@@ -374,14 +460,17 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
 
     if theme_rerun_enabled:
         rescue_outputs = _stage6_rescue_outputs(p)
-        rescue_incomplete = _missing(rescue_outputs) or _newer_than_outputs(stage6_entity, rescue_outputs)
+        rescue_incomplete = _missing(rescue_outputs) or rescue_artifacts_stale(p, repo_root=Path.cwd())
         if require_rescue_approval() and not theme_rescue_approved(root) and rescue_incomplete:
             return 0, "Paused for theme rescue approval; review learned themes, then begin 04R/06R in the Theme Rescue tab."
         if rescue_incomplete:
             return 6, "Stage 06 theme rescue (04R/06R) is pending or stale relative to theme learning."
 
-    if theme_rerun_enabled and p.snippets_with_theme_rescue.exists() and _newer_than_outputs([effective_snippets], stage6_resolution_outputs):
-        return 6, "Stage 06 artifacts are stale relative to the theme-rescue merged snippet corpus."
+    stage6_core_entity = _stage6_core_entity_outputs(p)
+    if theme_rerun_enabled and p.snippets_with_theme_rescue.exists() and _newer_than_outputs(
+        [effective_snippets], stage6_core_entity
+    ):
+        return 6, "Stage 06 entity harvest is stale relative to the theme-rescue merged snippet corpus."
 
     ledger_inputs = [
         p.resolved_entities,
@@ -391,11 +480,42 @@ def determine_resume_start_stage(root: Path, ignore_pending: bool = False) -> tu
     ]
     if theme_rerun_enabled:
         ledger_inputs.extend([p.theme_rescue_segments, p.theme_rescue_messages])
-    if _missing(stage7) or str(_json_field(stage7[0], "status", "")).strip().lower() != "complete" or _newer_than_outputs(ledger_inputs, stage7):
+    if (
+        _missing(stage7)
+        or _ledger_stage_needs_rerun(stage7[0])
+        or str(_json_field(stage7[0], "status", "")).strip().lower() != "complete"
+        or _newer_than_outputs(ledger_inputs, stage7)
+    ):
         return 7, "Stage 07 lore development ledger is missing, incomplete, or stale."
 
     if _missing(stage8) or _newer_than_outputs([effective_snippets, p.resolved_entities, p.entity_development_history], stage8):
         return 8, "Stage 08 grouping artifacts are missing or stale."
+
+    if max_stage <= 8:
+        config = read_json(Path("config/pipeline_config.json")) if Path("config/pipeline_config.json").exists() else {}
+        nw_cfg = (config.get("narrative_works") or {}) if isinstance(config, dict) else {}
+        if bool(nw_cfg.get("enabled", True)):
+            nw_inputs = [effective_snippets, p.resolved_entities]
+            if _missing([p.narrative_work_tags]) or _newer_than_outputs(nw_inputs, [p.narrative_work_tags]):
+                return 8, "Stage 08W narrative work tagging is missing or stale."
+        qt_cfg = (config.get("quest_tagging") or {}) if isinstance(config, dict) else {}
+        if bool(qt_cfg.get("enabled", True)):
+            quest_inputs = [effective_snippets, p.entity_seed]
+            if p.narrative_work_tags.exists():
+                quest_inputs.append(p.narrative_work_tags)
+            quest_outputs = [
+                p.snippet_quest_tags,
+                p.discovered_quests,
+                p.quest_tagging_summary,
+                p.artist_character_review_queue,
+            ]
+            if _missing(quest_outputs) or _newer_than_outputs(quest_inputs, quest_outputs):
+                return 8, "Stage 08Q quest tagging is missing or stale."
+        return (
+            0,
+            f"Artifacts are current through Stage {max_stage:02d}; stages 09-12 deferred (pipeline_limits.max_execution_stage).",
+        )
+
     if _missing(stage9) or _newer_than_outputs(stage8 + [p.resolved_entities, p.alias_map, effective_snippets], stage9):
         return 9, "Stage 09 claim drafts are missing or stale."
 
@@ -501,6 +621,18 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true", help="Resume an existing artifact folder from the earliest stale stage.")
     parser.add_argument("--ignore-pending", action="store_true", help="Ignore pending review items and force continuation.")
     parser.add_argument("--start-stage", type=int, default=1, help="Expert override: first stage to run, 1-12.")
+    parser.add_argument(
+        "--end-stage",
+        type=int,
+        default=None,
+        help="Last stage to run, 1-12 (default: pipeline_limits.max_execution_stage or 12).",
+    )
+    parser.add_argument(
+        "--04r-retry-failures",
+        dest="retry_04r_failures",
+        action="store_true",
+        help="Re-adjudicate only Stage 04R candidate windows listed in theme_relevance_rerun_failures.json.",
+    )
     args = parser.parse_args()
     setup_logging(args.log_level)
     logger = get_logger(__name__)
@@ -509,6 +641,9 @@ def main() -> None:
     migrate_run_artifacts_to_numbered(root)
     p = ArtifactPaths(root)
     thematic_runtime_path = root / "learning" / "thematic_profile_runtime.json"
+    config_path = Path("config/pipeline_config.json")
+    end_stage = load_max_execution_stage(config_path) if args.end_stage is None else int(args.end_stage)
+    end_stage = max(1, min(STAGE_TOTAL, end_stage))
     if args.ignore_pending:
         bypass_path = p.review_gate_bypass
         existing_bypass = read_json(bypass_path) if bypass_path.exists() else {}
@@ -523,18 +658,37 @@ def main() -> None:
         )
         write_json(bypass_path, existing_bypass)
     total_stages = STAGE_TOTAL
-    start_stage = max(1, min(total_stages, int(args.start_stage or 1)))
+    start_stage = max(1, min(end_stage, int(args.start_stage or 1)))
     snippets_for_downstream = _effective_snippets_path(p)
     snippets_review_for_downstream = _effective_snippets_review_path(p)
     if args.resume:
-        start_stage, resume_reason = determine_resume_start_stage(root, ignore_pending=args.ignore_pending)
-        logger.info("Resume mode selected for %s: %s", root, resume_reason)
+        start_stage, resume_reason = determine_resume_start_stage(
+            root,
+            ignore_pending=args.ignore_pending,
+            max_stage=end_stage,
+        )
+        logger.info(
+            "Resume mode selected for %s (stages %02d-%02d): %s",
+            root,
+            start_stage if start_stage > 0 else 1,
+            end_stage,
+            resume_reason,
+        )
         if start_stage <= 0:
             if "review" in resume_reason.lower():
                 logger.warning("Pipeline paused for review: %s", resume_reason)
                 raise SystemExit(REVIEW_REQUIRED_EXIT_CODE)
             logger.info("Resume complete: %s", resume_reason)
             return
+    if start_stage > end_stage:
+        logger.info(
+            "Nothing to run: resume/start stage %d is beyond configured end stage %d.",
+            start_stage,
+            end_stage,
+        )
+        return
+
+    logger.info("Pipeline execution window: stages %02d through %02d (of %d).", start_stage, end_stage, total_stages)
 
     if start_stage <= 1:
         _run_stage(
@@ -768,7 +922,7 @@ def main() -> None:
         else:
             logger.info("[6/%d] SKIP  Stage 06A-06D Entity + Theme Learning (artifacts current)", total_stages)
 
-        _run_theme_rescue_phases(logger, total_stages, p, thematic_runtime_path, root)
+        _run_theme_rescue_phases(logger, total_stages, p, thematic_runtime_path, root, retry_04r_failures=args.retry_04r_failures)
         snippets_for_downstream = _effective_snippets_path(p)
         snippets_review_for_downstream = _effective_snippets_review_path(p)
     else:
@@ -807,7 +961,7 @@ def main() -> None:
     else:
         logger.info("[7/%d] SKIP  Stage 07 Lore Development Ledger (resume starts at Stage %02d)", total_stages, start_stage)
 
-    if start_stage <= 8:
+    if start_stage <= 8 <= end_stage:
         _run_stage(
             logger,
             8,
@@ -830,7 +984,7 @@ def main() -> None:
         logger.info("[8/%d] SKIP  Stage 08 Snippet Grouping (resume starts at Stage %02d)", total_stages, start_stage)
 
     nw_cfg = (read_json(Path("config/pipeline_config.json")).get("narrative_works") or {}) if Path("config/pipeline_config.json").exists() else {}
-    if start_stage <= 8 and bool(nw_cfg.get("enabled", True)):
+    if start_stage <= 8 <= end_stage and bool(nw_cfg.get("enabled", True)):
         _run_stage(
             logger,
             8,
@@ -848,6 +1002,36 @@ def main() -> None:
         )
     elif not bool(nw_cfg.get("enabled", True)):
         logger.info("[8W] SKIP  Stage 08W Narrative Work Tagging (disabled in config)")
+
+    qt_cfg = (read_json(Path("config/pipeline_config.json")).get("quest_tagging") or {}) if Path("config/pipeline_config.json").exists() else {}
+    if start_stage <= 8 <= end_stage and bool(qt_cfg.get("enabled", True)):
+        _run_stage(
+            logger,
+            8,
+            total_stages,
+            "Stage 08Q Quest Tagging",
+            run_stage_08q,
+            snippets_for_downstream,
+            p.snippet_quest_tags,
+            p.narrative_work_tags,
+            Path("config/pipeline_config.json"),
+            Path("canon/review_memory.json"),
+            p.entity_seed,
+            p.discovered_quests,
+        )
+        logger.info(
+            "Stage 08Q summary: quest_tags=%d",
+            _count_jsonl(p.snippet_quest_tags),
+        )
+    elif not bool(qt_cfg.get("enabled", True)):
+        logger.info("[8Q] SKIP  Stage 08Q Quest Tagging (disabled in config)")
+
+    if end_stage < 9:
+        logger.info(
+            "Pipeline complete through configured end stage %d; stages 09-12 skipped (card synthesis deferred).",
+            end_stage,
+        )
+        return
 
     if start_stage <= 9:
         _run_stage(

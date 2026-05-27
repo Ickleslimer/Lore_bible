@@ -272,7 +272,7 @@ def reclassify_candidate(recommendation: dict[str, Any], candidate: dict[str, An
         "theme_adjusted_recommended_action": adjusted_action,
         "theme_adjusted_recommended_track": adjusted_track(recommendation, theme_matches, adjusted_action),
         "why_not_auto_promote": "Theme match changes relevance prior only; local evidence and human review still decide canon.",
-        "human_review_question": theme_review_question(recommendation, theme_matches),
+        "human_review_question": theme_review_question(recommendation, candidate, theme_matches),
         "theme_reclassification_source": "deterministic",
         "model_reclassification_status": "not_run",
         "model_reasoning_summary": "",
@@ -1051,12 +1051,45 @@ def adjusted_track(recommendation: dict[str, Any], theme_matches: list[dict[str,
     return str(recommendation.get("recommended_track", "unknown"))
 
 
-def theme_review_question(recommendation: dict[str, Any], theme_matches: list[dict[str, Any]]) -> str:
-    name = str(recommendation.get("candidate_name", "") or "this candidate")
-    if theme_matches:
-        labels = ", ".join(str(match.get("label", "")) for match in theme_matches[:2] if str(match.get("label", "")).strip())
-        return f"Does {name} belong to the established {labels} theme lane in Theriac, or is it only an external comparison?"
-    return str(recommendation.get("human_review_question", "")) or f"Should {name} be treated as lore, meta, alias evidence, or ignored?"
+def _review_question_context_hint(recommendation: dict[str, Any], candidate: dict[str, Any]) -> str:
+    sample_texts: list[Any] = []
+    if isinstance(candidate.get("sample_texts"), list):
+        sample_texts = list(candidate.get("sample_texts", []) or [])
+    elif isinstance(recommendation.get("sample_texts"), list):
+        sample_texts = list(recommendation.get("sample_texts", []) or [])
+    for item in sample_texts:
+        hint = clip_text(item, 160)
+        if hint:
+            return hint
+    return ""
+
+
+def theme_review_question(
+    recommendation: dict[str, Any],
+    candidate: dict[str, Any],
+    theme_matches: list[dict[str, Any]],
+) -> str:
+    name = str(recommendation.get("candidate_name") or candidate.get("candidate_name") or "this candidate").strip() or "this candidate"
+    externality = str(recommendation.get("externality_class", "")).strip()
+    top_theme = next((str(match.get("label", "")).strip() for match in theme_matches if str(match.get("label", "")).strip()), "")
+    hint = _review_question_context_hint(recommendation, candidate)
+    hint_suffix = f' Example context: "{hint}"' if hint else ""
+
+    if externality == "external_fictional_ip":
+        return f"Is {name} only an inspiration/reference, or has it been fictionalized into Theriac canon?{hint_suffix}"
+    if externality in {"real_world_person", "real_world_org", "historical_or_mythological"}:
+        theme_suffix = f" (motif: {top_theme})" if top_theme else ""
+        return (
+            f"In Theriac canon, is {name} an in-world name/term{theme_suffix}, or reference-only? "
+            f"If in-world: what is it (character, org, location, quest, lore term), and is it an alias of something we already have?{hint_suffix}"
+        )
+    if externality == "generic_phrase":
+        theme_suffix = f" (possible motif: {top_theme})" if top_theme else ""
+        return f"In local context, does {name} refer to a specific Theriac entity{theme_suffix}, or is it just a generic phrase?{hint_suffix}"
+
+    if theme_matches and top_theme:
+        return f"In Theriac context, is {name} being used as an in-world element aligned with {top_theme}, or just as a comparison/reference?{hint_suffix}"
+    return str(recommendation.get("human_review_question", "")).strip() or f"Should {name} be treated as lore, meta/reference context, alias evidence, or ignored?{hint_suffix}"
 
 
 def candidate_key(item: dict[str, Any]) -> str:

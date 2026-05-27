@@ -387,6 +387,7 @@ Inspirations-specific rules:
 - Out-of-world/meta only: biblical naming, Book of Enoch, anime-title notes, external character comparisons, author design process.
 - Do not repeat biography or plot beats already in background/role_in_story.
 - Neutral behind-the-scenes tone only: report what sources or parallels the evidence names (e.g. "named after the biblical patriarch Enoch").
+- Privacy: Do NOT include, summarize, or allude to the author's personal life or personal experiences (anything "on a personal level", "in my life", etc.), even if present in evidence. Avoid first-person autobiographical phrasing (I/my/me).
 - Do not praise, evaluate, or explain why a reference "works" for the character—no resonant/fitting/apt/clever/intentional/thematic masterstroke language unless evidence quotes that judgment verbatim.
 - Do not write as a critic reviewing the author's prose; cite parallels and naming facts, then stop."""
     extra_arrays = ""

@@ -943,6 +943,215 @@ def _materialize_rescue_rows(rows_by_id: dict[str, dict[str, Any]], decisions: l
     return rows
 
 
+_FINALIZED_DECISION_FIELDS = frozenset(
+    {
+        "conversation_id",
+        "rerun_decision",
+        "confidence",
+        "reasoning_summary",
+        "recommended_next_stage",
+        "requires_human_review",
+    }
+)
+
+
+def failure_candidate_ids(failures: list[dict[str, Any]]) -> set[str]:
+    out: set[str] = set()
+    for row in failures:
+        if not isinstance(row, dict):
+            continue
+        for candidate_id in row.get("candidate_ids", []) or []:
+            text = str(candidate_id or "").strip()
+            if text:
+                out.add(text)
+    return out
+
+
+def load_failed_candidate_ids(failures_json: Path) -> set[str]:
+    if not failures_json.exists():
+        return set()
+    payload = read_json(failures_json)
+    if not isinstance(payload, dict):
+        return set()
+    return failure_candidate_ids(payload.get("failures", []) if isinstance(payload.get("failures"), list) else [])
+
+
+def decision_to_candidate(decision: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in decision.items() if key not in _FINALIZED_DECISION_FIELDS}
+
+
+def _apply_rescue_cap(decisions: list[dict[str, Any]], rerun_cfg: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rescued = [decision for decision in decisions if decision.get("rerun_decision") == "rescue_for_snippet_extraction"]
+    max_rescued = int(rerun_cfg["max_rescued_conversations_per_run"])
+    if max_rescued and len(rescued) > max_rescued:
+        allowed_ids = {str(decision.get("candidate_id")) for decision in rescued[:max_rescued]}
+        limited: list[dict[str, Any]] = []
+        for decision in decisions:
+            if decision.get("rerun_decision") == "rescue_for_snippet_extraction" and str(decision.get("candidate_id")) not in allowed_ids:
+                limited.append(
+                    {
+                        **decision,
+                        "rerun_decision": "keep_rejected",
+                        "recommended_next_stage": None,
+                        "requires_human_review": False,
+                        "reasoning_summary": "Rescue candidate exceeded max_rescued_conversations_per_run.",
+                    }
+                )
+            else:
+                limited.append(decision)
+        decisions = limited
+        rescued = [decision for decision in decisions if decision.get("rerun_decision") == "rescue_for_snippet_extraction"]
+    return decisions, rescued
+
+
+def _build_rescue_segments(rescued: list[dict[str, Any]], generated_at: str) -> dict[str, Any]:
+    rescue_segments = [
+        {
+            "conversation_id": decision["conversation_id"],
+            "dm_pair_id": decision["dm_pair_id"],
+            "partner_id": decision["partner_id"],
+            "partner_label": decision["partner_label"],
+            "participant_ids": decision.get("participant_ids", []),
+            "participant_labels": decision.get("participant_labels", {}),
+            "track": "lore",
+            "topic_label": f"Theme rescue: {decision['matched_themes'][0]['theme_label']}" if decision.get("matched_themes") else "Theme rescue",
+            "topic_summary": decision.get("reasoning_summary", ""),
+            "topic_shift_reason": (
+                "Previously accepted by strict Stage 04; rescanned for supplemental snippet extraction after theme/quest-song signal update."
+                if str(decision.get("source_scope") or "") == "previous_accept"
+                else "Previously ignored by strict Stage 04; rescued by approved active theme or known entity signal."
+            ),
+            "anchor_entities": _rescue_anchor_entities(decision),
+            "relevance_type": "theme_aware_rescue",
+            "relevance_rationale": decision.get("reasoning_summary", ""),
+            "relevance_confidence": decision.get("confidence", 0.0),
+            "message_ids": decision.get("message_ids", []),
+            "timestamp_start_utc": decision.get("timestamp_start_utc"),
+            "timestamp_end_utc": decision.get("timestamp_end_utc"),
+            "message_count": decision.get("message_count", 0),
+            "model_confidence": decision.get("confidence", 0.0),
+            "source_coarse_window_id": decision.get("source_coarse_window_id", ""),
+            "source_model_window_id": decision.get("source_model_window_id", ""),
+            "matched_themes": decision.get("matched_themes", []),
+            "known_entity_links": decision.get("known_entity_links", []),
+            "externality_warnings": decision.get("externality_warnings", []),
+        }
+        for decision in rescued
+    ]
+    return {"generated_at_utc": generated_at, "status": "complete", "segments": rescue_segments}
+
+
+def run_retry_failed_adjudication(
+    in_global_timeline_jsonl: Path,
+    in_existing_rerun_json: Path,
+    in_failures_json: Path,
+    out_rerun_json: Path,
+    out_rescued_messages_jsonl: Path,
+    out_rescue_segments_json: Path,
+    out_failures_json: Path,
+    in_pipeline_config_json: Path | None = None,
+) -> int:
+    logger = get_logger(__name__)
+    provider_config = load_config(in_pipeline_config_json)
+    rerun_cfg = theme_aware_rerun_config(provider_config)
+    generated_at = now_utc_iso()
+
+    if not in_existing_rerun_json.exists():
+        raise FileNotFoundError(f"Existing Stage 04R artifact not found: {in_existing_rerun_json}")
+
+    failed_ids = load_failed_candidate_ids(in_failures_json)
+    if not failed_ids:
+        logger.info("Stage 04R retry skipped: no failed candidate windows in %s.", in_failures_json)
+        return 0
+
+    existing = read_json(in_existing_rerun_json)
+    existing_decisions = existing.get("decisions", []) if isinstance(existing.get("decisions"), list) else []
+    decisions_by_id = {
+        str(decision.get("candidate_id", "")).strip(): decision
+        for decision in existing_decisions
+        if isinstance(decision, dict) and str(decision.get("candidate_id", "")).strip()
+    }
+    retry_candidates = [
+        decision_to_candidate(decisions_by_id[candidate_id])
+        for candidate_id in sorted(failed_ids)
+        if candidate_id in decisions_by_id
+    ]
+    missing_ids = failed_ids - set(decisions_by_id)
+    if missing_ids:
+        logger.warning(
+            "Stage 04R retry: %d failed candidate id(s) missing from existing rerun artifact and will be skipped.",
+            len(missing_ids),
+        )
+    if not retry_candidates:
+        logger.info("Stage 04R retry skipped: failed candidate ids were not found in existing decisions.")
+        return 0
+
+    logger.info(
+        "Stage 04R retry: re-adjudicating %d failed candidate window(s) with max_windows_per_model_call=%d.",
+        len(retry_candidates),
+        int(rerun_cfg.get("max_windows_per_model_call", 8)),
+    )
+    model_decisions, failures, model_call_count = _adjudicate_candidates(retry_candidates, provider_config, rerun_cfg)
+    retry_finalized = _finalize_decisions(retry_candidates, model_decisions, rerun_cfg)
+    retry_by_id = {str(decision.get("candidate_id", "")).strip(): decision for decision in retry_finalized}
+
+    merged_decisions: list[dict[str, Any]] = []
+    for decision in existing_decisions:
+        if not isinstance(decision, dict):
+            continue
+        candidate_id = str(decision.get("candidate_id", "")).strip()
+        merged_decisions.append(retry_by_id.get(candidate_id, decision))
+
+    merged_decisions, rescued = _apply_rescue_cap(merged_decisions, rerun_cfg)
+    rows = read_jsonl(in_global_timeline_jsonl)
+    conversation_cfg = conversation_config(provider_config)
+    self_user_id = detect_self_user_id(rows, str(conversation_cfg.get("self_user_id", "")))
+    annotated_rows = annotate_dm_pairs(rows, self_user_id)
+    rows_by_id = {str(row.get("message_id", "")): row for row in annotated_rows if str(row.get("message_id", "")).strip()}
+    rescue_rows = _materialize_rescue_rows(rows_by_id, merged_decisions)
+
+    prior_summary = existing.get("summary", {}) if isinstance(existing.get("summary"), dict) else {}
+    resolved_ids = failed_ids - failure_candidate_ids(failures)
+    decision_counts = Counter(str(decision.get("rerun_decision", "unknown")) for decision in merged_decisions)
+    payload = {
+        **existing,
+        "generated_at_utc": generated_at,
+        "status": "complete",
+        "stage": "04R_theme_aware_relevance_rerun",
+        "policy": rerun_cfg,
+        "summary": {
+            **prior_summary,
+            "candidate_window_count": len(merged_decisions),
+            "rescued_conversation_count": len(rescued),
+            "rescued_message_count": len(rescue_rows),
+            "model_call_count": int(prior_summary.get("model_call_count", 0) or 0) + model_call_count,
+            "failure_count": len(failures),
+            "decision_counts": dict(sorted(decision_counts.items())),
+            "retry_failed_adjudication": {
+                "attempted_candidate_count": len(retry_candidates),
+                "resolved_candidate_count": len(resolved_ids),
+                "remaining_failed_candidate_count": len(failure_candidate_ids(failures)),
+                "model_call_count": model_call_count,
+                "source_failures_json": str(in_failures_json),
+            },
+        },
+        "decisions": merged_decisions,
+    }
+    write_json(out_rerun_json, payload)
+    write_jsonl(out_rescued_messages_jsonl, rescue_rows)
+    write_json(out_rescue_segments_json, _build_rescue_segments(rescued, generated_at))
+    write_json(out_failures_json, {"generated_at_utc": generated_at, "status": "complete", "failures": failures})
+    logger.info(
+        "Stage 04R retry complete: attempted=%d resolved=%d remaining_failures=%d rescued=%d messages=%d",
+        len(retry_candidates),
+        len(resolved_ids),
+        len(failure_candidate_ids(failures)),
+        len(rescued),
+        len(rescue_rows),
+    )
+    return len(retry_candidates)
+
+
 def run(
     in_global_timeline_jsonl: Path,
     in_conversation_segments_json: Path,
@@ -1057,61 +1266,9 @@ def run(
     candidates.sort(key=_candidate_rank_key)
     model_decisions, failures, model_call_count = _adjudicate_candidates(candidates, provider_config, rerun_cfg)
     decisions = _finalize_decisions(candidates, model_decisions, rerun_cfg)
-    rescued = [decision for decision in decisions if decision.get("rerun_decision") == "rescue_for_snippet_extraction"]
-    max_rescued = int(rerun_cfg["max_rescued_conversations_per_run"])
-    if max_rescued and len(rescued) > max_rescued:
-        allowed_ids = {str(decision.get("candidate_id")) for decision in rescued[:max_rescued]}
-        limited: list[dict[str, Any]] = []
-        for decision in decisions:
-            if decision.get("rerun_decision") == "rescue_for_snippet_extraction" and str(decision.get("candidate_id")) not in allowed_ids:
-                limited.append(
-                    {
-                        **decision,
-                        "rerun_decision": "keep_rejected",
-                        "recommended_next_stage": None,
-                        "requires_human_review": False,
-                        "reasoning_summary": "Rescue candidate exceeded max_rescued_conversations_per_run.",
-                    }
-                )
-            else:
-                limited.append(decision)
-        decisions = limited
-        rescued = [decision for decision in decisions if decision.get("rerun_decision") == "rescue_for_snippet_extraction"]
+    decisions, rescued = _apply_rescue_cap(decisions, rerun_cfg)
 
     rescue_rows = _materialize_rescue_rows(rows_by_id, decisions)
-    rescue_segments = [
-        {
-            "conversation_id": decision["conversation_id"],
-            "dm_pair_id": decision["dm_pair_id"],
-            "partner_id": decision["partner_id"],
-            "partner_label": decision["partner_label"],
-            "participant_ids": decision.get("participant_ids", []),
-            "participant_labels": decision.get("participant_labels", {}),
-            "track": "lore",
-            "topic_label": f"Theme rescue: {decision['matched_themes'][0]['theme_label']}" if decision.get("matched_themes") else "Theme rescue",
-            "topic_summary": decision.get("reasoning_summary", ""),
-            "topic_shift_reason": (
-                "Previously accepted by strict Stage 04; rescanned for supplemental snippet extraction after theme/quest-song signal update."
-                if str(decision.get("source_scope") or "") == "previous_accept"
-                else "Previously ignored by strict Stage 04; rescued by approved active theme or known entity signal."
-            ),
-            "anchor_entities": _rescue_anchor_entities(decision),
-            "relevance_type": "theme_aware_rescue",
-            "relevance_rationale": decision.get("reasoning_summary", ""),
-            "relevance_confidence": decision.get("confidence", 0.0),
-            "message_ids": decision.get("message_ids", []),
-            "timestamp_start_utc": decision.get("timestamp_start_utc"),
-            "timestamp_end_utc": decision.get("timestamp_end_utc"),
-            "message_count": decision.get("message_count", 0),
-            "model_confidence": decision.get("confidence", 0.0),
-            "source_coarse_window_id": decision.get("source_coarse_window_id", ""),
-            "source_model_window_id": decision.get("source_model_window_id", ""),
-            "matched_themes": decision.get("matched_themes", []),
-            "known_entity_links": decision.get("known_entity_links", []),
-            "externality_warnings": decision.get("externality_warnings", []),
-        }
-        for decision in rescued
-    ]
     decision_counts = Counter(str(decision.get("rerun_decision", "unknown")) for decision in decisions)
     payload = {
         "schema_version": THEME_RERUN_SCHEMA_VERSION,
@@ -1150,7 +1307,7 @@ def run(
     }
     write_json(out_rerun_json, payload)
     write_jsonl(out_rescued_messages_jsonl, rescue_rows)
-    write_json(out_rescue_segments_json, {"generated_at_utc": generated_at, "status": "complete", "segments": rescue_segments})
+    write_json(out_rescue_segments_json, _build_rescue_segments(rescued, generated_at))
     write_json(out_failures_json, {"generated_at_utc": generated_at, "status": "complete", "failures": failures})
     logger.info(
         "Stage 04R complete: active_themes=%d candidates=%d rescued=%d messages=%d failures=%d",
@@ -1174,7 +1331,40 @@ def main() -> None:
     parser.add_argument("--out-rescue-segments-json", type=Path, required=True)
     parser.add_argument("--out-failures-json", type=Path, required=True)
     parser.add_argument("--in-pipeline-config-json", type=Path, required=False, default=None)
+    parser.add_argument(
+        "--retry-failed-only",
+        action="store_true",
+        help="Re-adjudicate only candidate windows listed in --in-failures-json and merge into --in-existing-rerun-json.",
+    )
+    parser.add_argument(
+        "--in-existing-rerun-json",
+        type=Path,
+        required=False,
+        default=None,
+        help="Existing theme_relevance_rerun.json to patch when using --retry-failed-only.",
+    )
+    parser.add_argument(
+        "--in-failures-json",
+        type=Path,
+        required=False,
+        default=None,
+        help="Failure artifact listing candidate ids to retry (defaults to --out-failures-json).",
+    )
     args = parser.parse_args()
+    if args.retry_failed_only:
+        existing_rerun = args.in_existing_rerun_json or args.out_rerun_json
+        failures_json = args.in_failures_json or args.out_failures_json
+        run_retry_failed_adjudication(
+            args.in_global_timeline_jsonl,
+            existing_rerun,
+            failures_json,
+            args.out_rerun_json,
+            args.out_rescued_messages_jsonl,
+            args.out_rescue_segments_json,
+            args.out_failures_json,
+            args.in_pipeline_config_json,
+        )
+        return
     run(
         args.in_global_timeline_jsonl,
         args.in_conversation_segments_json,

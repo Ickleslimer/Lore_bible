@@ -3,11 +3,18 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
 from pipeline.common import get_logger, now_utc_iso, read_json, read_jsonl, stable_id, write_json, write_jsonl
-from pipeline.model_provider import call_model_chat, model_call_kwargs
+from pipeline.ledger_entry_validation import validate_ledger_entries
+from pipeline.ledger_quality_metrics import evaluate_quality_gate, ledger_entry_metrics
+from pipeline.model_provider import call_model_chat, get_model_runtime_status, model_call_kwargs
+from pipeline.opportunistic_model_router import (
+    opportunistic_model_chat,
+    opportunistic_route_config,
+)
 
 
 VALID_EVENT_KINDS = {"new", "change"}
@@ -23,6 +30,10 @@ VALID_CHANGE_TYPES = {
     "open_question",
     "other",
 }
+
+
+class ModelTemporarilyUnavailable(RuntimeError):
+    """Raised when the model/provider is temporarily unavailable (e.g., upstream 429)."""
 
 
 def _list_string_values(value: Any) -> list[str]:
@@ -185,13 +196,24 @@ def merge_segment_streams(
     )
 
 
+def _compact_entry_for_prior_context(entry: dict[str, Any]) -> dict[str, Any]:
+    """Shrink prior-context rows so prompts stay within practical token limits."""
+    return {
+        "event_kind": str(entry.get("event_kind", "")),
+        "change_type": str(entry.get("change_type", "")),
+        "subject_label": str(entry.get("subject_label", "")),
+        "headline": str(entry.get("headline", ""))[:240],
+    }
+
+
 def prior_entity_context(
     entries: list[dict[str, Any]],
     *,
     per_entity_limit: int,
+    max_entity_keys: int = 48,
 ) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
-    for entry in entries:
+    for entry in sorted(entries, key=lambda row: int(row.get("global_sequence", 0) or 0)):
         entity_id = str(entry.get("subject_entity_id", "")).strip()
         label_key = _normalized_name_key(str(entry.get("subject_label", "")))
         keys = []
@@ -201,9 +223,11 @@ def prior_entity_context(
             keys.append(label_key)
         for key in keys:
             grouped.setdefault(key, []).append(entry)
+    recent_keys = list(grouped.keys())[-max(1, int(max_entity_keys)) :]
     out: dict[str, list[dict[str, Any]]] = {}
-    for key, rows in grouped.items():
-        out[key] = rows[-per_entity_limit:]
+    for key in recent_keys:
+        rows = grouped.get(key, [])
+        out[key] = [_compact_entry_for_prior_context(row) for row in rows[-per_entity_limit:]]
     return out
 
 
@@ -237,14 +261,15 @@ def build_ledger_prompt(
         "timestamp_start_utc": segment.get("timestamp_start_utc"),
         "timestamp_end_utc": segment.get("timestamp_end_utc"),
     }
+    max_registry_entities = max(16, int(cfg.get("max_registry_entities", 40)))
     compact_entities = [
         {
             "entity_id": entity.get("entity_id"),
             "canonical_name": entity.get("canonical_name"),
             "entity_type": entity.get("entity_type"),
-            "aliases": (entity.get("aliases", [])[:8] if isinstance(entity.get("aliases"), list) else []),
+            "aliases": (entity.get("aliases", [])[:4] if isinstance(entity.get("aliases"), list) else []),
         }
-        for entity in entity_registry[:120]
+        for entity in entity_registry[:max_registry_entities]
     ]
     return f"""Write Theriac lore development ledger entries for one conversation segment.
 Return strict JSON only. These entries are machine-facing development history for later card synthesis, not final canon.
@@ -305,6 +330,21 @@ def _resolve_subject_entity_id(subject_label: str, subject_entity_id: str, by_na
     return str(entity.get("entity_id", "")).strip()
 
 
+def segment_has_lore_signal(
+    segment: dict[str, Any],
+    rows: list[dict[str, Any]],
+    snippet_by_message: dict[str, list[str]],
+) -> bool:
+    anchors = segment.get("anchor_entities", [])
+    if isinstance(anchors, list) and anchors:
+        return True
+    message_ids = {str(row.get("message_id", "")) for row in rows if str(row.get("message_id", ""))}
+    for message_id in message_ids:
+        if snippet_by_message.get(message_id):
+            return True
+    return False
+
+
 def normalize_ledger_entries(
     payload: Any,
     *,
@@ -313,6 +353,7 @@ def normalize_ledger_entries(
     allowed_message_ids: set[str],
     by_name: dict[str, dict[str, Any]],
     snippet_by_message: dict[str, list[str]],
+    inference_provenance: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
@@ -323,6 +364,8 @@ def normalize_ledger_entries(
     conversation_id = str(segment.get("conversation_id", "")).strip()
     source_scope = str(segment.get("source_scope", "")).strip()
     timestamp_utc = str(segment.get("timestamp_start_utc", "") or segment.get("timestamp_end_utc", ""))
+    provenance = inference_provenance if isinstance(inference_provenance, dict) else {}
+    recorded_at = now_utc_iso()
     for raw in raw_entries:
         if not isinstance(raw, dict):
             continue
@@ -377,7 +420,13 @@ def normalize_ledger_entries(
                 "supporting_message_ids": supporting_message_ids,
                 "supporting_snippet_ids": supporting_snippet_ids,
                 "confidence": _safe_confidence(raw.get("confidence"), 0.75),
-                "recorded_at_utc": now_utc_iso(),
+                "recorded_at_utc": recorded_at,
+                "inference_profile": str(provenance.get("routing_profile", "")),
+                "inference_provider": str(provenance.get("provider", "")),
+                "inference_api_model": str(provenance.get("api_model", "")),
+                "inference_lane_tier": str(provenance.get("lane_tier", "")),
+                "inference_model_family": str(provenance.get("model_family", "")),
+                "inference_recorded_at_utc": recorded_at,
             }
         )
     return out
@@ -395,13 +444,19 @@ def extract_ledger_entries_with_model(
     snippet_by_message: dict[str, list[str]],
     provider_config: dict[str, Any],
     cfg: dict[str, Any],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     logger = get_logger(__name__)
     allowed_message_ids = {str(row.get("message_id", "")) for row in rows if str(row.get("message_id", ""))}
     per_entity_limit = max(1, int(cfg.get("previous_context_entries_per_entity", 4)))
-    prior_context = prior_entity_context(prior_entries, per_entity_limit=per_entity_limit)
+    prior_context = prior_entity_context(
+        prior_entries,
+        per_entity_limit=per_entity_limit,
+        max_entity_keys=int(cfg.get("max_prior_entity_keys", 48)),
+    )
     validation_feedback = ""
     retries = max(0, int(cfg.get("validation_retries", 1)))
+    provider_retries = max(0, int(cfg.get("provider_retries", 2)))
+    provider_retry_sleep_seconds = max(0.0, float(cfg.get("provider_retry_sleep_seconds", 15.0) or 0.0))
     for attempt in range(retries + 1):
         prompt = build_ledger_prompt(
             segment=segment,
@@ -412,34 +467,126 @@ def extract_ledger_entries_with_model(
             cfg=cfg,
             validation_feedback=validation_feedback,
         )
+        route_cfg = opportunistic_route_config(provider_config, cfg)
+        probe_kwargs = model_call_kwargs(provider_config, "stage_05_lore_development_ledger")
         logger.info(
-            "Stage 07 ledger model call %d/%d: conversation_id=%s scope=%s messages=%d.",
+            "Stage 07 ledger model call %d/%d: conversation_id=%s scope=%s messages=%d prompt_chars=%d timeout_s=%s opportunistic=%s.",
             global_sequence,
             total_segments,
             segment.get("conversation_id"),
             segment.get("source_scope"),
             len(rows),
+            len(prompt),
+            probe_kwargs.get("timeout_seconds"),
+            route_cfg.get("enabled"),
         )
-        response = call_model_chat(
-            prompt,
-            **model_call_kwargs(provider_config, "stage_05_lore_development_ledger"),
-        )
+        response = None
+        last_reason = ""
+        segment_id = str(segment.get("conversation_id", "")).strip()
+        if route_cfg.get("enabled"):
+            chat_result = opportunistic_model_chat(
+                prompt,
+                provider_config=provider_config,
+                task_name="stage_05_lore_development_ledger",
+                route_cfg=route_cfg,
+                segment_id=segment_id,
+                prior_entries=prior_entries,
+            )
+            response = chat_result.response
+            if response is None:
+                last_reason = chat_result.skip_reason or str(
+                    get_model_runtime_status().get("last_model_skip_reason") or ""
+                )
+            inference_provenance = {
+                "routing_profile": chat_result.routing_profile,
+                "provider": chat_result.provider,
+                "api_model": chat_result.api_model,
+                "lane_tier": chat_result.lane_tier,
+                "model_family": chat_result.model_family,
+            }
+        else:
+            inference_provenance = {}
+            call_kwargs = probe_kwargs
+            max_provider_attempts = 1 + provider_retries
+            retry_on_timeout = bool(cfg.get("retry_on_connection_timeout", True))
+            for provider_attempt in range(max_provider_attempts):
+                response = call_model_chat(prompt=prompt, **call_kwargs)
+                if response is not None:
+                    status = get_model_runtime_status()
+                    inference_provenance = {
+                        "routing_profile": str(call_kwargs.get("routing_profile", "")),
+                        "provider": str(call_kwargs.get("provider", "")),
+                        "api_model": str(call_kwargs.get("api_model", "")),
+                        "lane_tier": "homogeneous",
+                        "model_family": "deepseek_v4_flash",
+                    }
+                    break
+                status = get_model_runtime_status()
+                last_reason = str(status.get("last_model_skip_reason") or "")
+                if provider_attempt >= max_provider_attempts - 1:
+                    break
+                if _transient_provider_skip_reason(last_reason) or (
+                    retry_on_timeout and last_reason in {"connection_error", "attempts_exhausted"}
+                ):
+                    logger.warning(
+                        "Stage 07 ledger provider retry %d/%d after %s (segment_id=%s).",
+                        provider_attempt + 1,
+                        max_provider_attempts - 1,
+                        last_reason,
+                        segment.get("conversation_id"),
+                    )
+                    if provider_retry_sleep_seconds:
+                        time.sleep(provider_retry_sleep_seconds)
+                    continue
+                break
+        if response is None:
+            raise ModelTemporarilyUnavailable(last_reason or "model_provider_unavailable")
         try:
             payload = json.loads(response) if isinstance(response, str) else response
-            entries = normalize_ledger_entries(
+            raw_entries = normalize_ledger_entries(
                 payload,
                 segment=segment,
                 global_sequence=global_sequence,
                 allowed_message_ids=allowed_message_ids,
                 by_name=by_name,
                 snippet_by_message=snippet_by_message,
+                inference_provenance=inference_provenance,
             )
-            return entries
+            entity_prior = [
+                row
+                for row in prior_entries
+                if str(row.get("subject_entity_id", "")).strip()
+                in {
+                    str(e.get("subject_entity_id", "")).strip()
+                    for e in raw_entries
+                    if str(e.get("subject_entity_id", "")).strip()
+                }
+                or _normalized_name_key(str(row.get("subject_label", "")))
+                in {_normalized_name_key(str(e.get("subject_label", ""))) for e in raw_entries}
+            ]
+            validation_cfg = cfg.get("ledger_validation", {})
+            if not isinstance(validation_cfg, dict):
+                validation_cfg = {}
+            accepted, rejected, _review = validate_ledger_entries(
+                raw_entries,
+                model_family=str(inference_provenance.get("model_family", "deepseek_v4_flash")),
+                validation_cfg=validation_cfg,
+                prior_entries=entity_prior or prior_entries,
+                by_name=by_name,
+            )
+            if rejected:
+                logger.warning(
+                    "Stage 07 validation rejected %d/%d entries segment_id=%s.",
+                    len(rejected),
+                    len(raw_entries),
+                    segment_id,
+                )
+            return accepted, rejected, _review
         except json.JSONDecodeError as exc:
             validation_feedback = f"invalid_json: {exc}"
             if attempt >= retries:
                 raise RuntimeError(f"invalid_ledger_json: {exc}") from exc
-    return []
+    return [], [], []
 
 
 def group_entity_history(entries: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -464,6 +611,13 @@ def render_entity_history_lines(entries: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _transient_provider_skip_reason(reason: str) -> bool:
+    reason = str(reason or "").strip()
+    if reason in {"rate_limited_429", "provider_locked", "adaptive_pacing", "connection_error", "attempts_exhausted"}:
+        return True
+    return reason in {"http_error_502", "http_error_503", "http_error_504"}
+
+
 def ledger_config(provider_config: dict[str, Any]) -> dict[str, Any]:
     cfg = provider_config.get("lore_development_ledger", {}) if isinstance(provider_config.get("lore_development_ledger"), dict) else {}
     return {
@@ -471,11 +625,67 @@ def ledger_config(provider_config: dict[str, Any]) -> dict[str, Any]:
         "max_message_chars": int(cfg.get("max_message_chars", 700)),
         "max_prompt_message_chars": int(cfg.get("max_prompt_message_chars", 20000)),
         "previous_context_entries_per_entity": int(cfg.get("previous_context_entries_per_entity", 4)),
+        "max_prior_entity_keys": int(cfg.get("max_prior_entity_keys", 48)),
+        "max_registry_entities": int(cfg.get("max_registry_entities", 60)),
         "validation_retries": int(cfg.get("validation_retries", 1)),
         "provider_retries": int(cfg.get("provider_retries", 2)),
         "retry_sleep_seconds": float(cfg.get("retry_sleep_seconds", 2)),
         "provider_retry_sleep_seconds": float(cfg.get("provider_retry_sleep_seconds", 15)),
+        "retry_on_connection_timeout": bool(cfg.get("retry_on_connection_timeout", True)),
+        "stop_when_billed": bool(cfg.get("stop_when_billed", False)),
+        "stop_when_billed_min_cost_usd": float(cfg.get("stop_when_billed_min_cost_usd", 0.0) or 0.0),
+        "max_new_segments_per_run": int(cfg.get("max_new_segments_per_run", 0) or 0),
+        "skip_segments_without_lore_signal": bool(cfg.get("skip_segments_without_lore_signal", False)),
+        "quality_gate_every_n_segments": int(cfg.get("quality_gate_every_n_segments", 0) or 0),
+        "quality_gate_baseline_path": str(cfg.get("quality_gate_baseline_path", "")),
+        "ledger_validation": cfg.get("ledger_validation", {}),
+        "opportunistic_routing": cfg.get("opportunistic_routing", {}),
     }
+
+
+def _load_baseline_metrics(baseline_path: str) -> dict[str, Any]:
+    path = Path(baseline_path)
+    if not baseline_path or not path.exists():
+        return {}
+    entries = [row for row in read_jsonl(path) if isinstance(row, dict)]
+    return ledger_entry_metrics(entries)
+
+
+def run_quality_gate(
+    *,
+    entries: list[dict[str, Any]],
+    run_started_at_utc: str,
+    baseline_metrics: dict[str, Any],
+    out_report_path: Path,
+) -> tuple[bool, dict[str, Any]]:
+    batch = [
+        entry
+        for entry in entries
+        if str(entry.get("recorded_at_utc", "")) >= run_started_at_utc
+    ]
+    batch_metrics = ledger_entry_metrics(batch)
+    passed, reasons = evaluate_quality_gate(batch_metrics, baseline_metrics)
+    report = {
+        "generated_at_utc": now_utc_iso(),
+        "passed": passed,
+        "failure_reasons": reasons,
+        "batch_metrics": batch_metrics,
+        "baseline_metrics": baseline_metrics,
+        "run_started_at_utc": run_started_at_utc,
+    }
+    write_json(out_report_path, report)
+    return passed, report
+
+
+def append_review_queue_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            row_out = dict(row)
+            row_out.setdefault("recorded_at_utc", now_utc_iso())
+            handle.write(json.dumps(row_out, ensure_ascii=False) + "\n")
 
 
 def load_existing_outputs(
@@ -486,6 +696,7 @@ def load_existing_outputs(
     entries: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     completed_segment_ids: set[str] = set()
+    failed_segment_ids: set[str] = set()
     if out_jsonl.exists():
         entries = [row for row in read_jsonl(out_jsonl) if isinstance(row, dict)]
     if out_failures_json.exists():
@@ -495,11 +706,12 @@ def load_existing_outputs(
             if isinstance(failure, dict):
                 segment_id = str(failure.get("source_segment_id", "")).strip()
                 if segment_id:
-                    completed_segment_ids.add(segment_id)
+                    failed_segment_ids.add(segment_id)
     if out_index_json.exists():
         payload = read_json(out_index_json)
         for segment_id in _list_string_values(payload.get("completed_segment_ids", [])):
-            completed_segment_ids.add(segment_id)
+            if segment_id not in failed_segment_ids:
+                completed_segment_ids.add(segment_id)
     return entries, failures, completed_segment_ids
 
 
@@ -578,7 +790,17 @@ def run(
     snippet_by_message = build_snippet_index(read_jsonl(in_snippets_jsonl))
 
     entries, failures, completed_segment_ids = load_existing_outputs(out_index_json, out_jsonl, out_failures_json)
+    starting_completed = len(completed_segment_ids)
+    final_status = "complete"
+    max_new_segments = max(0, int(cfg.get("max_new_segments_per_run", 0) or 0))
     progress_every = max(1, len(segments) // 10)
+    run_started_at_utc = now_utc_iso()
+    baseline_metrics = _load_baseline_metrics(str(cfg.get("quality_gate_baseline_path", "")))
+    quality_gate_every = max(0, int(cfg.get("quality_gate_every_n_segments", 0) or 0))
+    segments_this_run = 0
+    review_queue_path = out_jsonl.parent / "ledger_review_queue.jsonl"
+    quality_gate_report_path = out_jsonl.parent / "quality_gate_report.json"
+    skip_without_signal = bool(cfg.get("skip_segments_without_lore_signal", False))
     logger.info(
         "Stage 07: building lore development ledger for %d segment(s); existing_entries=%d failures=%d completed_segments=%d.",
         len(segments),
@@ -624,8 +846,44 @@ def run(
             )
             completed_segment_ids.add(segment_id)
             continue
+        if skip_without_signal and not segment_has_lore_signal(segment, rows, snippet_by_message):
+            logger.info(
+                "Stage 07 skip segment_id=%s seq=%d (no lore signal: no snippets or anchor entities).",
+                segment_id,
+                global_sequence,
+            )
+            completed_segment_ids.add(segment_id)
+            segments_this_run += 1
+            write_outputs(
+                out_index_json=out_index_json,
+                out_jsonl=out_jsonl,
+                out_history_json=out_history_json,
+                out_failures_json=out_failures_json,
+                entries=entries,
+                failures=failures,
+                completed_segment_ids=completed_segment_ids,
+                total_segments=len(segments),
+                status="in_progress",
+            )
+            if quality_gate_every and segments_this_run % quality_gate_every == 0 and baseline_metrics:
+                passed, report = run_quality_gate(
+                    entries=entries,
+                    run_started_at_utc=run_started_at_utc,
+                    baseline_metrics=baseline_metrics,
+                    out_report_path=quality_gate_report_path,
+                )
+                if not passed:
+                    logger.warning(
+                        "Stage 07 quality gate failed: %s",
+                        report.get("failure_reasons"),
+                    )
+                    final_status = "in_progress"
+                    break
+            if max_new_segments and (len(completed_segment_ids) - starting_completed) >= max_new_segments:
+                break
+            continue
         try:
-            new_entries = extract_ledger_entries_with_model(
+            new_entries, validation_rejected, review_rows = extract_ledger_entries_with_model(
                 segment=segment,
                 rows=rows,
                 global_sequence=global_sequence,
@@ -637,8 +895,28 @@ def run(
                 provider_config=provider_config,
                 cfg=cfg,
             )
+            for rejection in validation_rejected:
+                rejection["recorded_at_utc"] = now_utc_iso()
+                rejection["source_scope"] = segment.get("source_scope")
+                failures.append(rejection)
+            append_review_queue_rows(review_queue_path, review_rows)
             entries.extend(new_entries)
+            failures = [
+                failure
+                for failure in failures
+                if str(failure.get("source_segment_id", "")).strip() != segment_id
+            ]
             completed_segment_ids.add(segment_id)
+            segments_this_run += 1
+        except ModelTemporarilyUnavailable as exc:
+            logger.warning(
+                "Stage 07 stopping early: model temporarily unavailable (segment_id=%s seq=%d): %s",
+                segment_id,
+                global_sequence,
+                exc,
+            )
+            final_status = "in_progress"
+            break
         except Exception as exc:
             failures.append(
                 {
@@ -652,6 +930,7 @@ def run(
             )
             completed_segment_ids.add(segment_id)
             logger.warning("Stage 07 ledger failed segment_id=%s seq=%d error=%s", segment_id, global_sequence, exc)
+            segments_this_run += 1
 
         write_outputs(
             out_index_json=out_index_json,
@@ -673,6 +952,43 @@ def run(
                 len(failures),
             )
 
+        if quality_gate_every and segments_this_run > 0 and segments_this_run % quality_gate_every == 0 and baseline_metrics:
+            passed, report = run_quality_gate(
+                entries=entries,
+                run_started_at_utc=run_started_at_utc,
+                baseline_metrics=baseline_metrics,
+                out_report_path=quality_gate_report_path,
+            )
+            if not passed:
+                logger.warning(
+                    "Stage 07 quality gate failed: %s",
+                    report.get("failure_reasons"),
+                )
+                final_status = "in_progress"
+                break
+
+        if max_new_segments and (len(completed_segment_ids) - starting_completed) >= max_new_segments:
+            logger.warning(
+                "Stage 07 stopping early: reached max_new_segments_per_run=%d (completed=%d -> %d).",
+                max_new_segments,
+                starting_completed,
+                len(completed_segment_ids),
+            )
+            break
+
+        if cfg.get("stop_when_billed"):
+            status = get_model_runtime_status()
+            billed = float(status.get("last_call_billed_cost_usd", 0.0) or 0.0)
+            threshold = float(cfg.get("stop_when_billed_min_cost_usd", 0.0) or 0.0)
+            if billed > threshold:
+                logger.warning(
+                    "Stage 07 stopping early: detected billed model call cost_usd=%.6f model=%s provider=%s",
+                    billed,
+                    status.get("last_call_api_model", ""),
+                    status.get("last_call_provider", ""),
+                )
+                break
+
     write_outputs(
         out_index_json=out_index_json,
         out_jsonl=out_jsonl,
@@ -682,9 +998,15 @@ def run(
         failures=failures,
         completed_segment_ids=completed_segment_ids,
         total_segments=len(segments),
-        status="complete",
+        status=final_status,
     )
-    logger.info("Stage 07 complete: entries=%d failures=%d entities=%d.", len(entries), len(failures), len(group_entity_history(entries)))
+    logger.info(
+        "Stage 07 finished (%s): entries=%d failures=%d entities=%d.",
+        final_status,
+        len(entries),
+        len(failures),
+        len(group_entity_history(entries)),
+    )
 
 
 def main() -> None:

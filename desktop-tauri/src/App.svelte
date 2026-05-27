@@ -33,6 +33,7 @@
   let configOpen = false;
   type ActiveTab = "pipeline" | "claims" | "entities" | "themes" | "rescue" | "identity" | "relationships" | "drafts" | "agent" | "overview";
   let activeTab: ActiveTab = "pipeline";
+  const WORKSPACE_STATE_TIMEOUT_MS = 10000;
 
   function withTimeout<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {
     return Promise.race([
@@ -107,7 +108,7 @@
     busy = true;
     error = "";
     try {
-      const nextState = await withTimeout(loadState(state?.active_root), 4000, "Workspace state load");
+      const nextState = await withTimeout(loadState(state?.active_root), WORKSPACE_STATE_TIMEOUT_MS, "Workspace state load");
       state = nextState;
       loading = false;
       busy = false;

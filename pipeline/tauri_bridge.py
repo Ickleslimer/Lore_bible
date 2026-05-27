@@ -388,11 +388,9 @@ def handle_select_bootstrap_doc(repo_root: Path, payload: dict[str, Any]) -> dic
 def _run_state(repo_root: Path, active_root: Path) -> dict[str, Any]:
     repo_root = _resolve_plain(repo_root)
     active_root = _resolve_plain(active_root)
-    if active_root.exists():
-        migrate_run_artifacts_to_numbered(active_root)
     counts = pending_review_counts_for_root(active_root) if active_root.exists() else {}
-    runs = discover_review_runs(repo_root, active_root) if active_root.exists() else []
-    snapshot = pipeline_progress_artifact_snapshot(active_root) if active_root.exists() else {}
+    runs = discover_review_runs(repo_root, active_root, counts) if active_root.exists() else []
+    snapshot = pipeline_progress_artifact_snapshot(active_root, counts) if active_root.exists() else {}
     progress = pipeline_progress_from_logs(
         [str(line) for line in snapshot.get("logs", [])] if isinstance(snapshot, dict) else [],
         str(snapshot.get("status", "idle")) if isinstance(snapshot, dict) else "idle",

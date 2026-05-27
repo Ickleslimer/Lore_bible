@@ -17,6 +17,7 @@ from pipeline.prose_alias_registry import sanitize_card_prose_whitespace
 from pipeline.work_card_sections import WORK_SECTION_DISPLAY_TITLES, work_section_display_title
 
 ASSETS_DIR = Path(__file__).resolve().parent / "wiki_site_assets"
+WIKI_FAVICON_NAME = "icon.png"
 WIKI_SITE_TITLE = f"{GAME_NAME} Wiki"
 
 
@@ -139,6 +140,21 @@ def slug_by_name(entries: list[WikiPageEntry]) -> dict[str, str]:
     return out
 
 
+def build_href_by_name(
+    entries: list[WikiPageEntry],
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    from pipeline.wiki_autolink import build_autolink_index, build_quest_autolink_targets, href_by_name
+
+    index = build_autolink_index(
+        entries,
+        quest_targets=build_quest_autolink_targets(),
+        config=config,
+    )
+    return href_by_name(index)
+
+
 def _infobox_row(label: str, value_html: str) -> str:
     if not value_html.strip():
         return ""
@@ -148,17 +164,17 @@ def _infobox_row(label: str, value_html: str) -> str:
     )
 
 
-def _link_html(name: str, slug_map: dict[str, str], depth: int) -> str:
+def _link_html(name: str, href_by_name: dict[str, str], depth: int) -> str:
     key = name.strip().lower()
-    slug = slug_map.get(key)
-    if not slug:
+    rel_path = href_by_name.get(key)
+    if not rel_path:
         return html.escape(name)
     prefix = asset_prefix(depth)
-    path = f"{prefix}pages/{slug}.html"
+    path = f"{prefix}{rel_path}"
     return f'<a href="{html.escape(path)}">{html.escape(name)}</a>'
 
 
-def build_infobox_html(entry: WikiPageEntry, slug_map: dict[str, str], *, depth: int = 1) -> str:
+def build_infobox_html(entry: WikiPageEntry, href_by_name: dict[str, str], *, depth: int = 1) -> str:
     title = html.escape(entry.name)
     type_label = html.escape(entry.type_label.replace("_", " ").title())
     status = html.escape(entry.status or "draft")
@@ -168,6 +184,16 @@ def build_infobox_html(entry: WikiPageEntry, slug_map: dict[str, str], *, depth:
     if entry.is_work:
         rows.append(_infobox_row("Kind", type_label))
         rows.append(_infobox_row("Status", status))
+        work_id = str(entry.payload.get("work_id", "")).strip().lower()
+        if work_id == "theriac_coda":
+            prefix = asset_prefix(depth)
+            map_href = f"{prefix}quests/theriac-coda-quest-map.html"
+            rows.append(
+                _infobox_row(
+                    "Quest map",
+                    f'<a href="{html.escape(map_href)}">Character quests (Path B)</a>',
+                )
+            )
         if entry.excerpt:
             rows.append(_infobox_row("Overview", html.escape(entry.excerpt)))
     else:
@@ -192,14 +218,14 @@ def build_infobox_html(entry: WikiPageEntry, slug_map: dict[str, str], *, depth:
             target = str(link.get("target_entity_name") or link.get("target_card_id") or "").strip()
             rel = str(link.get("relation_type", "related")).strip()
             if target:
-                links.append(f'<li><span class="rel">{html.escape(rel)}</span> {_link_html(target, slug_map, depth)}</li>')
+                links.append(f'<li><span class="rel">{html.escape(rel)}</span> {_link_html(target, href_by_name, depth)}</li>')
         for rel in (card.get("relationships") or [])[:8]:
             if not isinstance(rel, dict):
                 continue
             target = str(rel.get("target_entity_name") or rel.get("target_card_id") or "").strip()
             rel_type = str(rel.get("relation_type", "related")).strip()
             if target:
-                links.append(f'<li><span class="rel">{html.escape(rel_type)}</span> {_link_html(target, slug_map, depth)}</li>')
+                links.append(f'<li><span class="rel">{html.escape(rel_type)}</span> {_link_html(target, href_by_name, depth)}</li>')
         if links:
             rows.append(_infobox_row("Links", f'<ul class="infobox-links">{"".join(links)}</ul>'))
 
@@ -231,6 +257,18 @@ def render_header_html(*, depth: int, active: str = "") -> str:
 """
 
 
+def _resolve_favicon_source() -> Path | None:
+    repo_root = Path(__file__).resolve().parents[1]
+    for candidate in (
+        ASSETS_DIR / WIKI_FAVICON_NAME,
+        repo_root / "desktop-tauri" / "public" / WIKI_FAVICON_NAME,
+        repo_root / "desktop-tauri" / "src-tauri" / "icons" / "32x32.png",
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _page_shell(
     *,
     title: str,
@@ -239,12 +277,14 @@ def _page_shell(
     body_class: str = "",
 ) -> str:
     prefix = asset_prefix(depth)
+    favicon_href = f"{prefix}{WIKI_FAVICON_NAME}"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)} — {html.escape(WIKI_SITE_TITLE)}</title>
+  <link rel="icon" type="image/png" href="{html.escape(favicon_href)}">
   <link rel="stylesheet" href="{prefix}wiki.css">
 </head>
 <body data-wiki-root="{html.escape(prefix)}" class="{body_class}">
@@ -256,19 +296,70 @@ def _page_shell(
 """
 
 
-def entity_sections_html(card: dict[str, Any], config_path: Path | None) -> str:
+def _paragraphs_html(
+    text: str,
+    *,
+    autolink_index: Any | None = None,
+    current_slug: str = "",
+    depth: int = 1,
+    autolink_state: Any | None = None,
+    section: str = "",
+    page_slug: str = "",
+) -> str:
+    if autolink_index is not None:
+        from pipeline.wiki_autolink import autolink_paragraphs
+
+        return autolink_paragraphs(
+            text,
+            autolink_index,
+            current_slug=current_slug,
+            depth=depth,
+            state=autolink_state,
+            section=section,
+            page_slug=page_slug,
+        )
+    return normalize_paragraphs(text)
+
+
+def entity_sections_html(
+    card: dict[str, Any],
+    config_path: Path | None,
+    *,
+    autolink_index: Any | None = None,
+    current_slug: str = "",
+    depth: int = 1,
+    autolink_state: Any | None = None,
+    page_slug: str = "",
+) -> str:
     from pipeline.ui_review_app import card_review_sections
 
     blocks: list[str] = []
     for section in card_review_sections(card):
         title = html.escape(str(section.get("title", "")))
-        body = normalize_paragraphs(str(section.get("text", "")))
+        section_key = str(section.get("key", "")).strip() or title
+        body = _paragraphs_html(
+            str(section.get("text", "")),
+            autolink_index=autolink_index,
+            current_slug=current_slug,
+            depth=depth,
+            autolink_state=autolink_state,
+            section=section_key,
+            page_slug=page_slug,
+        )
         if body:
             blocks.append(f'<section class="wiki-section"><h2>{title}</h2>{body}</section>')
     return "\n".join(blocks)
 
 
-def work_sections_html(work: dict[str, Any]) -> str:
+def work_sections_html(
+    work: dict[str, Any],
+    *,
+    autolink_index: Any | None = None,
+    current_slug: str = "",
+    depth: int = 1,
+    autolink_state: Any | None = None,
+    page_slug: str = "",
+) -> str:
     sections = work.get("sections") if isinstance(work.get("sections"), dict) else {}
     blocks: list[str] = []
     for key, display in WORK_SECTION_DISPLAY_TITLES.items():
@@ -278,7 +369,15 @@ def work_sections_html(work: dict[str, Any]) -> str:
         if not text:
             continue
         title = html.escape(work_section_display_title(key))
-        body = normalize_paragraphs(text)
+        body = _paragraphs_html(
+            text,
+            autolink_index=autolink_index,
+            current_slug=current_slug,
+            depth=depth,
+            autolink_state=autolink_state,
+            section=key,
+            page_slug=page_slug,
+        )
         if body:
             blocks.append(f'<section class="wiki-section"><h2>{title}</h2>{body}</section>')
     return "\n".join(blocks)
@@ -290,9 +389,19 @@ def render_article_html(
     sections_html: str,
     infobox_html: str,
     depth: int,
+    autolink_index: Any | None = None,
+    autolink_state: Any | None = None,
 ) -> str:
     title = html.escape(entry.name)
-    lead = normalize_paragraphs(str(entry.payload.get("summary", "")))
+    lead = _paragraphs_html(
+        str(entry.payload.get("summary", "")),
+        autolink_index=autolink_index,
+        current_slug=entry.slug,
+        depth=depth,
+        autolink_state=autolink_state,
+        section="summary",
+        page_slug=entry.slug,
+    )
     main = f"""
 <main class="wiki-page">
   <div class="wiki-page-grid">
@@ -364,6 +473,18 @@ def copy_static_assets(out_dir: Path) -> None:
         if not src.exists():
             raise FileNotFoundError(f"Missing wiki site asset: {src}")
         shutil.copy2(src, out_dir / name)
+    favicon_src = _resolve_favicon_source()
+    if favicon_src is not None:
+        shutil.copy2(favicon_src, out_dir / WIKI_FAVICON_NAME)
+
+
+def _load_pipeline_config(config_path: Path | None) -> dict[str, Any]:
+    if config_path and config_path.exists():
+        return read_json(config_path)
+    default = Path("config/pipeline_config.json")
+    if default.exists():
+        return read_json(default)
+    return {}
 
 
 def build_wiki_site(
@@ -374,6 +495,14 @@ def build_wiki_site(
     prefer_canonical: bool = True,
     config_path: Path | None = None,
 ) -> list[WikiPageEntry]:
+    from pipeline.wiki_autolink import (
+        AutolinkState,
+        build_autolink_index,
+        build_quest_autolink_targets,
+        collect_unlinked_candidates,
+        wiki_site_autolink_config,
+    )
+
     migrate_run_artifacts_to_numbered(run_root)
     entries: list[WikiPageEntry] = []
 
@@ -389,23 +518,117 @@ def build_wiki_site(
     if not entries:
         raise RuntimeError("No wiki pages to build (no entity cards or work cards found).")
 
-    slug_map = slug_by_name(entries)
+    config = _load_pipeline_config(config_path)
+    autolink_cfg = wiki_site_autolink_config(config)
+    autolink_enabled = bool(autolink_cfg.get("enabled"))
+    write_report = bool(autolink_cfg.get("write_report"))
+
+    href_by_name = build_href_by_name(entries, config=config)
+    autolink_index = None
+    if autolink_enabled:
+        autolink_index = build_autolink_index(
+            entries,
+            quest_targets=build_quest_autolink_targets(),
+            config=config,
+        )
+
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "pages").mkdir(exist_ok=True)
     (out_dir / "works").mkdir(exist_ok=True)
     copy_static_assets(out_dir)
-    write_json(out_dir / "search-index.json", build_search_index(entries))
+
+    quest_search_rows: list[dict[str, str]] = []
+    try:
+        from pipeline.quest_map_builder import build_quest_map_site
+
+        work_title = f"{GAME_NAME} Coda"
+        for entry in entries:
+            if entry.is_work and str(entry.payload.get("work_id", "")).strip().lower() == "theriac_coda":
+                work_title = entry.name
+                break
+        quest_search_rows = build_quest_map_site(
+            out_dir,
+            href_by_name=href_by_name,
+            work_title=work_title,
+            autolink_index=autolink_index,
+        )
+    except FileNotFoundError:
+        pass
+
+    search_payload = build_search_index(entries)
+    if quest_search_rows:
+        search_payload.extend(quest_search_rows)
+    write_json(out_dir / "search-index.json", search_payload)
+
+    report_linked: list[dict[str, str]] = []
+    report_unlinked: list[dict[str, str]] = []
 
     for entry in entries:
-        infobox = build_infobox_html(entry, slug_map, depth=1)
+        autolink_state = AutolinkState() if autolink_index is not None else None
+        infobox = build_infobox_html(entry, href_by_name, depth=1)
         if entry.is_work:
-            sections = work_sections_html(entry.payload)
-            html_doc = render_article_html(entry, sections_html=sections, infobox_html=infobox, depth=1)
+            sections = work_sections_html(
+                entry.payload,
+                autolink_index=autolink_index,
+                current_slug=entry.slug,
+                depth=1,
+                autolink_state=autolink_state,
+                page_slug=entry.slug,
+            )
+            html_doc = render_article_html(
+                entry,
+                sections_html=sections,
+                infobox_html=infobox,
+                depth=1,
+                autolink_index=autolink_index,
+                autolink_state=autolink_state,
+            )
             (out_dir / "works" / f"{entry.slug}.html").write_text(html_doc, encoding="utf-8")
         else:
-            sections = entity_sections_html(entry.payload, config_path)
-            html_doc = render_article_html(entry, sections_html=sections, infobox_html=infobox, depth=1)
+            sections = entity_sections_html(
+                entry.payload,
+                config_path,
+                autolink_index=autolink_index,
+                current_slug=entry.slug,
+                depth=1,
+                autolink_state=autolink_state,
+                page_slug=entry.slug,
+            )
+            html_doc = render_article_html(
+                entry,
+                sections_html=sections,
+                infobox_html=infobox,
+                depth=1,
+                autolink_index=autolink_index,
+                autolink_state=autolink_state,
+            )
             (out_dir / "pages" / f"{entry.slug}.html").write_text(html_doc, encoding="utf-8")
+
+        if autolink_index is not None and autolink_state is not None:
+            report_linked.extend(autolink_state.linked)
+            prose_chunks = [str(entry.payload.get("summary", ""))]
+            if entry.is_work:
+                work_sections = entry.payload.get("sections")
+                if isinstance(work_sections, dict):
+                    prose_chunks.extend(str(v) for v in work_sections.values())
+            else:
+                from pipeline.ui_review_app import card_review_sections
+
+                for section in card_review_sections(entry.payload):
+                    prose_chunks.append(str(section.get("text", "")))
+            for phrase in collect_unlinked_candidates("\n".join(prose_chunks), autolink_index):
+                report_unlinked.append({"page_slug": entry.slug, "phrase": phrase})
+
+    if autolink_enabled and write_report:
+        report_path = out_dir / "autolink_report.json"
+        write_json(
+            report_path,
+            {
+                "autolink_enabled": True,
+                "linked": report_linked,
+                "candidates_unlinked": report_unlinked,
+            },
+        )
 
     (out_dir / "index.html").write_text(render_landing_html(entries), encoding="utf-8")
     return entries

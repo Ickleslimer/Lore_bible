@@ -47,7 +47,7 @@ V2 contract:
 14. Stage 11B Card Architecture Review/Application: approve or reject proposed actions in the desktop app. Approved demotions, redirects, claim moves, aliases, directives, and author claims are applied as an overlay and recorded in `card_architecture_applied.json`, `card_redirects.json`, and `canon/review_memory.json`.
 15. Stage 11W Work Card Synthesis: synthesize active narrative work hub pages (phase 1: `theriac_coda` only) into `11_work_synthesis/work_cards.json`.
 16. Stage 11C Card Synthesis: synthesize draft wiki-card revisions from approved lore snippet bundles and accepted claims for each final architecture work item, using per-entity development history, Theriac Coda work-card frame, and per-route snippet tags. Cite `snippet_*` IDs and/or claim IDs in each section's `support_map`.
-17. Stage 11 Draft Notion Sync: live-sync synthesized draft cards (and narrative work cards when present) to Notion for comfortable reading while keeping desktop decisions as the source of truth.
+17. Stage 11 Draft Notion Sync: live-sync synthesized draft cards (and narrative work cards when present) to Notion for comfortable reading. Re-sync **updates** the existing page for each canonical name (matched by `Card ID` or `Canonical Name`), and archives older duplicate pages with the same name—so a new synthesis pass does not create a second "Enoch" row.
 18. Review pass 2: approve/edit synthesized card drafts.
 19. Stage 11 Canon Merge: write approved revisions to `11_card_synthesis/canonical_cards.json`, carrying forward unchanged canonical cards.
 20. Stage 12 Notion Export: export approved canonical cards, work cards, and supporting records to Notion NDJSON.
@@ -183,6 +183,19 @@ python scripts/build_wiki_preview.py \
 Open `artifacts/wiki_preview_enoch_krypteia/index.html` in a browser (or use `--open`). Search uses `search-index.json` (title + excerpt). Omit `--entities` to include every card in the run. Use `--drafts` to prefer `card_drafts.json` over canonical cards.
 
 **Theriac Coda quest map:** Every wiki build also emits `quests/theriac-coda-quest-map.html` from `config/quest_song_seed.json` (character pools + year axis). The Coda work page infobox links to it. Author `earliest_year`, `year_gate`, and `unlock_note` on seed rows, then run `python scripts/sync_quest_seed_metadata.py` to refresh `quest_id` / pool order.
+
+**Wiki autolink (first mention):** Build-time only — does **not** modify `canonical_cards.json`. When the final card set is stable, enable in `config/pipeline_config.json`:
+
+```json
+"wiki_site": {
+  "autolink": {
+    "enabled": true,
+    "write_report": true
+  }
+}
+```
+
+Then rebuild the wiki preview. Article prose (lead + sections) gets internal links on the **first mention** of each entity, narrative work, or quest title (from entity cards, work cards, `quest_song_seed.json`, card aliases, and `prose_canonical_aliases`). Infobox links use the same path-aware resolver (`pages/`, `works/`, `quests/`). With `write_report: true`, the output folder includes `autolink_report.json` (`linked` spans plus `candidates_unlinked` proper-noun phrases for QA).
 
 Start the new Tauri/Svelte desktop app during development:
 

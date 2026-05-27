@@ -631,15 +631,31 @@ def local_reasoning_summary(candidate: dict[str, Any], externality_class: str) -
     return f"Local 07A evidence suggests externality_class={externality_class}; web search was not used for this row."
 
 
+def _review_question_context_hint(candidate: dict[str, Any]) -> str:
+    sample_texts = candidate.get("sample_texts", [])
+    if not isinstance(sample_texts, list):
+        return ""
+    for item in sample_texts:
+        hint = clean_text(item, 160)
+        if hint:
+            return hint
+    return ""
+
+
 def default_review_question(candidate: dict[str, Any], externality_class: str) -> str:
     name = str(candidate.get("candidate_name") or candidate_key(candidate) or "this candidate").strip()
+    hint = _review_question_context_hint(candidate)
+    hint_suffix = f' Example context: "{hint}"' if hint else ""
     if externality_class == "external_fictional_ip":
-        return f"Is {name} only an inspiration/reference, or has it been fictionalized into Theriac canon?"
+        return f"Is {name} only an inspiration/reference, or has it been fictionalized into Theriac canon?{hint_suffix}"
     if externality_class in {"real_world_person", "real_world_org", "historical_or_mythological"}:
-        return f"Is {name} an adopted Theriac lore element, or only an external reference?"
+        return (
+            f"In Theriac canon, is {name} an in-world name/term, or reference-only? "
+            f"If in-world: what is it (character, org, location, quest, lore term), and is it an alias of something we already have?{hint_suffix}"
+        )
     if externality_class == "generic_phrase":
-        return f"Does {name} denote a specific Theriac entity in local context, or is it just a generic phrase?"
-    return f"Should {name} be treated as Theriac lore, meta/reference context, alias evidence, or ignored?"
+        return f"In local context, does {name} refer to a specific Theriac entity, or is it just a generic phrase?{hint_suffix}"
+    return f"Should {name} be treated as Theriac lore, meta/reference context, alias evidence, or ignored?{hint_suffix}"
 
 
 def candidate_key(candidate: dict[str, Any]) -> str:

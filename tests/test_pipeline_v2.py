@@ -40,6 +40,7 @@ from pipeline.story_questions import (
 from pipeline.stage_01_entity_bootstrap import infer_entities
 from pipeline.stage_04_conversation_segmentation import normalize_model_segments, run as run_stage_04
 from pipeline.stage_04r_theme_relevance_rerun import run as run_stage_04r
+from pipeline.stage_04r_theme_relevance_rerun import run_retry_failed_adjudication
 from pipeline.stage_05_lore_development_ledger import run as run_stage_05_ledger
 from pipeline.stage_05_lore_development_ledger import render_entity_history_lines
 from pipeline.stage_06_snippet_extraction import run as run_stage_06
@@ -391,14 +392,43 @@ class FakeNotionDraftClient:
         *,
         match_run_id: bool = True,
     ) -> dict[str, Any] | None:
+        page, _duplicates = self.find_page_for_card_sync(
+            database_id,
+            {"card_id": card_id, "canonical_name": ""},
+            run_id,
+            match_run_id=match_run_id,
+        )
+        return page
+
+    def find_page_for_card_sync(
+        self,
+        database_id: str,
+        card: dict[str, Any],
+        run_id: str = "",
+        *,
+        match_run_id: bool = False,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        card_id = str(card.get("card_id", "")).strip()
+        canonical = str(card.get("canonical_name", "")).strip()
+        candidates: list[dict[str, Any]] = []
         for page in self.pages.values():
             properties = page.get("properties", {})
-            if self._prop_text(properties, "Card ID") != card_id:
+            if card_id and self._prop_text(properties, "Card ID") == card_id:
+                if match_run_id and run_id and self._prop_text(properties, "Run ID") != run_id:
+                    continue
+                candidates.append(page)
                 continue
-            if match_run_id and self._prop_text(properties, "Run ID") != run_id:
-                continue
-            return page
-        return None
+            if canonical and self._prop_text(properties, "Canonical Name") == canonical:
+                candidates.append(page)
+        if not candidates:
+            return None, []
+        best = candidates[-1]
+        best_id = str(best.get("id", ""))
+        duplicates = [page for page in candidates if str(page.get("id", "")) != best_id]
+        return best, duplicates
+
+    def archive_page(self, page_id: str) -> None:
+        self.pages.pop(page_id, None)
 
     def create_database(self, parent_page_id: str, *, title: str = "Theriac Draft Lore Cards") -> dict[str, Any]:
         self.created_databases.append(parent_page_id)
@@ -2350,6 +2380,160 @@ class PipelineV2Tests(unittest.TestCase):
             parallel.assert_called_once()
             self.assertGreaterEqual(captured.get("job_count", 0), 1)
             self.assertEqual(captured.get("max_workers"), 3)
+
+    def test_stage_04r_retries_failed_adjudication_only(self) -> None:
+        def fake_parallel(jobs, provider_config, task_name, **kwargs):
+            decisions = []
+            for job in jobs:
+                prompt = str(job.get("prompt") or "")
+                if "candidate_retry_me" in prompt:
+                    decisions.append(
+                        {
+                            "candidate_id": "candidate_retry_me",
+                            "rerun_decision": "keep_rejected",
+                            "confidence": 0.81,
+                            "matched_theme_ids": [],
+                            "reasoning_summary": "Model reviewed and rejected.",
+                            "requires_human_review": False,
+                        }
+                    )
+            return {
+                str(job["key"]): {"payload": {"decisions": decisions}, "error": ""}
+                for job in jobs
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = ArtifactPaths(root)
+            write_jsonl(
+                paths.global_timeline,
+                [
+                    msg_row(
+                        "m1",
+                        "2026-04-01T00:00:00Z",
+                        author_id="self",
+                        author_name="Me",
+                        content="Enoch naming discussion for Theriac lore.",
+                    ),
+                ],
+            )
+            write_json(
+                root / "config.json",
+                {
+                    "theme_aware_rerun": {
+                        "enabled": True,
+                        "model_adjudication_enabled": True,
+                        "max_windows_per_model_call": 4,
+                        "min_rescue_confidence": 0.72,
+                    },
+                    "conversation_segmentation": {"self_user_id": "self", "max_gap_hours": 12},
+                },
+            )
+            existing_decisions = [
+                {
+                    "candidate_id": "candidate_retry_me",
+                    "source_scope": "previous_reject",
+                    "source_coarse_window_id": "coarse_1",
+                    "source_model_window_id": "model_1",
+                    "dm_pair_id": "pair_a",
+                    "partner_id": "partner_a",
+                    "partner_label": "Alpha",
+                    "participant_ids": ["self", "partner_a"],
+                    "participant_labels": {"self": "Me", "partner_a": "Alpha"},
+                    "message_ids": ["m1"],
+                    "timestamp_start_utc": "2026-04-01T00:00:00Z",
+                    "timestamp_end_utc": "2026-04-01T00:00:00Z",
+                    "message_count": 1,
+                    "theme_relevance_score": 0.9,
+                    "matched_themes": [],
+                    "known_entity_links": [],
+                    "externality_warnings": [],
+                    "text_preview": "Enoch naming discussion for Theriac lore.",
+                    "conversation_id": "conversation_retry_me",
+                    "rerun_decision": "rescue_for_snippet_extraction",
+                    "confidence": 0.9,
+                    "reasoning_summary": "Approved active theme or known entity signals justify a second snippet-extraction pass.",
+                    "recommended_next_stage": "stage_06r_snippet_extraction",
+                    "requires_human_review": True,
+                },
+                {
+                    "candidate_id": "candidate_ok",
+                    "source_scope": "previous_reject",
+                    "source_coarse_window_id": "coarse_2",
+                    "source_model_window_id": "model_2",
+                    "dm_pair_id": "pair_b",
+                    "partner_id": "partner_b",
+                    "partner_label": "Beta",
+                    "participant_ids": ["self", "partner_b"],
+                    "participant_labels": {"self": "Me", "partner_b": "Beta"},
+                    "message_ids": ["m1"],
+                    "timestamp_start_utc": "2026-04-01T00:00:00Z",
+                    "timestamp_end_utc": "2026-04-01T00:00:00Z",
+                    "message_count": 1,
+                    "theme_relevance_score": 0.4,
+                    "matched_themes": [],
+                    "known_entity_links": [],
+                    "externality_warnings": [],
+                    "text_preview": "Small talk.",
+                    "conversation_id": "conversation_ok",
+                    "rerun_decision": "keep_rejected",
+                    "confidence": 0.4,
+                    "reasoning_summary": "Model rejected.",
+                    "recommended_next_stage": None,
+                    "requires_human_review": False,
+                },
+            ]
+            write_json(
+                paths.theme_relevance_rerun,
+                {
+                    "status": "complete",
+                    "summary": {
+                        "candidate_window_count": 2,
+                        "rescued_conversation_count": 1,
+                        "rescued_message_count": 1,
+                        "model_call_count": 1,
+                        "failure_count": 1,
+                        "decision_counts": {"keep_rejected": 1, "rescue_for_snippet_extraction": 1},
+                    },
+                    "decisions": existing_decisions,
+                },
+            )
+            write_json(
+                paths.theme_relevance_rerun_failures,
+                {
+                    "status": "complete",
+                    "failures": [
+                        {
+                            "candidate_ids": ["candidate_retry_me"],
+                            "reason": "missing_or_invalid_model_decision",
+                        }
+                    ],
+                },
+            )
+            with patch("pipeline.stage_04r_theme_relevance_rerun.call_model_chats_parallel", side_effect=fake_parallel):
+                attempted = run_retry_failed_adjudication(
+                    paths.global_timeline,
+                    paths.theme_relevance_rerun,
+                    paths.theme_relevance_rerun_failures,
+                    paths.theme_relevance_rerun,
+                    paths.theme_rescue_messages,
+                    paths.theme_rescue_segments,
+                    paths.theme_relevance_rerun_failures,
+                    root / "config.json",
+                )
+            self.assertEqual(attempted, 1)
+            rerun = json.loads(paths.theme_relevance_rerun.read_text(encoding="utf-8"))
+            retry_summary = rerun["summary"]["retry_failed_adjudication"]
+            self.assertEqual(retry_summary["attempted_candidate_count"], 1)
+            self.assertEqual(retry_summary["resolved_candidate_count"], 1)
+            self.assertEqual(retry_summary["remaining_failed_candidate_count"], 0)
+            self.assertEqual(rerun["summary"]["failure_count"], 0)
+            updated = next(row for row in rerun["decisions"] if row["candidate_id"] == "candidate_retry_me")
+            self.assertEqual(updated["rerun_decision"], "keep_rejected")
+            self.assertEqual(updated["reasoning_summary"], "Model reviewed and rejected.")
+            unchanged = next(row for row in rerun["decisions"] if row["candidate_id"] == "candidate_ok")
+            self.assertEqual(unchanged["reasoning_summary"], "Model rejected.")
+            self.assertEqual(rerun["summary"]["rescued_conversation_count"], 0)
 
     def test_stage_04_failure_records_model_window_count_and_payload_preview(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -9808,6 +9992,45 @@ class PipelineV2Tests(unittest.TestCase):
 
             self.assertEqual(stage, 6)
             self.assertIn("theme-rescue merged snippet corpus", reason)
+
+    def test_pipeline_resume_stage_8_requires_quest_tagging_when_enabled(self) -> None:
+        config = read_json(Path("config/pipeline_config.json")) if Path("config/pipeline_config.json").exists() else {}
+        qt_cfg = config.get("quest_tagging") if isinstance(config, dict) else {}
+        if isinstance(qt_cfg, dict) and not bool(qt_cfg.get("enabled", True)):
+            self.skipTest("quest_tagging.enabled is false in pipeline config")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_pipeline_artifacts_through_stage9(root, [])
+            paths = ArtifactPaths(root)
+            write_jsonl(paths.narrative_work_tags, [])
+            future_mtime = max(
+                paths.snippet_clusters_lore.stat().st_mtime,
+                paths.snippet_clusters_meta.stat().st_mtime,
+            ) + 10
+            os.utime(paths.narrative_work_tags, (future_mtime, future_mtime))
+
+            stage, reason = determine_resume_start_stage(root, max_stage=8)
+
+            self.assertEqual(stage, 8)
+            self.assertIn("Stage 08Q", reason)
+
+            write_jsonl(paths.snippet_quest_tags, [])
+            write_json(paths.discovered_quests, {"quests": []})
+            write_json(paths.quest_tagging_summary, {"tag_count": 0})
+            write_jsonl(paths.artist_character_review_queue, [])
+            for path in (
+                paths.snippet_quest_tags,
+                paths.discovered_quests,
+                paths.quest_tagging_summary,
+                paths.artist_character_review_queue,
+            ):
+                os.utime(path, (future_mtime + 10, future_mtime + 10))
+
+            stage, reason = determine_resume_start_stage(root, max_stage=8)
+
+            self.assertEqual(stage, 0)
+            self.assertIn("Stage 08", reason)
 
     def test_pipeline_resume_pauses_for_claim_review_before_card_synthesis(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

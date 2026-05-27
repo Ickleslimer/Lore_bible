@@ -1,6 +1,7 @@
 from pipeline.prose_alias_registry import (
     build_global_prose_alias_pairs,
     normalize_prose_for_entity,
+    scrub_personal_author_references,
     sanitize_card_prose_whitespace,
 )
 
@@ -43,3 +44,16 @@ def test_normalize_prose_for_entity_replaces_other_characters():
 def test_sanitize_card_prose_whitespace_fixes_mid_word_line_break():
     broken = "feeling somethin\ng barely human."
     assert sanitize_card_prose_whitespace(broken) == "feeling somethin g barely human."
+
+
+def test_scrub_personal_author_references_removes_first_person_sentences():
+    text = (
+        "Named after the biblical patriarch Enoch. "
+        "On a personal level, this reflected my life at the time. "
+        "It also nods to the Book of Enoch."
+    )
+    out = scrub_personal_author_references(text)
+    assert "personal level" not in out.lower()
+    assert "my life" not in out.lower()
+    assert "Named after the biblical patriarch Enoch." in out
+    assert "It also nods to the Book of Enoch." in out

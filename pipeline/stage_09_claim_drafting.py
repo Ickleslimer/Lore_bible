@@ -60,6 +60,35 @@ UNUSABLE_CLUSTER_KEYS = {
 }
 PACING_SKIP_REASONS = {"provider_locked", "adaptive_pacing", "rate_limit_cooldown"}
 
+AUTHOR_QUEUE_CLAIM_TYPES = {"alias", "open_question", "inspiration", "quest"}
+
+
+def claim_drafting_config(config: dict[str, Any]) -> dict[str, Any]:
+    cfg = config.get("claim_drafting", {}) if isinstance(config.get("claim_drafting"), dict) else {}
+    allowed = cfg.get("allowed_claim_types", ["alias", "open_question", "inspiration", "quest"])
+    allowed_types = [str(item).strip() for item in allowed if str(item).strip()]
+    if not allowed_types:
+        allowed_types = sorted(AUTHOR_QUEUE_CLAIM_TYPES)
+    return {
+        "enabled": bool(cfg.get("enabled", True)),
+        "mode": str(cfg.get("mode", "author_queue") or "author_queue"),
+        "allowed_claim_types": allowed_types,
+        "max_claims_per_entity": max(1, int(cfg.get("max_claims_per_entity", 6) or 6)),
+        "max_entities_per_run": max(0, int(cfg.get("max_entities_per_run", 120) or 120)),
+        "max_clusters_per_entity": max(1, int(cfg.get("max_clusters_per_entity", 4) or 4)),
+        "max_evidence_snippets_per_cluster": max(1, int(cfg.get("max_evidence_snippets_per_cluster", 8) or 8)),
+        "min_confidence": float(cfg.get("min_confidence", 0.65) or 0.65),
+        "require_explicit_evidence": bool(cfg.get("require_explicit_evidence", True)),
+    }
+
+
+def claim_knowledge_track_for_type(claim_type: str) -> str:
+    """Map small author-queue claim types onto lore vs meta tracks."""
+    normalized = normalized_name_key(str(claim_type or "")).replace(" ", "_")
+    if normalized in {"inspiration", "meta_note"}:
+        return "meta"
+    return "lore"
+
 
 def evidence_sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
     try:
@@ -195,6 +224,7 @@ def run(
     config: dict[str, Any] = {}
     if in_pipeline_config_json and in_pipeline_config_json.exists():
         config = read_json(in_pipeline_config_json)
+    drafting_cfg = claim_drafting_config(config)
     review_memory = load_review_memory(in_review_memory_json)
     logger.info(
         "Stage 09: drafting from %d lore cluster(s), %d meta cluster(s), %d snippet(s)",
@@ -212,6 +242,8 @@ def run(
             model_call_total += 1
     model_call_index = 0
     heartbeat_every = max(1, min(100, max(10, len(lore_clusters) // 20 or 1)))
+    clusters_seen_by_entity: dict[str, int] = {}
+    entities_seen: set[str] = set()
     for cluster_index, cluster in enumerate(lore_clusters, start=1):
         snippet_ids = cluster.get("snippet_ids", [])
         evidence = cluster_evidence(cluster, snippets)
@@ -252,6 +284,20 @@ def run(
             str(target_entity.get("canonical_name", "")),
         )
         rejected_keys = rejected_claim_keys(review_memory, str(target_entity.get("entity_id", "")))
+
+        entity_id = str(target_entity.get("entity_id", "")).strip()
+        if entity_id:
+            if entity_id not in entities_seen:
+                if int(drafting_cfg.get("max_entities_per_run", 120) or 120) and len(entities_seen) >= int(
+                    drafting_cfg.get("max_entities_per_run", 120) or 120
+                ):
+                    # Keep Stage 09 bounded; remaining entities can be addressed via author_claims instead.
+                    continue
+                entities_seen.add(entity_id)
+            clusters_seen_by_entity[entity_id] = clusters_seen_by_entity.get(entity_id, 0) + 1
+            if clusters_seen_by_entity[entity_id] > int(drafting_cfg.get("max_clusters_per_entity", 4) or 4):
+                continue
+
         model_call_index += 1
         logger.info(
             "Stage 09 model call: %d/%d entity=%s cluster=%s snippets=%d",
@@ -292,6 +338,7 @@ def run(
             entity_by_id=entity_by_id,
             thematic_memory=thematic_memory,
             rejected_keys=rejected_keys,
+            config=config,
         )
         if cluster_index == len(lore_clusters) or cluster_index % heartbeat_every == 0:
             logger.info(
@@ -434,14 +481,42 @@ def append_claim_drafts_from_model_claims(
     entity_by_id: dict[str, dict[str, Any]],
     thematic_memory: dict[str, Any],
     rejected_keys: set[str],
+    config: dict[str, Any],
 ) -> None:
+    drafting_cfg = claim_drafting_config(config)
+    allowed_types = {
+        normalized_name_key(item).replace(" ", "_")
+        for item in (drafting_cfg.get("allowed_claim_types") or [])
+        if str(item).strip()
+    }
+    if not allowed_types:
+        allowed_types = set(AUTHOR_QUEUE_CLAIM_TYPES)
+    min_confidence = float(drafting_cfg.get("min_confidence", 0.65) or 0.65)
+    require_explicit = bool(drafting_cfg.get("require_explicit_evidence", True))
+    max_claims_for_entity = int(drafting_cfg.get("max_claims_per_entity", 6) or 6)
+
+    entity_id = str(target_entity.get("entity_id", "")).strip()
+    if entity_id and sum(1 for row in claim_drafts if str(row.get("target_entity_id", "")).strip() == entity_id) >= max_claims_for_entity:
+        return
+
     snippet_ids = cluster.get("snippet_ids", [])
     for model_claim in model_claims:
         claim_text = str(model_claim.get("claim_text", "")).strip()
         if not claim_text:
             continue
+        claim_type = normalized_name_key(str(model_claim.get("claim_type", "lore_fact"))).replace(" ", "_") or "lore_fact"
+        if claim_type not in allowed_types:
+            continue
+        try:
+            confidence = float(model_claim.get("confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < min_confidence:
+            continue
         claim_source_ids = validated_claim_source_ids(model_claim, snippet_ids)
         if not claim_source_ids:
+            if require_explicit:
+                continue
             extraction_failures.append(
                 build_extraction_failure(
                     cluster,
@@ -462,18 +537,16 @@ def append_claim_drafts_from_model_claims(
                 "target_entity_id": target_entity.get("entity_id"),
                 "target_card_id": target_entity.get("card_id"),
                 "target_entity_name": target_entity.get("canonical_name"),
-                "knowledge_track": "lore",
+                "knowledge_track": claim_knowledge_track_for_type(claim_type),
                 "claim_text": claim_text,
                 "claim_type": str(model_claim.get("claim_type", "lore_fact")),
                 "alias_text": str(model_claim.get("alias_text", "")).strip(),
                 "source_snippet_ids": claim_source_ids,
                 "thematic_tags": cluster.get("thematic_tags", []),
                 "proposed_relationship_hints": infer_thematic_relationship_hints(cluster, entity_by_id, thematic_memory),
-                "confidence": float(
-                    model_claim.get(
-                        "confidence",
-                        round(sum(e.get("relevance_score", 0.5) for e in claim_evidence) / len(claim_evidence), 3) if claim_evidence else 0.5,
-                    )
+                "confidence": confidence
+                or float(
+                    round(sum(e.get("relevance_score", 0.5) for e in claim_evidence) / len(claim_evidence), 3) if claim_evidence else 0.5
                 ),
                 "status": "draft",
                 "contradiction_notes": str(model_claim.get("contradiction_notes", "")),
@@ -508,7 +581,7 @@ def extract_claims_with_model(
     provider_failures = 0
     validation_failures = 0
     while True:
-        prompt = build_claim_extraction_prompt(entity, cluster, evidence, memory_for_entity, validation_feedback)
+        prompt = build_claim_extraction_prompt(entity, cluster, evidence, memory_for_entity, config, validation_feedback)
         call_kwargs = model_call_kwargs(config, "stage_09_claim_drafting")
         response = call_model_chat(
             prompt=prompt,
@@ -572,8 +645,16 @@ def build_claim_extraction_prompt(
     cluster: dict[str, Any],
     evidence: list[dict[str, Any]],
     memory_for_entity: dict[str, Any],
+    config: dict[str, Any],
     validation_feedback: str = "",
 ) -> str:
+    drafting_cfg = claim_drafting_config(config)
+    mode = str(drafting_cfg.get("mode", "author_queue") or "author_queue")
+    allowed_types = drafting_cfg.get("allowed_claim_types") or ["alias", "open_question", "inspiration", "quest"]
+    max_claims = int(drafting_cfg.get("max_claims_per_entity", 6) or 6)
+    explicit_rule = "Only extract claims when the evidence is explicit (not speculative)." if drafting_cfg.get("require_explicit_evidence", True) else ""
+    max_snips = int(drafting_cfg.get("max_evidence_snippets_per_cluster", 8) or 8)
+
     evidence_rows = [
         {
             "snippet_id": item.get("snippet_id"),
@@ -588,13 +669,16 @@ def build_claim_extraction_prompt(
             "conversation_patch_possible_contradictions": item.get("conversation_patch_possible_contradictions", []),
             "text": item.get("display_text_normalized", ""),
         }
-        for item in evidence[:8]
+        for item in evidence[:max_snips]
     ]
-    return f"""Extract atomic lore claims for one Theriac entity.
+    return f"""Extract SMALL, author-facing claims for one Theriac entity.
 Return strict JSON only. Do not paste raw snippets as prose. Do not use bootstrap lore-bible text as evidence.
 Suppress claims that repeat rejected memory. Keep claims concise, factual, and individually reviewable.
 Domain rule: Theriac quest titles may be named after songs. Do not treat song-title quest names as weak, merely thematic, or non-diegetic when evidence links them to a path, ending, mission, or quest progression.
 External reference rule: reference-only names from other media, real people, or creators should not become card subjects or target entities. If the evidence says an external source inspires, resembles, contrasts with, or influences the target entity, extract that as a claim_type "inspiration" about the target entity.
+Scope rule: Stage 07 ledger + Stage 08 snippets already carry most background/role/relationship/timeline material. Stage 09 is for a small queue of items that require author input.
+Mode: {mode}. Allowed claim_type values: {json.dumps(list(allowed_types))}. Emit at most {max_claims} claim(s) total for this entity.
+{explicit_rule}
 
 Target entity:
 {json.dumps(entity, ensure_ascii=False, indent=2)}
@@ -619,7 +703,7 @@ Return JSON object:
   "claims": [
     {{
       "claim_text": "one atomic lore claim",
-      "claim_type": "background|role|relationship|timeline|theme|alias|inspiration|open_question|other",
+      "claim_type": "alias|open_question|inspiration|quest",
       "alias_text": "only for alias claims; otherwise empty",
       "source_snippet_ids": ["exact snippet_id values that directly support this claim"],
       "confidence": 0.0,

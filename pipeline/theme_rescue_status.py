@@ -73,22 +73,33 @@ def _json_field(path: Path, key: str, default: Any = "") -> Any:
 
 
 def _json_summary(path: Path) -> dict[str, Any]:
+    payload = _json_object(path)
+    return _json_summary_from_payload(payload)
+
+
+def _json_object(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
         payload = read_json(path)
     except Exception:
         return {}
-    if not isinstance(payload, dict):
-        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _json_summary_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     summary = payload.get("summary")
     return summary if isinstance(summary, dict) else {}
 
 
 def _artifact_status(path: Path) -> str:
+    return _artifact_status_from_payload(path, _json_object(path))
+
+
+def _artifact_status_from_payload(path: Path, payload: dict[str, Any]) -> str:
     if not path.exists():
         return "missing"
-    status = str(_json_field(path, "status", "complete")).strip().lower()
+    status = str(payload.get("status", "complete")).strip().lower()
     return status or "complete"
 
 
@@ -124,8 +135,66 @@ def _rescue_outputs(paths: ArtifactPaths) -> list[Path]:
     return [paths.theme_relevance_rerun, paths.snippets_with_theme_rescue]
 
 
-def rescue_artifacts_stale(paths: ArtifactPaths) -> bool:
+def _canon_theme_profile_path(repo_root: Path | None = None) -> Path:
+    if repo_root is not None:
+        return repo_root / "canon" / "theme_profile.json"
+    return Path("canon") / "theme_profile.json"
+
+
+def read_canon_theme_profile_updated_at(repo_root: Path | None = None) -> str:
+    path = _canon_theme_profile_path(repo_root)
+    if not path.exists():
+        return ""
+    try:
+        payload = read_json(path)
+    except Exception:
+        return ""
+    return str(payload.get("updated_at_utc", "")).strip() if isinstance(payload, dict) else ""
+
+
+def theme_rescue_baseline_matches_profile(paths: ArtifactPaths, repo_root: Path | None = None) -> bool:
+    """True when rescue was explicitly accepted for the current canon theme profile."""
+    baseline_path = paths.theme_rescue_baseline
+    if not baseline_path.exists():
+        return False
+    try:
+        baseline = read_json(baseline_path)
+    except Exception:
+        return False
+    if not isinstance(baseline, dict):
+        return False
+    pinned = str(baseline.get("theme_profile_updated_at_utc", "")).strip()
+    if not pinned:
+        return False
+    return pinned == read_canon_theme_profile_updated_at(repo_root)
+
+
+def write_theme_rescue_baseline(
+    root: Path,
+    *,
+    note: str = "",
+    approved_by: str = "operator",
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Record that 04R/06R at current profile are acceptable (skip rerun until profile changes)."""
+    paths = ArtifactPaths(root)
+    paths.stage06.mkdir(parents=True, exist_ok=True)
+    profile_updated_at = read_canon_theme_profile_updated_at(repo_root)
+    payload = {
+        "schema_version": 1,
+        "pinned_at_utc": now_utc_iso(),
+        "pinned_by": approved_by,
+        "theme_profile_updated_at_utc": profile_updated_at,
+        "note": note.strip(),
+    }
+    write_json(paths.theme_rescue_baseline, payload)
+    return payload
+
+
+def rescue_artifacts_stale(paths: ArtifactPaths, repo_root: Path | None = None) -> bool:
     """True when 06C/06D outputs are newer than 04R/06R rescue artifacts."""
+    if theme_rescue_baseline_matches_profile(paths, repo_root):
+        return False
     learning = _theme_learning_outputs(paths)
     rescue = _rescue_outputs(paths)
     if not all(path.exists() for path in learning):
@@ -164,15 +233,17 @@ def theme_rescue_status_payload(root: Path, repo_root: Path | None = None) -> di
     approved = theme_rescue_approved(root)
     learning_complete = theme_learning_complete(paths)
 
-    rerun_summary = _json_summary(paths.theme_relevance_rerun)
-    merge_summary = _json_summary(paths.theme_rescue_snippet_merge_report)
-    rerun_status = _artifact_status(paths.theme_relevance_rerun)
-    merge_status = _artifact_status(paths.theme_rescue_snippet_merge_report)
+    rerun_payload = _json_object(paths.theme_relevance_rerun)
+    merge_payload = _json_object(paths.theme_rescue_snippet_merge_report)
+    rerun_summary = _json_summary_from_payload(rerun_payload)
+    merge_summary = _json_summary_from_payload(merge_payload)
+    rerun_status = _artifact_status_from_payload(paths.theme_relevance_rerun, rerun_payload)
+    merge_status = _artifact_status_from_payload(paths.theme_rescue_snippet_merge_report, merge_payload)
     rerun_complete = paths.theme_relevance_rerun.exists() and rerun_status == "complete"
     merge_complete = paths.snippets_with_theme_rescue.exists() and (
         paths.theme_rescue_snippet_merge_report.exists() or _count_jsonl(paths.snippets_with_theme_rescue) > 0
     )
-    rescue_stale = rescue_artifacts_stale(paths)
+    rescue_stale = rescue_artifacts_stale(paths, repo_root=repo_root)
 
     approval_blocked = approval_required and not approved
     rerun_ready = enabled and learning_complete and not approval_blocked and not rerun_complete
@@ -200,7 +271,7 @@ def theme_rescue_status_payload(root: Path, repo_root: Path | None = None) -> di
                 "rescued_conversation_count": int(rerun_summary.get("rescued_conversation_count", 0) or 0),
                 "rescued_message_count": int(rerun_summary.get("rescued_message_count", 0) or 0),
                 "failure_count": int(rerun_summary.get("failure_count", 0) or 0),
-                "generated_at_utc": str(_json_field(paths.theme_relevance_rerun, "generated_at_utc", "")),
+                "generated_at_utc": str(rerun_payload.get("generated_at_utc", "")),
             },
         },
         {
@@ -221,7 +292,7 @@ def theme_rescue_status_payload(root: Path, repo_root: Path | None = None) -> di
                 "rescue_snippet_count": int(merge_summary.get("rescue_snippet_count", 0) or 0),
                 "combined_snippet_count": int(merge_summary.get("combined_snippet_count", 0) or 0),
                 "strict_snippet_count": int(merge_summary.get("strict_snippet_count", 0) or 0),
-                "generated_at_utc": str(_json_field(paths.theme_rescue_snippet_merge_report, "generated_at_utc", "")),
+                "generated_at_utc": str(merge_payload.get("generated_at_utc", "")),
             },
         },
     ]

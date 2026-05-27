@@ -146,6 +146,14 @@ class ArtifactPaths:
         return self.stage07 / "lore_development_ledger_failures.json"
 
     @property
+    def ledger_review_queue(self) -> Path:
+        return self.stage07 / "ledger_review_queue.jsonl"
+
+    @property
+    def ledger_quality_gate_report(self) -> Path:
+        return self.stage07 / "quality_gate_report.json"
+
+    @property
     def snippets(self) -> Path:
         return self.stage05 / "snippets_candidates.jsonl"
 
@@ -241,6 +249,10 @@ class ArtifactPaths:
         return self.stage06 / "theme_rescue_approval.json"
 
     @property
+    def theme_rescue_baseline(self) -> Path:
+        return self.stage06 / "theme_rescue_baseline.json"
+
+    @property
     def conversation_entity_proposals(self) -> Path:
         return self.stage06 / "conversation_entity_proposals.json"
 
@@ -267,6 +279,26 @@ class ArtifactPaths:
     @property
     def narrative_work_tagging_summary(self) -> Path:
         return self.stage08w / "tagging_summary.json"
+
+    @property
+    def stage08q(self) -> Path:
+        return self.root / "08_quest_tagging"
+
+    @property
+    def snippet_quest_tags(self) -> Path:
+        return self.stage08q / "snippet_quest_tags.jsonl"
+
+    @property
+    def discovered_quests(self) -> Path:
+        return self.stage08q / "discovered_quests.json"
+
+    @property
+    def quest_tagging_summary(self) -> Path:
+        return self.stage08q / "tagging_summary.json"
+
+    @property
+    def artist_character_review_queue(self) -> Path:
+        return self.stage08q / "artist_character_review_queue.jsonl"
 
     @property
     def stage11w(self) -> Path:

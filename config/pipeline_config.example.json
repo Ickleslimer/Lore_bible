@@ -464,6 +464,12 @@
       "context_window_messages": 3
     }
   },
+  "wiki_site": {
+    "autolink": {
+      "enabled": false,
+      "write_report": true
+    }
+  },
   "pipeline_limits": {
     "max_execution_stage": 8,
     "note": "Stages 09-12 (claims, identity merge, card synthesis, Notion export) deferred until Stage 11 is ready."

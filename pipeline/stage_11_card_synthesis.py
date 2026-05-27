@@ -2574,6 +2574,7 @@ Every non-empty summary/section must list supporting claim IDs and/or snippet ID
 Domain rule: Theriac quest titles may be named after songs. Do not treat song-title quest names as weak, merely thematic, or non-diegetic when accepted claims link them to a path, ending, mission, or quest progression.
 External reference rule: inspiration/reference sources from other media, real people, or creators should not become card subjects unless accepted claims explicitly make them in-world Theriac entities. If accepted claims say they inspire, resemble, contrast with, or influence this entity, put that information in the inspirations section.
 Inspirations tone rule: the inspirations section is neutral behind-the-scenes reporting only—state naming parallels and references the evidence names (e.g. biblical Enoch) without praising or evaluating the author's creative decisions. Do not call choices resonant, fitting, apt, clever, intentional, or explain why a reference "works" unless accepted claims quote that judgment verbatim.
+Privacy rule (inspirations): Do NOT include, summarize, or allude to the author's personal life or personal experiences (anything "on a personal level", "in my life", etc.), even if present in evidence. Avoid first-person autobiographical phrasing (I/my/me). Keep inspirations strictly about external references, naming parallels, and design-process facts that are not personal.
 Per-section word target rule: follow the word target plan. Sparse entities may have only the lead and one supported section. Heavily developed characters, factions, quests, and systems should use several supported sections and read like a full page. Do not count relationship/timeline/link arrays toward prose length.
 Wiki link rule: Use available wiki link targets for cross-card references. In prose, refer to other cards by canonical name when supported by an accepted claim. Also return those links in wiki_links. Do not create links to external-media inspirations unless they are Theriac cards in the available link targets.
 Leave open_questions empty unless an accepted claim is itself an open_question or explicitly states uncertainty.
@@ -3352,8 +3353,37 @@ def merge_canonical_cards(existing: list[dict[str, Any]], approved_revisions: li
     merged = {str(card.get("card_id")): card for card in existing if str(card.get("card_id", "")).strip()}
     for card in approved_revisions:
         card_id = str(card.get("card_id", "")).strip()
+        name_key = normalized_name_key(str(card.get("canonical_name", "")))
+        if name_key:
+            for old_id, old_card in list(merged.items()):
+                if normalized_name_key(str(old_card.get("canonical_name", ""))) == name_key and old_id != card_id:
+                    del merged[old_id]
         if card_id:
             merged[card_id] = card
+    return sorted(merged.values(), key=lambda card: str(card.get("canonical_name", "")))
+
+
+def merge_draft_cards_with_existing(
+    existing_cards: list[dict[str, Any]],
+    new_cards: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep unsynthesized entities from prior drafts; replace rows that share a canonical name."""
+    synthesized_keys = {
+        normalized_name_key(str(card.get("canonical_name", "")))
+        for card in new_cards
+        if str(card.get("canonical_name", "")).strip()
+    }
+    preserved = [
+        card
+        for card in existing_cards
+        if isinstance(card, dict)
+        and normalized_name_key(str(card.get("canonical_name", ""))) not in synthesized_keys
+    ]
+    merged = {normalized_name_key(str(card.get("canonical_name", ""))): card for card in preserved if str(card.get("canonical_name", "")).strip()}
+    for card in new_cards:
+        name_key = normalized_name_key(str(card.get("canonical_name", "")))
+        if name_key:
+            merged[name_key] = card
     return sorted(merged.values(), key=lambda card: str(card.get("canonical_name", "")))
 
 
@@ -3898,7 +3928,12 @@ def run(
     save_review_memory(in_review_memory_json, memory)
 
     sorted_draft_cards = _sorted_draft_cards(draft_cards)
-    write_json(out_card_drafts_json, {"cards": sorted_draft_cards})
+    existing_draft_payload = read_json(out_card_drafts_json) if out_card_drafts_json.exists() else {"cards": []}
+    existing_draft_cards = [
+        row for row in existing_draft_payload.get("cards", []) if isinstance(row, dict)
+    ] if isinstance(existing_draft_payload, dict) else []
+    final_draft_cards = merge_draft_cards_with_existing(existing_draft_cards, sorted_draft_cards)
+    write_json(out_card_drafts_json, {"cards": final_draft_cards})
     write_json(out_cards_json, {"cards": sorted(canonical_cards, key=lambda x: x.get("canonical_name", ""))})
     write_card_synthesis_checkpoint(
         out_card_drafts_json,

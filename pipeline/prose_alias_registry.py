@@ -128,6 +128,47 @@ def sanitize_card_prose_whitespace(text: str) -> str:
     return re.sub(r" +", " ", cleaned).strip()
 
 
+_PERSONAL_AUTHOR_PATTERNS = (
+    r"\b(on a personal level)\b",
+    r"\b(in my life)\b",
+    r"\b(personally)\b",
+    r"\bfor me\b",
+    r"\bhelped me\b",
+    r"\bmade me\b",
+    r"\bi felt\b",
+    r"\bi was\b",
+    r"\bi am\b",
+    r"\bi\b",
+    r"\bmy\b",
+    r"\bme\b",
+    r"\bmine\b",
+)
+
+
+def scrub_personal_author_references(text: str) -> str:
+    """Remove first-person / author-personal-life sentences from meta prose.
+
+    This is intentionally conservative: it only removes whole sentences/lines that
+    look like autobiographical commentary, and leaves other factual inspiration notes intact.
+    """
+    clean = sanitize_card_prose_whitespace(text)
+    if not clean:
+        return ""
+    pattern = re.compile("|".join(_PERSONAL_AUTHOR_PATTERNS), re.IGNORECASE)
+
+    # Split on sentence-ish boundaries while keeping reasonable fidelity.
+    parts = re.split(r"(?<=[.!?])\s+", clean)
+    kept: list[str] = []
+    for part in parts:
+        candidate = part.strip()
+        if not candidate:
+            continue
+        if pattern.search(candidate):
+            continue
+        kept.append(candidate)
+    return " ".join(kept).strip()
+
+
 def apply_prose_normalization_to_synthesis(
     synthesis: dict[str, Any],
     entity: dict[str, Any],
@@ -141,10 +182,13 @@ def apply_prose_normalization_to_synthesis(
     )
     sections = synthesis.get("sections")
     if isinstance(sections, dict):
-        synthesis["sections"] = {
-            key: sanitize_card_prose_whitespace(normalize_prose_for_entity(str(value), entity, pairs))
-            for key, value in sections.items()
-        }
+        normalized: dict[str, str] = {}
+        for key, value in sections.items():
+            out = sanitize_card_prose_whitespace(normalize_prose_for_entity(str(value), entity, pairs))
+            if key == "inspirations":
+                out = scrub_personal_author_references(out)
+            normalized[key] = out
+        synthesis["sections"] = normalized
     for rel in synthesis.get("relationships", []) or []:
         if not isinstance(rel, dict):
             continue

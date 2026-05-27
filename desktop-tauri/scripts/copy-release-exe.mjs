@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +14,23 @@ if (!existsSync(releaseExe)) {
 }
 
 mkdirSync(repoRoot, { recursive: true });
+
+const releaseRealPath = realpathSync(releaseExe);
+let rootRealPath = "";
+if (existsSync(rootExe)) {
+  try {
+    rootRealPath = realpathSync(rootExe);
+  } catch {
+    rootRealPath = "";
+  }
+}
+
+if (rootRealPath.toLowerCase() === releaseRealPath.toLowerCase()) {
+  const size = statSync(releaseExe).size;
+  console.log(`Release executable already linked at ${rootExe} (${size} bytes)`);
+  process.exit(0);
+}
+
 copyFileSync(releaseExe, rootExe);
 
 const size = statSync(rootExe).size;

@@ -28,6 +28,9 @@ _HAS_CACHED_API_KEY = False
 _CACHED_OPENROUTER_API_KEY: str | None = None
 _HAS_CACHED_OPENROUTER_API_KEY = False
 _LAST_MODEL_SKIP_REASON = ""
+_LAST_CALL_BILLED_COST_USD = 0.0
+_LAST_CALL_API_MODEL = ""
+_LAST_CALL_PROVIDER = ""
 _PROVIDER_STATE_LOCK = threading.Lock()
 
 PACING_SKIP_REASONS = frozenset({"provider_locked", "adaptive_pacing", "rate_limit_cooldown", "rate_limited_429"})
@@ -80,7 +83,29 @@ def get_model_runtime_status() -> dict[str, Any]:
             "last_model_skip_reason": _LAST_MODEL_SKIP_REASON,
             "rate_limited_until_epoch_s": _RATE_LIMITED_UNTIL_EPOCH_S,
             "next_model_attempt_epoch_s": _NEXT_MODEL_ATTEMPT_EPOCH_S,
+            "last_call_billed_cost_usd": _LAST_CALL_BILLED_COST_USD,
+            "last_call_api_model": _LAST_CALL_API_MODEL,
+            "last_call_provider": _LAST_CALL_PROVIDER,
         }
+
+
+def _extract_billed_cost_usd(body: dict[str, Any]) -> float:
+    """Best-effort extraction of OpenRouter/compatible billed cost from response envelope."""
+    usage = body.get("usage", {}) if isinstance(body.get("usage", {}), dict) else {}
+    candidates = [
+        usage.get("total_cost"),
+        usage.get("cost"),
+        body.get("total_cost"),
+        body.get("cost"),
+    ]
+    for raw in candidates:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0.0
 
 
 def provider_wait_seconds(reason: str, status: dict[str, Any], fallback_seconds: float) -> float:
@@ -218,15 +243,23 @@ def _write_rate_state(rate_state_path: Path | None, state: dict[str, Any]) -> No
         pass
 
 
-def model_task_settings(provider_config: dict[str, Any] | None, task_name: str) -> dict[str, Any]:
+def model_task_settings(
+    provider_config: dict[str, Any] | None,
+    task_name: str,
+    *,
+    profile_override: str | None = None,
+) -> dict[str, Any]:
     config = provider_config if isinstance(provider_config, dict) else {}
     base = dict(config.get("model_provider", {}) if isinstance(config.get("model_provider", {}), dict) else {})
+    strategy = config.get("model_strategy", {}) if isinstance(config.get("model_strategy", {}), dict) else {}
+    if strategy.get("temperature") is not None and "temperature" not in base:
+        base["temperature"] = strategy["temperature"]
     routing = config.get("model_routing", {}) if isinstance(config.get("model_routing", {}), dict) else {}
     profiles = routing.get("profiles", {}) if isinstance(routing.get("profiles", {}), dict) else {}
     tasks = routing.get("tasks", {}) if isinstance(routing.get("tasks", {}), dict) else {}
     task_cfg = tasks.get(task_name, {}) if isinstance(tasks.get(task_name, {}), dict) else {}
 
-    profile_name = str(
+    profile_name = str(profile_override or "").strip() or str(
         task_cfg.get("profile")
         or task_cfg.get("model_profile")
         or routing.get("default_profile")
@@ -242,8 +275,13 @@ def model_task_settings(provider_config: dict[str, Any] | None, task_name: str) 
     return base
 
 
-def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) -> dict[str, Any]:
-    cfg = model_task_settings(provider_config, task_name)
+def model_call_kwargs(
+    provider_config: dict[str, Any] | None,
+    task_name: str,
+    *,
+    profile_override: str | None = None,
+) -> dict[str, Any]:
+    cfg = model_task_settings(provider_config, task_name, profile_override=profile_override)
     session_id = _clean_openrouter_trace_text(
         cfg.get("session_id") or cfg.get("openrouter_session_id") or _default_openrouter_session_id(task_name)
     )
@@ -272,6 +310,13 @@ def model_call_kwargs(provider_config: dict[str, Any] | None, task_name: str) ->
         kwargs["tools"] = cfg["tools"]
     if isinstance(cfg.get("json_schema"), dict):
         kwargs["json_schema"] = cfg["json_schema"]
+    if isinstance(cfg.get("api_extra_body"), dict):
+        kwargs["api_extra_body"] = cfg["api_extra_body"]
+    api_key_env = str(cfg.get("api_key_env", "") or "").strip()
+    if api_key_env:
+        kwargs["api_key_env"] = api_key_env
+    if profile_override:
+        kwargs["routing_profile"] = profile_override
     return kwargs
 
 
@@ -430,12 +475,28 @@ def _read_env_value_from_file(repo_root: Path, var_names: list[str]) -> str | No
     return None
 
 
-def _resolve_generic_api_key() -> str | None:
+def _resolve_generic_api_key(api_key_env: str | None = None) -> str | None:
     global _CACHED_API_KEY, _HAS_CACHED_API_KEY
+    env_candidates = [
+        str(api_key_env or "").strip(),
+        "NVIDIA_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "MODEL_API_KEY",
+        "MODEL_PROVIDER_API_KEY",
+        "OPENAI_COMPATIBLE_API_KEY",
+    ]
+    env_candidates = [name for name in env_candidates if name]
+    if api_key_env:
+        for key_name in env_candidates:
+            value = os.environ.get(key_name)
+            if value and value.strip():
+                return value.strip().strip('"').strip("'")
+        repo_root = Path(__file__).resolve().parents[1]
+        file_value = _read_env_value_from_file(repo_root, env_candidates)
+        return file_value
+
     if _HAS_CACHED_API_KEY:
         return _CACHED_API_KEY
-
-    env_candidates = ["MODEL_API_KEY", "MODEL_PROVIDER_API_KEY", "OPENAI_COMPATIBLE_API_KEY"]
     for key_name in env_candidates:
         value = os.environ.get(key_name)
         if value and value.strip():
@@ -599,10 +660,12 @@ def _call_openai_compatible_chat(
     trace: dict[str, Any] | None = None,
     user: str | None = None,
     extra_headers: dict[str, str] | None = None,
+    api_extra_body: dict[str, Any] | None = None,
     provider_label: str = "OpenAI-Compatible API",
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
     global _RATE_LIMITED_UNTIL_EPOCH_S, _NEXT_MODEL_ATTEMPT_EPOCH_S, _LAST_MODEL_SKIP_REASON
+    global _LAST_CALL_BILLED_COST_USD, _LAST_CALL_API_MODEL, _LAST_CALL_PROVIDER
     state = _reserve_dispatch_slot(
         rate_state_path=rate_state_path,
         min_interval_seconds=min_interval_seconds,
@@ -660,6 +723,9 @@ def _call_openai_compatible_chat(
         }
     elif response_format_json:
         payload["response_format"] = {"type": "json_object"}
+    if isinstance(api_extra_body, dict):
+        for key, value in api_extra_body.items():
+            payload[key] = value
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -749,6 +815,12 @@ def _call_openai_compatible_chat(
                     },
                 )
                 # endregion
+            elif int(exc.code) in {502, 503, 504}:
+                _LAST_MODEL_SKIP_REASON = f"http_error_{int(exc.code)}"
+                if attempt_idx < attempts:
+                    retry_sleep_seconds = min(30.0, 5.0 * attempt_idx)
+                    time.sleep(retry_sleep_seconds)
+                    continue
             else:
                 _LAST_MODEL_SKIP_REASON = f"http_error_{int(exc.code)}"
             return None
@@ -832,6 +904,9 @@ def _call_openai_compatible_chat(
             state["last_request_epoch_s"] + state["adaptive_min_interval_seconds"],
         )
         _LAST_MODEL_SKIP_REASON = ""
+        _LAST_CALL_BILLED_COST_USD = _extract_billed_cost_usd(body)
+        _LAST_CALL_API_MODEL = str(model or "")
+        _LAST_CALL_PROVIDER = str(provider_label or "")
     _write_rate_state(rate_state_path, state)
     # region agent log
     _debug_log(
@@ -928,6 +1003,9 @@ def call_model_chat(
     session_id: str | None = None,
     trace: dict[str, Any] | None = None,
     user: str | None = None,
+    api_extra_body: dict[str, Any] | None = None,
+    api_key_env: str | None = None,
+    routing_profile: str | None = None,
 ) -> dict[str, Any] | None:
     logger = get_logger(__name__)
     global _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S, _LAST_API_FAILURE_LOG_EPOCH_S, _LAST_MODEL_SKIP_REASON
@@ -937,6 +1015,8 @@ def call_model_chat(
         resolved_provider = "openrouter"
     if resolved_provider in {"open_router", "openrouter_api"}:
         resolved_provider = "openrouter"
+    if resolved_provider in {"nvidia", "nim", "nvidia_nim"}:
+        resolved_provider = "openai_compatible"
     if resolved_provider == "auto":
         resolved_provider = "openrouter"
     supported_providers = {"openrouter", "openai_compatible", "api"}
@@ -946,7 +1026,11 @@ def call_model_chat(
         return None
 
     openrouter_key = _resolve_openrouter_api_key() if resolved_provider == "openrouter" else None
-    api_key = _resolve_generic_api_key() if resolved_provider in {"api", "openai_compatible"} else None
+    api_key = (
+        _resolve_generic_api_key(api_key_env)
+        if resolved_provider in {"api", "openai_compatible"}
+        else None
+    )
     if now_s - _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S >= 1.0:
         _LAST_PROVIDER_RESOLVE_LOG_EPOCH_S = now_s
         # region agent log
@@ -959,9 +1043,12 @@ def call_model_chat(
                 "provider": resolved_provider,
                 "has_api_key": bool(api_key or openrouter_key),
                 "api_model": api_model,
+                "routing_profile": routing_profile or "",
             },
         )
         # endregion
+    if routing_profile:
+        _LAST_CALL_PROVIDER = routing_profile
 
     if resolved_provider == "openrouter":
         if not openrouter_key:
@@ -997,9 +1084,12 @@ def call_model_chat(
     if resolved_provider in {"openai_compatible", "api"}:
         if not api_key:
             logger.warning(
-                "OpenAI-compatible provider selected but no MODEL_API_KEY/MODEL_PROVIDER_API_KEY/OPENAI_COMPATIBLE_API_KEY found in environment/.env."
+                "OpenAI-compatible provider selected but no NVIDIA_API_KEY/MODEL_API_KEY/"
+                "MODEL_PROVIDER_API_KEY/OPENAI_COMPATIBLE_API_KEY found in environment/.env."
             )
+            _LAST_MODEL_SKIP_REASON = "missing_api_key"
             return None
+        provider_label = "NVIDIA NIM API" if "integrate.api.nvidia.com" in str(api_base_url) else "OpenAI-Compatible API"
         return _call_openai_compatible_chat(
             api_base_url,
             api_key,
@@ -1018,6 +1108,8 @@ def call_model_chat(
             response_format_json=True,
             json_schema=json_schema,
             tools=tools,
+            api_extra_body=api_extra_body,
+            provider_label=provider_label,
         )
 
     return None

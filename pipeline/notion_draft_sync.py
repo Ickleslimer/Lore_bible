@@ -11,6 +11,7 @@ import requests
 
 from pipeline.artifact_paths import ArtifactPaths, migrate_run_artifacts_to_numbered
 from pipeline.common import get_logger, now_utc_iso, read_json, write_json
+from pipeline.entity_resolution import normalized_name_key
 from pipeline.ui_review_app import card_review_sections
 
 
@@ -473,6 +474,19 @@ class NotionDraftClient:
                 matches.append(database_id)
         return matches
 
+    def _query_all_pages(self, database_id: str, filter_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        cursor = ""
+        while True:
+            body: dict[str, Any] = {"filter": filter_payload, "page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+            result = self.request("POST", f"/databases/{database_id}/query", body)
+            rows.extend(result.get("results", []) if isinstance(result, dict) else [])
+            if not result.get("has_more"):
+                return rows
+            cursor = str(result.get("next_cursor") or "")
+
     def query_existing_page(
         self,
         database_id: str,
@@ -481,13 +495,65 @@ class NotionDraftClient:
         *,
         match_run_id: bool = True,
     ) -> dict[str, Any] | None:
-        filters: list[dict[str, Any]] = [{"property": "Card ID", "rich_text": {"equals": card_id}}]
-        if match_run_id and run_id:
-            filters.append({"property": "Run ID", "rich_text": {"equals": run_id}})
-        payload = {"filter": {"and": filters} if len(filters) > 1 else filters[0], "page_size": 1}
-        result = self.request("POST", f"/databases/{database_id}/query", payload)
-        rows = result.get("results", []) if isinstance(result, dict) else []
-        return rows[0] if rows else None
+        page, _duplicates = self.find_page_for_card_sync(
+            database_id,
+            {"card_id": card_id, "canonical_name": ""},
+            run_id,
+            match_run_id=match_run_id,
+        )
+        return page
+
+    def find_page_for_card_sync(
+        self,
+        database_id: str,
+        card: dict[str, Any],
+        run_id: str = "",
+        *,
+        match_run_id: bool = False,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        """Locate an existing Notion page to update (newest wins); return duplicate pages to archive."""
+        card_id = str(card.get("card_id", "")).strip()
+        canonical = str(card.get("canonical_name", "")).strip()
+        seen_ids: set[str] = set()
+        candidates: list[dict[str, Any]] = []
+
+        def add_rows(rows: list[dict[str, Any]]) -> None:
+            for row in rows:
+                page_id = str(row.get("id", "")).strip()
+                if page_id and page_id not in seen_ids:
+                    seen_ids.add(page_id)
+                    candidates.append(row)
+
+        if card_id:
+            id_filters: list[dict[str, Any]] = [{"property": "Card ID", "rich_text": {"equals": card_id}}]
+            if match_run_id and run_id:
+                id_filters.append({"property": "Run ID", "rich_text": {"equals": run_id}})
+            id_filter: dict[str, Any] = id_filters[0] if len(id_filters) == 1 else {"and": id_filters}
+            add_rows(self._query_all_pages(database_id, id_filter))
+
+        if canonical:
+            add_rows(
+                self._query_all_pages(
+                    database_id,
+                    {"property": "Canonical Name", "rich_text": {"equals": canonical}},
+                )
+            )
+            add_rows(
+                self._query_all_pages(
+                    database_id,
+                    {"property": "Name", "title": {"equals": canonical}},
+                )
+            )
+
+        if not candidates:
+            return None, []
+        best = max(candidates, key=lambda row: str(row.get("last_edited_time", "")))
+        best_id = str(best.get("id", "")).strip()
+        duplicates = [row for row in candidates if str(row.get("id", "")).strip() != best_id]
+        return best, duplicates
+
+    def archive_page(self, page_id: str) -> None:
+        self.request("PATCH", f"/pages/{normalize_notion_id(page_id)}", {"archived": True})
 
     def create_page(self, database_id: str, properties: dict[str, Any], children: list[dict[str, Any]]) -> dict[str, Any]:
         return self.request(
@@ -817,7 +883,8 @@ def sync_cards_to_notion(
     migrate_run_artifacts_to_numbered(run_root)
     paths = ArtifactPaths(run_root)
     out_report = paths.notion_canonical_sync_report if target == "canonical" else paths.notion_draft_sync_report
-    match_run_id = target != "canonical"
+    # Match existing pages by card_id and canonical name (not run_id) so re-synthesis updates in place.
+    match_run_id_on_lookup = False
     label = "canonical" if target == "canonical" else "draft"
 
     def log(message: str) -> None:
@@ -836,6 +903,7 @@ def sync_cards_to_notion(
         "created_pages": 0,
         "updated_pages": 0,
         "failed_pages": [],
+        "archived_pages": [],
         "pages": [],
         "database_id": "",
         "database_created": False,
@@ -899,7 +967,12 @@ def sync_cards_to_notion(
             public_article=public_article,
         )
         try:
-            existing = notion.query_existing_page(database_id, card_id, run_id, match_run_id=match_run_id)
+            existing, duplicates = notion.find_page_for_card_sync(
+                database_id,
+                card,
+                run_id,
+                match_run_id=match_run_id_on_lookup,
+            )
             if existing:
                 page_id = str(existing.get("id", ""))
                 updated = notion.update_page(page_id, properties)
@@ -907,6 +980,27 @@ def sync_cards_to_notion(
                 action = "updated"
                 report["updated_pages"] += 1
                 url = updated.get("url") or existing.get("url", "")
+                for dup in duplicates:
+                    dup_id = str(dup.get("id", "")).strip()
+                    if not dup_id:
+                        continue
+                    try:
+                        notion.archive_page(dup_id)
+                        report["archived_pages"].append(
+                            {
+                                "page_id": dup_id,
+                                "canonical_name": card.get("canonical_name", ""),
+                                "card_id": card_id,
+                            }
+                        )
+                    except Exception as archive_exc:
+                        report["failed_pages"].append(
+                            {
+                                "card_id": card_id,
+                                "canonical_name": card.get("canonical_name", ""),
+                                "error": f"archive duplicate failed: {archive_exc}",
+                            }
+                        )
             else:
                 created = notion.create_page(database_id, properties, blocks)
                 page_id = str(created.get("id", ""))
@@ -954,6 +1048,208 @@ def sync_draft_cards_to_notion(
         state_path=state_path,
         progress_callback=progress_callback,
     )
+
+
+_NOTION_IMPORT_SKIP_HEADINGS = frozenset(
+    {
+        "Review Metadata",
+        "Structured Relationships",
+        "Timeline",
+        "Wiki Links",
+        "Unresolved Conflicts",
+        "See Also",
+    }
+)
+
+
+def block_to_plain_text(block: dict[str, Any]) -> str:
+    block_type = str(block.get("type", "")).strip()
+    payload = block.get(block_type)
+    if not isinstance(payload, dict):
+        return ""
+    rich = payload.get("rich_text", [])
+    if not isinstance(rich, list):
+        return ""
+    parts: list[str] = []
+    for item in rich:
+        if not isinstance(item, dict):
+            continue
+        text_obj = item.get("text")
+        if isinstance(text_obj, dict) and text_obj.get("content") is not None:
+            parts.append(str(text_obj.get("content", "")))
+        elif isinstance(item.get("plain_text"), str):
+            parts.append(item["plain_text"])
+    return "".join(parts).strip()
+
+
+def _section_title_to_key(title: str, config: dict[str, Any] | None = None) -> str:
+    from pipeline.card_sections import card_review_section_order
+
+    clean = str(title or "").strip()
+    for key, display in card_review_section_order(config):
+        if display.strip().lower() == clean.lower():
+            return key
+    slug = re.sub(r"[^a-z0-9]+", "_", clean.lower()).strip("_")
+    return slug or "section"
+
+
+def parse_card_page_blocks(
+    blocks: list[dict[str, Any]],
+    *,
+    config: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, str]]:
+    """Extract summary + section prose from a Notion lore-card page (draft or canonical layout)."""
+    summary_parts: list[str] = []
+    sections: dict[str, list[str]] = {}
+    current_section_key: str | None = None
+    in_summary = False
+    seen_summary_heading = False
+
+    for block in blocks:
+        block_type = str(block.get("type", "")).strip()
+        text = block_to_plain_text(block)
+        if block_type == "heading_2":
+            if text.strip().lower() == "summary":
+                in_summary = True
+                seen_summary_heading = True
+                current_section_key = None
+                continue
+            in_summary = False
+            if text in _NOTION_IMPORT_SKIP_HEADINGS:
+                current_section_key = None
+                continue
+            current_section_key = _section_title_to_key(text, config)
+            sections.setdefault(current_section_key, [])
+            continue
+        if block_type != "paragraph":
+            continue
+        if not text:
+            continue
+        if in_summary or (not seen_summary_heading and not sections and not summary_parts):
+            summary_parts.append(text)
+            continue
+        if current_section_key:
+            sections[current_section_key].append(text)
+
+    summary = "\n\n".join(summary_parts).strip()
+    section_out = {key: "\n\n".join(parts).strip() for key, parts in sections.items() if "\n\n".join(parts).strip()}
+    return summary, section_out
+
+
+def apply_notion_prose_to_card(
+    card: dict[str, Any],
+    *,
+    summary: str,
+    sections: dict[str, str],
+) -> dict[str, Any]:
+    updated = dict(card)
+    if summary:
+        updated["summary"] = summary
+    details = updated.get("details")
+    if not isinstance(details, dict):
+        details = {}
+    existing_sections = details.get("sections")
+    if not isinstance(existing_sections, dict):
+        existing_sections = {}
+    merged_sections = dict(existing_sections)
+    merged_sections.update(sections)
+    updated["details"] = {**details, "sections": merged_sections}
+    return updated
+
+
+def resolve_notion_pages_by_canonical_name(
+    canonical_names: list[str],
+    *,
+    config_path: Path | None = Path("config/pipeline_config.json"),
+    env_path: Path | None = Path(".env"),
+    client: NotionDraftClient | None = None,
+    target: str = "draft",
+) -> list[dict[str, Any]]:
+    """Find Notion database pages by Canonical Name property (newest edit wins if duplicates)."""
+    notion_config = notion_sync_config(config_path, env_path, target=target)
+    token = str(notion_config.get("api_key", "")).strip()
+    database_id = str(notion_config.get("database_id", "")).strip()
+    if not token or not database_id:
+        raise NotionSyncError("Missing Notion token or draft cards database id.")
+    notion = client or NotionDraftClient(token)
+    refs: list[dict[str, Any]] = []
+    for name in canonical_names:
+        clean = str(name or "").strip()
+        if not clean:
+            continue
+        result = notion.request(
+            "POST",
+            f"/databases/{database_id}/query",
+            {
+                "filter": {"property": "Canonical Name", "rich_text": {"equals": clean}},
+                "page_size": 10,
+            },
+        )
+        rows = result.get("results", []) if isinstance(result, dict) else []
+        if not rows:
+            continue
+        best = max(rows, key=lambda row: str(row.get("last_edited_time", "")))
+        page_id = normalize_notion_id(best.get("id", ""))
+        props = best.get("properties", {}) if isinstance(best.get("properties"), dict) else {}
+        card_rt = props.get("Card ID", {}).get("rich_text", [])
+        card_id = ""
+        if isinstance(card_rt, list) and card_rt and isinstance(card_rt[0], dict):
+            card_id = str(card_rt[0].get("plain_text", "")).strip()
+        refs.append(
+            {
+                "canonical_name": clean,
+                "page_id": page_id,
+                "card_id": card_id,
+                "last_edited_time": str(best.get("last_edited_time", "")),
+            }
+        )
+    return refs
+
+
+def pull_cards_from_notion(
+    run_root: Path,
+    page_refs: list[dict[str, Any]],
+    existing_cards: list[dict[str, Any]],
+    *,
+    config_path: Path | None = Path("config/pipeline_config.json"),
+    env_path: Path | None = Path(".env"),
+    client: NotionDraftClient | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Pull latest page body prose from Notion into local card dicts (by card_id)."""
+    config = _read_json_or_default(config_path, {}) if config_path else {}
+    notion_config = notion_sync_config(config_path, env_path, target="draft")
+    token = str(notion_config.get("api_key", "")).strip()
+    if not token:
+        raise NotionSyncError("Missing Notion API token for import.")
+    notion = client or NotionDraftClient(token)
+    by_id = {str(card.get("card_id", "")).strip(): dict(card) for card in existing_cards if str(card.get("card_id", "")).strip()}
+    pulled: list[dict[str, str]] = []
+    failures: list[dict[str, str]] = []
+
+    for ref in page_refs:
+        card_id = str(ref.get("card_id", "")).strip()
+        page_id = normalize_notion_id(ref.get("page_id", ""))
+        if not card_id or not page_id:
+            continue
+        base = by_id.get(card_id)
+        if base is None:
+            failures.append({"card_id": card_id, "error": "no local card for page"})
+            continue
+        try:
+            blocks = notion.list_block_children(page_id)
+            summary, sections = parse_card_page_blocks(blocks, config=config if isinstance(config, dict) else None)
+            by_id[card_id] = apply_notion_prose_to_card(base, summary=summary, sections=sections)
+            pulled.append({"card_id": card_id, "canonical_name": str(base.get("canonical_name", ""))})
+        except NotionSyncError as exc:
+            failures.append({"card_id": card_id, "error": str(exc)})
+
+    report = {
+        "status": "complete" if not failures else "partial",
+        "pulled": pulled,
+        "failures": failures,
+        "card_count": len(pulled),
+    }
+    return list(by_id.values()), report
 
 
 def sync_canonical_cards_to_notion(

@@ -378,6 +378,82 @@ a:hover { color: var(--accent-hover); }
 
 .infobox-more { color: var(--muted); font-size: 12px; }
 
+/* Quest map (Theriac Coda) */
+.wiki-quest-map .wiki-breadcrumb,
+.wiki-quest-stub .wiki-breadcrumb {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.wiki-quest-tabs {
+  display: flex;
+  gap: 16px;
+  margin: 20px 0 12px;
+  font-weight: 600;
+}
+
+.wiki-quest-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 16px;
+  font-size: 13px;
+}
+
+.wiki-quest-nav-link {
+  padding: 4px 10px;
+  background: var(--lead-bg);
+  border-radius: 4px;
+  text-decoration: none;
+}
+
+.wiki-quest-view {
+  margin-bottom: 32px;
+}
+
+.wiki-quest-character,
+.wiki-quest-year {
+  margin-bottom: 28px;
+}
+
+.wiki-quest-note {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+
+.wiki-quest-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+}
+
+.wiki-quest-table th,
+.wiki-quest-table td {
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  vertical-align: top;
+  text-align: left;
+}
+
+.wiki-quest-table th {
+  background: var(--lead-bg);
+  font-weight: 600;
+}
+
+.wiki-quest-table .quest-seq {
+  width: 2.5em;
+  text-align: center;
+  color: var(--muted);
+}
+
+.wiki-quest-table .quest-synopsis {
+  max-width: 28em;
+}
+
 @media (max-width: 860px) {
   .wiki-page-grid {
     grid-template-columns: 1fr;
